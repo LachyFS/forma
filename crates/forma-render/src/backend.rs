@@ -275,6 +275,11 @@ impl Renderer {
     }
 }
 
+/// Validate using the same default backend as `Renderer::new`.
+pub fn validate_custom_shaders(scene: &Scene) -> Result<()> {
+    Backend::from_env()?.validate_custom_shaders(scene)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -311,9 +316,4 @@ mod tests {
                 .contains("unavailable")
         );
     }
-}
-
-/// Validate using the same default backend as `Renderer::new`.
-pub fn validate_custom_shaders(scene: &Scene) -> Result<()> {
-    Backend::from_env()?.validate_custom_shaders(scene)
 }

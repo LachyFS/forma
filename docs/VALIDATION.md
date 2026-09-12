@@ -63,32 +63,34 @@ The remaining record describes checks executed before this portability change
 on macOS with an Apple M4 Pro. It is historical evidence for the native renderer,
 not a claim that the new wgpu Metal path was run on that hardware.
 
-## Surface shader change (September 2026)
+## Surface shader integration (2026-09-12)
 
-This change was developed in a Linux workspace. The following checks executed:
+The shader branch was integrated with both the cross-platform renderer and the
+compact workspace UI. Checks executed on Linux with Rust 1.98.1:
 
-- `cargo test --locked -p forma-core`: 41 tests passed, including shader/image
-  persistence, version-2 migration, validation and undo/redo.
-- `cargo test --locked -p forma-render --lib`: eight CPU tests passed, including
-  linear/data texture interpretation, mip filtering, source dispatch and layouts.
-- `cargo check --locked -p forma-render --all-targets --target aarch64-apple-darwin`:
-  renderer Rust code and its Mac GPU test targets type-checked.
-- Core Clippy passed with warnings denied. Renderer Clippy passed for the Mac
-  target with `chunks_exact_to_as_chunks` allowed for existing test code; this
-  lint is newer than the project's originally verified Rust toolchain.
-- The app's current UI and interaction code compiled in an isolated Linux GPUI
-  harness, with Metal display/compilation replaced by explicit unavailable errors.
-  Live GPUI input checks passed for typing, selections, multiline edits, delete,
-  tab, local undo/redo, apply-error recovery, closing and draft/document isolation.
-  The inspector and code modal were visually inspected in that harness.
+- **101 tests passed**: 22 application, 41 core, 12 renderer unit, 23 GPU
+  integration and three shader translation/layout tests. Core coverage includes
+  embedded images, source-language persistence, legacy material migration and
+  undo/redo. GPU regressions used Mesa llvmpipe Vulkan and exercised both preview
+  and rendered PBR/glass/textures/custom code, compile-error fallback/recovery,
+  incompatible-language recovery, the default WGSL template and finite film output.
+- `cargo clippy --locked --workspace --all-targets -- -D warnings`: passed.
+- `cargo fmt --all -- --check` and `git diff --check`: passed.
+- Renderer `cargo check --locked --all-targets` passed for
+  `aarch64-apple-darwin` and `x86_64-pc-windows-msvc`.
+- WGSL validation and SPIR-V/MSL/HLSL generation passed for render, preview and
+  IBL kernels. Layout checks cover the expanded triangles and material buffers.
+- The complete Linux GPUI application builds with the actual Vulkan renderer.
+  The live X11/llvmpipe smoke workflow passed, including multiline shader input,
+  local undo/redo, failed compilation with document retention, successful WGSL
+  apply, scene undo, all viewport modes, preview/HDR controls, navigation,
+  resizing, asynchronous project/OBJ operations and concurrent image export.
+  It reported `FORMA_NATIVE_SMOKE_PASS`.
 
-The full Mac app cross-build stopped in `ring` because this Linux host lacks the
-Apple C toolchain. **Metal source compilation, rendered shader output and the new
-native Mac shader smoke workflow have not run here.** The new GPU integration
-regressions cover texture/PBR/glass/custom output, invalid-source PBR fallback,
-compiler diagnostics, recovery, the default template and nonfinite shader output.
-They must run on a Mac with Metal. The earlier Mac validation below describes
-pre-existing functionality; it is not evidence for the new shader paths.
+Native Metal runtime compilation and DirectX 12 GPU execution still require
+validation on their respective operating systems. Cross-target Rust checks and
+WGSL translation do not establish native Metal source compilation or hardware
+behavior. The earlier Mac validation below describes pre-existing functionality.
 
 ## Geometry and documents
 
