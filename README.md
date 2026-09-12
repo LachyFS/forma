@@ -23,7 +23,9 @@ python3 -m http.server 4173 --directory site
 
 ## Run
 
-Install stable Rust and the platform build dependencies below, then run:
+Install Rust with [rustup](https://rust-lang.github.io/rustup/installation/index.html)
+and the platform build dependencies below. The repository's `rust-toolchain.toml`
+selects the compiler and lint tools used in CI. Then run:
 
 ```sh
 cargo run --locked -p forma
@@ -176,6 +178,12 @@ uses the viewing axis. Subdivision, imports, exports, primitives and material
 presets are also available through the visible panels and command panel.
 
 ## Verify
+
+Pull requests run formatting, workflow/script linting, website tests, a Rust
+dependency audit, and builds/tests on Linux, Windows, and macOS. Linux also
+executes the renderer through Mesa software Vulkan and saves smoke images as
+workflow artifacts. See [CI and local checks](docs/CI.md) for details, tool
+updates, and the status checks to require before merging.
 
 ```sh
 cargo fmt --all -- --check
