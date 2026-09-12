@@ -86,6 +86,11 @@ cargo run --locked --release -p forma
   migrate on open. Save replacement is atomic; edits support undo/redo.
 - Import OBJ polygon geometry, export transformed scene geometry to OBJ, and
   export the current render mode to PNG while continuing to edit.
+- Personalize the editor with five color themes: Forma Dark, Paper, Midnight,
+  Synthwave and Matcha. Open **Theme** in the title bar, **View → Color Theme…**,
+  or search **Preferences: Color Theme** in the command panel. Type to filter,
+  hover or use arrows to preview, then click or press Return to save your choice.
+  Escape or clicking outside cancels. The theme is remembered across launches.
 - Search commands with `⌘K`, type a name, then use arrows and Return to execute.
   Native menus and the command panel expose the same editor operations.
 
@@ -172,6 +177,7 @@ The in-app command panel opens with
 | Front / right / top | `1` / `3` / `7` |
 | Toggle projection / reset perspective | `5` / `0` |
 | Undo / redo | `⌘Z` / `⌘Shift+Z` |
+| Color theme picker | `⌘Shift+T` |
 | New / open / save / save as | `⌘N` / `⌘O` / `⌘S` / `⌘Shift+S` |
 
 An unconstrained numeric move uses world X. Rotation without an axis constraint
