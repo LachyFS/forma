@@ -9,6 +9,18 @@ rounded cube, plinth and emissive area light.
 
 ![Forma native GPUI workspace](docs/images/workspace.png)
 
+## Download website
+
+The standalone [download site](site/README.md) lives in `site/`. It can be served
+by any static host without a build step and automatically discovers the latest
+public GitHub release and available Mac downloads. The included
+[GitHub Pages workflow](.github/workflows/pages.yml) deploys it from `main` after
+selecting **GitHub Actions** as the source in the repository's Pages settings.
+
+```sh
+python3 -m http.server 4173 --directory site
+```
+
 ## Run
 
 Install stable Rust and the platform build dependencies below, then run:
