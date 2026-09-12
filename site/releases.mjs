@@ -10,7 +10,8 @@ function githubReleaseURL(value, kind) {
     const prefix = `/${REPOSITORY}/releases/${kind}/`;
     return url.protocol === "https:" && url.hostname === "github.com"
       && !url.port && !url.username && !url.password
-      && url.pathname.startsWith(prefix) && url.pathname.length > prefix.length
+      && url.pathname.slice(0, prefix.length).toLowerCase() === prefix.toLowerCase()
+      && url.pathname.length > prefix.length
       ? url.href : null;
   } catch {
     return null;

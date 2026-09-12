@@ -41,7 +41,8 @@ Serve `.mjs` files with a JavaScript MIME type.
 The canonical and social metadata target `https://lachyfs.github.io/forma/`.
 When publishing under another domain, update the canonical URL,
 `og:url`, `og:image`, and `twitter:image` in `index.html` to that domain.
-The custom social card is 1200 × 800. Do not use a local preview URL in public
+The social image is `assets/social.png`.
+The custom social card is 1200 × 630. Do not use a local preview URL in public
 metadata.
 
 ## Latest release downloads
@@ -88,13 +89,16 @@ releases, source-only releases, and network/API failures.
 
 ## Assets and accessibility
 
+The visual layout is inspired by Zed's website: a dark slate palette, blue
+controls, serif headings, compact navigation, and a grid of ruled sections.
 The app icon and screenshots come from `assets/` and `docs/images/` in this
-repository. WebP screenshots are resized for the page. `assets/og.png` is a
-bespoke brand illustration generated with the built-in Imagegen tool; it is
-not presented as app output. Its design brief: charcoal technical grid, mint
-and off-white typography reading “Forma — Good things take shape.”, and a
-teal torus, champagne sphere, and porcelain cube, with the subtitle “Your
-native 3D studio for Mac.”
+repository. WebP screenshots are resized for the page. `assets/social.png`
+is a 1200 × 630 browser-rendered social card using the same typography,
+colors, and actual Forma workspace image.
+
+IBM Plex Sans, Serif, and Mono are self-hosted as compact Latin WOFF2 fonts.
+Their SIL Open Font License files are included in `assets/fonts/`; the page
+makes no font requests to an external service.
 
 The page includes native FAQ disclosures, keyboard-operable screenshot
 controls, visible focus states, a skip link, responsive layouts, and reduced
