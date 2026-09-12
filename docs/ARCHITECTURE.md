@@ -6,7 +6,7 @@ native app owns interaction and coordinates the renderer through a worker.
 | Crate | Responsibility |
 | --- | --- |
 | `forma-core` | Indexed polygon meshes, primitives, subdivision/extrusion, materials, transforms, camera, picking, history and scene/OBJ I/O. |
-| `forma-render` | Metal compute pipelines, triangle/BVH upload, light transport, progressive film, CoreVideo surfaces and PNG readback. |
+| `forma-render` | Native Metal and wgpu compute pipelines, shared triangle/BVH upload and light transport, progressive film, immutable display frames and PNG readback. |
 | `forma` (`crates/forma-app`) | GPUI workspace, commands, inspector, outliner, face/object transforms, native dialogs, viewport overlays and render scheduling. |
 
 ## Scene and geometry
@@ -38,7 +38,7 @@ explicitly with orphan purging, matching the useful parts of Blender's
 object/data distinction.
 
 Transforms are translation, XYZ Euler rotation in radians and scale. The
-viewport camera supports perspective and orthographic projection with Metal's
+viewport camera supports perspective and orthographic projection with the shared
 0–1 depth range. Its analytic yaw/pitch basis remains defined at exact
 top/bottom views. Picking transforms rays into each object's local coordinates
 while preserving world-space hit distances under hierarchy and nonuniform
@@ -74,12 +74,20 @@ Export still shares the physical GPU and can reduce viewport throughput.
 
 ## GPU pipeline and surface ownership
 
+A public `Renderer` selects native Metal on macOS by default, or wgpu using
+Metal, DirectX 12 or Vulkan. The application passes its selected backend to both
+the viewport worker and independent export workers. `RenderSettings`, geometry
+fingerprints, uniforms, BVH construction, bounded HDR decoding and built-in HDR
+rigs are shared across implementations. WGSL ports preserve the Metal shader
+algorithms; shader tests validate layouts and translate all kernels to native
+SPIR-V, MSL and HLSL.
+
 ```mermaid
 flowchart LR
     Editor[GPUI edits] --> Snapshot[Scene snapshot + view settings]
     Snapshot --> Worker[Render worker]
-    Worker --> BVH[CPU binned-SAH BVH + Metal buffers]
-    BVH --> Trace[Rendered: Metal path sample]
+    Worker --> BVH[CPU binned-SAH BVH + GPU buffers]
+    BVH --> Trace[Rendered: GPU path sample]
     BVH --> Preview[Material Preview: deterministic IBL]
     Environment[Cached HDR diffuse + GGX roughness slices + BRDF] --> Preview
     Trace --> Film[Linear float accumulation]
@@ -88,14 +96,17 @@ flowchart LR
     Display --> NV12[Metal RGBA to NV12 conversion]
     NV12 --> Surface[IOSurface-backed CVPixelBuffer]
     Surface --> GPUI[GPUI compositor]
+    Display --> Readback[wgpu: immutable RGBA readback]
+    Readback --> Upload[Worker BGRA image + GPUI texture upload]
+    Upload --> GPUI
     Display --> Export[Explicit RGB readback for PNG]
 ```
 
 GPU geometry buffers and accumulation persist across samples. A scene revision
 causes validation and a geometry fingerprint check; unchanged geometry avoids
-BVH rebuild and upload. Material Preview uses a cached Metal primitive acceleration
+BVH rebuild and upload. Native Metal Material Preview uses a cached primitive acceleration
 structure on devices supporting Metal ray tracing, and software BVH traversal on
-other devices. Its primary, antialiasing, nearest-hit contact AO and selection
+other devices and all wgpu backends. Its primary, antialiasing, nearest-hit contact AO and selection
 rays keep the same sampling and lighting calculations. The structure references
 the world-space triangle buffer with explicit vertex indices, preserving material
 and object IDs; it is built lazily and reused throughout camera navigation.
@@ -112,12 +123,19 @@ baking happens on the render worker only when a new light is selected. Custom
 HDR files are validated on a background executor before applying them; request
 identity guards reject stale completions after selecting another environment.
 
-GPUI 0.2.2's macOS surface compositor requires bi-planar NV12. Forma therefore
+For native Metal, GPUI 0.2.2's macOS surface compositor requires bi-planar NV12. Forma therefore
 converts its RGB film to full-range BT.601 NV12 on the GPU and obtains output
 planes from a CoreVideo pixel-buffer pool. Normal display performs no CPU pixel
 copy. PNG export reads the RGB film, avoiding display chroma subsampling.
 
-A published `Frame` retains an immutable pixel buffer. The renderer completes
+wgpu copies each completed display film into an aligned reusable staging buffer
+and publishes tightly packed immutable RGBA pixels. The worker prepares BGRA
+pixels for GPUI's image API, and the UI removes previous image allocations from
+its texture atlas when adopting a newer frame. There is a readback and upload per
+frame; rendering and conversion remain off the UI event loop. A retained portable
+frame owns its pixels even after resize or renderer destruction.
+
+A published native `Frame` retains an immutable pixel buffer. The renderer completes
 GPU writes before publishing it and never overwrites a retained surface. Metal
 texture wrappers stay alive until their command completes. CoreVideo can recycle
 storage only after all consumers release it. These rules justify sending a
@@ -165,7 +183,8 @@ active mode's viewport resolution. Core document limits protect
 resource use but are not tested interactive-performance guarantees.
 
 Wireframe, Solid and Rendered use software BVH traversal; Material Preview can
-use Metal ray-tracing acceleration structures. Geometry validation, triangulation, BVH construction,
+use native Metal ray-tracing acceleration structures. wgpu modes use the shared
+software BVH on the GPU. Geometry validation, triangulation, BVH construction,
 OBJ I/O and history cloning remain CPU work. Project/OBJ parsing and disk writes
 run on background executors. Snapshot cloning, picking, subdivision and transform
 validation still run on the UI thread and can pause on large meshes. Generation
