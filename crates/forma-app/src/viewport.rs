@@ -3,8 +3,7 @@ use forma_render::RenderMode;
 use glam::{Mat4, Quat, Vec2, Vec3};
 use gpui::{
     AnyElement, Bounds, Context, MouseButton, MouseDownEvent, MouseMoveEvent, PathBuilder, Pixels,
-    Point, ScrollWheelEvent, Size, Window, canvas, div, fill, point, prelude::*, px, rgb, rgba,
-    size,
+    Point, ScrollWheelEvent, Size, Window, canvas, div, fill, point, prelude::*, px, rgb, size,
 };
 
 /// AppKit's momentum updates arrive after Ended without a new Started phase.
@@ -93,6 +92,7 @@ fn line(window: &mut Window, points: &[Point<Pixels>], color: u32, width: f32) {
 
 impl Studio {
     pub(crate) fn viewport(&self, cx: &mut Context<Self>) -> AnyElement {
+        let t = self.theme_colors();
         let geometry = self.selected_object().filter(|o| o.visible).map(|o| {
             let selected_face = self
                 .selected_face
@@ -247,7 +247,7 @@ impl Studio {
             .relative()
             .size_full()
             .overflow_hidden()
-            .bg(rgb(0x15181a))
+            .bg(rgb(t.well))
             .on_mouse_down(MouseButton::Left, cx.listener(Self::mouse_down))
             .on_mouse_down(MouseButton::Right, cx.listener(Self::mouse_down))
             .on_mouse_down(MouseButton::Middle, cx.listener(Self::mouse_down))
@@ -269,18 +269,17 @@ impl Studio {
                     .absolute()
                     .top(px(14.))
                     .left(px(16.))
-                    .when(
-                        self.settings.mode == forma_render::RenderMode::MaterialPreview
-                            && self.settings.preview.world_opacity > 0.,
-                        |d| d.px(px(9.)).py(px(7.)).rounded(px(6.)).bg(rgba(0x101315d9)),
-                    )
+                    .px(px(9.))
+                    .py(px(7.))
+                    .rounded(px(6.))
+                    .bg(rgb(t.panel))
                     .text_size(px(11.))
-                    .text_color(rgb(crate::ui::MUTED))
+                    .text_color(rgb(t.muted))
                     .child(view_label)
                     .child(
                         div()
                             .mt(px(4.))
-                            .text_color(rgb(crate::ui::TEXT))
+                            .text_color(rgb(t.text))
                             .child(selection_label),
                     ),
             );
@@ -296,9 +295,9 @@ impl Studio {
                     .text_center()
                     .text_size(px(12.))
                     .text_color(rgb(if self.render_error.is_some() {
-                        crate::ui::ALERT
+                        t.alert
                     } else {
-                        crate::ui::MUTED
+                        t.muted
                     }))
                     .child(
                         self.render_error
@@ -324,10 +323,10 @@ impl Studio {
                     .px(px(11.))
                     .py(px(7.))
                     .rounded(px(7.))
-                    .bg(rgb(crate::ui::ACTIVE))
+                    .bg(rgb(t.active))
                     .border_1()
-                    .border_color(rgb(crate::ui::ACCENT_LINE))
-                    .text_color(rgb(crate::ui::ACCENT))
+                    .border_color(rgb(t.accent_line))
+                    .text_color(rgb(t.accent))
                     .text_size(px(11.))
                     .child(text),
             );
@@ -375,6 +374,7 @@ impl Studio {
             || self.preview_open
             || self.help_open
             || self.palette_open
+            || self.theme_picker.is_some()
     }
 
     pub(crate) fn mouse_down(
@@ -383,6 +383,11 @@ impl Studio {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.theme_picker.is_some() {
+            self.cancel_theme(cx);
+            cx.stop_propagation();
+            return;
+        }
         if self.preview_open {
             self.preview_open = false;
             self.active_field = None;

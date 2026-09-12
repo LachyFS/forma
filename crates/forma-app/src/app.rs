@@ -1,6 +1,7 @@
 use crate::code_editor::{CodeEditor, EditorEvent};
 use crate::render_worker::{RenderWorker, Request};
 use crate::shading_pie::ShadingPie;
+use crate::theme::{Colors, Theme, ThemePicker};
 use crate::{command_modifier, platform_shortcut};
 use forma_core::{
     History, Material, MeshInstance, Object, Primitive, Scene, ShaderKind, TextureMapping,
@@ -80,6 +81,7 @@ pub enum Command {
     ApplyShader,
     CloseShader,
     TogglePalette,
+    ToggleTheme,
     ToggleHelp,
     TogglePreviewSettings,
     SetPreviewStudio(StudioLight),
@@ -113,6 +115,9 @@ pub struct Studio {
     pub status: String,
     pub project_name: String,
     pub dirty: bool,
+    pub(crate) theme: Theme,
+    pub(crate) theme_picker: Option<ThemePicker>,
+    pub(crate) theme_path: Option<PathBuf>,
     pub palette_open: bool,
     pub palette_query: String,
     pub palette_index: usize,
@@ -161,7 +166,19 @@ pub struct Studio {
 }
 
 impl Studio {
-    pub fn new(backend: Backend, window: &mut Window, cx: &mut Context<Self>) -> Self {
+    pub fn new(
+        backend: Backend,
+        theme_path: Option<PathBuf>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let (theme, theme_error) = match theme_path.as_deref().map(Theme::load).transpose() {
+            Ok(theme) => (theme.unwrap_or_default(), None),
+            Err(error) => (
+                Theme::default(),
+                Some(format!("Could not load color theme: {error}")),
+            ),
+        };
         let focus = cx.focus_handle();
         window.focus(&focus);
         let scene = Scene::default();
@@ -220,9 +237,12 @@ impl Studio {
             samples: 0,
             render_ms: 0.,
             device_name: "Starting GPU renderer…".into(),
-            status: "Ready · Select an object to begin".into(),
+            status: theme_error.unwrap_or_else(|| "Ready · Select an object to begin".into()),
             project_name: "Studio study".into(),
             dirty: false,
+            theme,
+            theme_picker: None,
+            theme_path,
             palette_open: false,
             palette_query: String::new(),
             palette_index: 0,
@@ -271,6 +291,37 @@ impl Studio {
         };
         studio.invalidate(false, cx);
         studio
+    }
+
+    pub(crate) fn theme_colors(&self) -> Colors {
+        self.theme_picker
+            .as_ref()
+            .map_or(self.theme, ThemePicker::preview)
+            .colors()
+    }
+
+    pub(crate) fn cancel_theme(&mut self, cx: &mut Context<Self>) {
+        self.theme_picker = None;
+        cx.notify();
+    }
+
+    pub(crate) fn apply_theme(&mut self, theme: Theme, cx: &mut Context<Self>) {
+        self.theme = theme;
+        self.theme_picker = None;
+        self.status = match self.theme_path.as_deref() {
+            Some(path) => match theme.save(path) {
+                Ok(()) => format!("Color theme · {}", theme.name()),
+                Err(error) => format!(
+                    "{} applied for this session · Could not save theme: {error}",
+                    theme.name()
+                ),
+            },
+            None => format!(
+                "{} applied for this session · No preferences directory available",
+                theme.name()
+            ),
+        };
+        cx.notify();
     }
 
     pub fn selected_object(&self) -> Option<MeshInstance<'_>> {
@@ -440,6 +491,9 @@ impl Studio {
         }
         window.focus(&self.focus);
         self.shading_pie = None;
+        if command != Command::ToggleTheme {
+            self.theme_picker = None;
+        }
         if !matches!(
             command,
             Command::TogglePreviewSettings
@@ -707,6 +761,14 @@ impl Studio {
                 if let Some(editor) = &self.shader_editor {
                     window.focus(&editor.read(cx).focus);
                 }
+            }
+            Command::ToggleTheme => {
+                self.theme_picker = if self.theme_picker.is_some() {
+                    None
+                } else {
+                    Some(ThemePicker::new(self.theme))
+                };
+                self.navigation = None;
             }
             Command::CloseShader => {
                 self.shader_request_id += 1;
@@ -1377,6 +1439,44 @@ impl Studio {
     ) {
         let key = event.keystroke.key.as_str();
         let mods = event.keystroke.modifiers;
+        if key == "t" && command_modifier(mods) && mods.shift {
+            if !event.is_held {
+                self.execute(Command::ToggleTheme, window, cx);
+            }
+            cx.stop_propagation();
+            return;
+        }
+        if let Some(picker) = &mut self.theme_picker {
+            match key {
+                "escape" => self.cancel_theme(cx),
+                "up" => picker.navigate(-1),
+                "down" => picker.navigate(1),
+                "enter" => {
+                    if let Some(theme) = picker.selected() {
+                        self.apply_theme(theme, cx);
+                    }
+                }
+                "backspace" => {
+                    picker.query.pop();
+                    picker.index = 0;
+                }
+                _ => {
+                    if !mods.platform
+                        && !mods.control
+                        && !mods.alt
+                        && let Some(chars) = &event.keystroke.key_char
+                        && !chars.chars().any(char::is_control)
+                        && picker.query.len() < 80
+                    {
+                        picker.query.push_str(chars);
+                        picker.index = 0;
+                    }
+                }
+            }
+            cx.notify();
+            cx.stop_propagation();
+            return;
+        }
         if self.shading_pie.is_some() {
             if key == "escape" {
                 self.close_shading_pie(cx);
@@ -1726,6 +1826,11 @@ pub(crate) fn palette_commands(query: &str) -> Vec<(&'static str, &'static str, 
         ("Toggle grid", "", Command::ToggleGrid),
         ("Keyboard shortcuts", "?", Command::ToggleHelp),
         (
+            "Preferences: Color Theme",
+            platform_shortcut("⇧ ⌘ T", "Ctrl+Shift+T"),
+            Command::ToggleTheme,
+        ),
+        (
             "Material preview lighting",
             "",
             Command::TogglePreviewSettings,
@@ -1783,7 +1888,7 @@ impl Studio {
         let language_message = mismatch.then(|| format!(
             "This renderer uses {}. Applying replaces the saved {} body; adapt any existing code before applying.",
             language.label(), material.custom_language.label()));
-        let editor = cx.new(|cx| CodeEditor::new(code, cx));
+        let editor = cx.new(|cx| CodeEditor::new(code, self.theme_colors(), cx));
         cx.subscribe_in(&editor, window, |s, _, event, w, cx| {
             s.execute(
                 match event {

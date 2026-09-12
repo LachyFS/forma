@@ -155,6 +155,29 @@ light transport remain Rendered features. Numerical tests cover
 the implemented estimators; they do not establish Cycles feature parity,
 reference-image parity, or performance at the maximum import limits.
 
+## Editor themes (Linux, September 2026)
+
+The integrated theme change passes all **107 workspace tests** using software
+Vulkan, plus formatting and strict Clippy across all targets. Four theme unit tests cover search/navigation, contrast,
+preference-file replacement and recovery, and platform configuration paths.
+
+The native smoke test passes on Linux/X11 with software Vulkan (llvmpipe). It
+checks theme shortcuts and command search, live preview, Escape and outside-click
+cancellation, empty search, commit/persistence, and all five presets. Scene data,
+selection, dirty state, undo/redo availability, render settings, samples, and the
+completed viewport image remain unchanged during appearance changes. Smoke
+preferences are isolated inside the output directory.
+
+Full-window X11 captures of the theme picker and light/dark presets were visually
+inspected, including all five choices at the 1000 × 650 minimum window size.
+The shader editor inherits the selected palette; Paper and Synthwave code-editor
+captures were also inspected. The combined smoke run exercises shader editing,
+compiler diagnostics, apply and undo using platform-appropriate shortcuts.
+Artifacts are in `artifacts/theme-smoke/`. Native theme interactions on macOS and
+Windows have not been run in this environment. The default GPU test run exited
+with SIGSEGV in the material renderer tests; the complete suite passed with
+`VK_DRIVER_FILES=/usr/share/vulkan/icd.d/lvp_icd.json`.
+
 ## Native editor
 
 `cargo test --locked --workspace` passes **71 tests**. The full workspace passes

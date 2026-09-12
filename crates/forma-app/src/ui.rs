@@ -2,37 +2,17 @@
 use crate::app::{Command, Field, Studio, Tool};
 use crate::platform_shortcut;
 use crate::shading_pie::{CARD_HALF_SIZE, CHOICES};
+use crate::theme::{Colors, Theme};
 use forma_core::{Primitive, ShaderKind, TextureMapping, TextureSlot};
 use forma_render::{RenderMode, StudioLight};
 use gpui::{prelude::*, *};
 
-// Neutral charcoal surfaces keep the scene's color distinct from editor chrome.
-const SHELL: u32 = 0x1d1e20;
-const PANEL: u32 = 0x292a2d;
-const CARD: u32 = 0x333437;
-const RAISED: u32 = 0x3c3e42;
-const INPUT: u32 = 0x46484c;
-const WELL: u32 = 0x222326;
-const LINE: u32 = 0x1c1d1f;
-const EDGE: u32 = 0x4b4d51;
-// Ink, primary to faintest.
-pub(crate) const TEXT: u32 = 0xe1e2e4;
-pub(crate) const MUTED: u32 = 0xa5a7ad;
-const FAINT: u32 = 0x7d8087;
-// Accent and state.
-pub(crate) const ACCENT: u32 = 0x96d5c2;
-pub(crate) const ACCENT_LINE: u32 = 0x597d71;
-pub(crate) const ACTIVE: u32 = 0x354e46;
-const ACTIVE_HOVER: u32 = 0x405f55;
-pub(crate) const ALERT: u32 = 0xd7a175;
 /// Fully transparent fill for the resting state of ghost controls.
 fn clear() -> Rgba {
     rgba(0x00000000)
 }
 /// Axis identity, shared with the viewport gizmo.
 pub(crate) const AXIS: [u32; 3] = [0xe77778, 0x83c799, 0x7b9ee8];
-/// The same identity dimmed for small field labels.
-const AXIS_INK: [u32; 3] = [0xe0a0a1, 0xa7cfb1, 0xa5bde9];
 
 #[derive(Clone, Copy)]
 enum PanelSection {
@@ -92,19 +72,20 @@ const PRESETS: [(u32, &str, [f32; 3]); 5] = [
     (0xf3e9c9, "Light", [0.9, 0.83, 0.66]),
 ];
 
-struct Tooltip(&'static str);
+struct Tooltip(&'static str, Colors);
 
 impl Render for Tooltip {
     fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        let t = self.1;
         div()
             .px(px(8.))
             .py(px(5.))
             .rounded(px(5.))
-            .bg(rgb(PANEL))
+            .bg(rgb(t.panel))
             .border_1()
-            .border_color(rgb(EDGE))
+            .border_color(rgb(t.edge))
             .shadow_md()
-            .text_color(rgb(TEXT))
+            .text_color(rgb(t.text))
             .text_size(px(11.))
             .child(self.0)
     }
@@ -164,6 +145,9 @@ fn command_hint(command: Command) -> &'static str {
         Command::TogglePalette => {
             platform_shortcut("Workspace commands · ⌘ K", "Workspace commands · Ctrl+K")
         }
+        Command::ToggleTheme => {
+            platform_shortcut("Color theme · ⇧ ⌘ T", "Color theme · Ctrl+Shift+T")
+        }
         Command::ToggleHelp => "Keyboard reference · ?",
         Command::TogglePreviewSettings => "Material preview lighting",
         Command::SetPreviewStudio(_) => "Use this studio environment for material preview",
@@ -180,75 +164,76 @@ fn row() -> Div {
 fn col() -> Div {
     div().flex().flex_col()
 }
-fn divider() -> Div {
-    div().w(px(1.)).h(px(16.)).flex_shrink_0().bg(rgb(EDGE))
+fn divider(t: Colors) -> Div {
+    div().w(px(1.)).h(px(16.)).flex_shrink_0().bg(rgb(t.edge))
 }
-fn key(text: &str) -> Div {
+fn key(t: Colors, text: &str) -> Div {
     div()
         .px(px(5.))
         .h(px(17.))
         .flex_shrink_0()
         .rounded(px(3.))
-        .bg(rgb(WELL))
+        .bg(rgb(t.well))
         .border_1()
-        .border_color(rgb(LINE))
+        .border_color(rgb(t.line))
         .text_size(px(10.))
-        .text_color(rgb(FAINT))
+        .text_color(rgb(t.faint))
         .flex()
         .items_center()
         .justify_center()
         .child(text.to_owned())
 }
 /// Quiet section label for popovers and editor headers.
-fn section(text: &str) -> Div {
+fn section(t: Colors, text: &str) -> Div {
     row()
         .h(px(24.))
         .text_size(px(10.))
         .font_weight(FontWeight::SEMIBOLD)
-        .text_color(rgb(MUTED))
+        .text_color(rgb(t.muted))
         .child(text.to_owned())
 }
-fn caption(text: impl Into<SharedString>) -> Div {
+fn caption(t: Colors, text: impl Into<SharedString>) -> Div {
     div()
         .text_size(px(10.))
-        .text_color(rgb(FAINT))
+        .text_color(rgb(t.faint))
         .child(text.into())
 }
 /// Inset track that groups mutually exclusive choices.
-fn segmented() -> Div {
+fn segmented(t: Colors) -> Div {
     row()
         .p(px(1.))
         .gap(px(1.))
         .rounded(px(4.))
-        .bg(rgb(WELL))
+        .bg(rgb(t.well))
         .border_1()
-        .border_color(rgb(LINE))
+        .border_color(rgb(t.line))
 }
 
 /// Each editor has a crisp boundary against the narrow workspace gutters.
-fn editor() -> Div {
+fn editor(t: Colors) -> Div {
     col()
         .min_w(px(0.))
         .min_h(px(0.))
         .rounded(px(5.))
-        .bg(rgb(PANEL))
+        .bg(rgb(t.panel))
         .border_1()
-        .border_color(rgb(LINE))
+        .border_color(rgb(t.line))
         .overflow_hidden()
 }
 
-fn editor_header() -> Div {
+fn editor_header(t: Colors) -> Div {
     row()
         .h(px(29.))
         .flex_shrink_0()
         .px(px(8.))
         .gap(px(7.))
-        .bg(rgb(PANEL))
+        .bg(rgb(t.panel))
         .border_b_1()
-        .border_color(rgb(LINE))
+        .border_color(rgb(t.line))
 }
 
 fn panel_card(
+    t: Colors,
     s: &Studio,
     panel: PanelSection,
     title: &'static str,
@@ -261,8 +246,8 @@ fn panel_card(
         .flex_shrink_0()
         .rounded(px(4.))
         .border_1()
-        .border_color(rgb(EDGE))
-        .bg(rgb(CARD))
+        .border_color(rgb(t.edge))
+        .bg(rgb(t.card))
         .overflow_hidden()
         .child(
             row()
@@ -272,19 +257,19 @@ fn panel_card(
                 .px(px(7.))
                 .gap(px(6.))
                 .cursor_pointer()
-                .hover(|d| d.bg(rgb(RAISED)))
+                .hover(move |d| d.bg(rgb(t.raised)))
                 .child(icon(
                     if open {
                         Icon::Chevron
                     } else {
                         Icon::ChevronRight
                     },
-                    MUTED,
+                    t.muted,
                     11.,
                 ))
                 .child(div().font_weight(FontWeight::MEDIUM).child(title))
                 .child(div().flex_1())
-                .child(caption(detail))
+                .child(caption(t, detail))
                 .on_click(cx.listener(move |s, _, _, cx| {
                     cx.stop_propagation();
                     s.panels.open[panel as usize] = !s.panels.open[panel as usize];
@@ -544,6 +529,7 @@ fn icon(kind: Icon, color: u32, side: f32) -> AnyElement {
 
 /// Clickable base: hint tooltip and command dispatch, without any styling.
 fn action(
+    t: Colors,
     id: impl Into<SharedString>,
     command: Command,
     cx: &mut Context<Studio>,
@@ -552,7 +538,7 @@ fn action(
         .id(ElementId::from(id.into()))
         .flex_shrink_0()
         .cursor_pointer()
-        .tooltip(move |_, cx| cx.new(|_| Tooltip(command_hint(command))).into())
+        .tooltip(move |_, cx| cx.new(|_| Tooltip(command_hint(command), t)).into())
         .on_click(cx.listener(move |s, _, window, cx| {
             cx.stop_propagation();
             s.execute(command, window, cx);
@@ -561,6 +547,7 @@ fn action(
 
 /// Labelled button. `active` gives it the accented on state.
 fn button(
+    t: Colors,
     id: impl Into<SharedString>,
     label: &str,
     glyph: Option<Icon>,
@@ -568,19 +555,19 @@ fn button(
     active: bool,
     cx: &mut Context<Studio>,
 ) -> Stateful<Div> {
-    let ink = if active { ACCENT } else { MUTED };
-    action(id, command, cx)
+    let ink = if active { t.accent } else { t.muted };
+    action(t, id, command, cx)
         .h(px(23.))
         .px(px(7.))
         .gap(px(5.))
         .rounded(px(3.))
         .text_color(rgb(ink))
-        .bg(if active { rgb(ACTIVE) } else { clear() })
+        .bg(if active { rgb(t.active) } else { clear() })
         .hover(move |s| {
             if active {
-                s.bg(rgb(ACTIVE_HOVER))
+                s.bg(rgb(t.active_hover))
             } else {
-                s.bg(rgb(RAISED)).text_color(rgb(TEXT))
+                s.bg(rgb(t.raised)).text_color(rgb(t.text))
             }
         })
         .when_some(glyph, |d, glyph| d.child(icon(glyph, ink, 13.)))
@@ -589,6 +576,7 @@ fn button(
 
 /// Square icon-only button, for rails and row affordances.
 fn icon_button(
+    t: Colors,
     id: impl Into<SharedString>,
     glyph: Icon,
     command: Command,
@@ -596,17 +584,17 @@ fn icon_button(
     side: f32,
     cx: &mut Context<Studio>,
 ) -> Stateful<Div> {
-    let ink = if active { ACCENT } else { MUTED };
-    action(id, command, cx)
+    let ink = if active { t.accent } else { t.muted };
+    action(t, id, command, cx)
         .size(px(side))
         .justify_center()
         .rounded(px(3.))
-        .bg(if active { rgb(ACTIVE) } else { clear() })
+        .bg(if active { rgb(t.active) } else { clear() })
         .hover(move |s| {
             if active {
-                s.bg(rgb(ACTIVE_HOVER))
+                s.bg(rgb(t.active_hover))
             } else {
-                s.bg(rgb(RAISED))
+                s.bg(rgb(t.raised))
             }
         })
         .child(icon(glyph, ink, (side * 0.55).round()))
@@ -614,27 +602,28 @@ fn icon_button(
 
 /// The single emphasised action in the window.
 fn primary(
+    t: Colors,
     id: impl Into<SharedString>,
     label: &str,
     glyph: Icon,
     command: Command,
     cx: &mut Context<Studio>,
 ) -> Stateful<Div> {
-    action(id, command, cx)
+    action(t, id, command, cx)
         .h(px(24.))
         .px(px(9.))
         .gap(px(6.))
         .rounded(px(4.))
-        .bg(rgb(ACTIVE))
+        .bg(rgb(t.active))
         .border_1()
-        .border_color(rgb(ACCENT_LINE))
-        .text_color(rgb(ACCENT))
-        .hover(|s| s.bg(rgb(ACTIVE_HOVER)))
-        .child(icon(glyph, ACCENT, 13.))
+        .border_color(rgb(t.accent_line))
+        .text_color(rgb(t.accent))
+        .hover(move |s| s.bg(rgb(t.active_hover)))
+        .child(icon(glyph, t.accent, 13.))
         .child(label.to_owned())
 }
 
-fn titlebar(s: &Studio, cx: &mut Context<Studio>) -> AnyElement {
+fn titlebar(t: Colors, s: &Studio, cx: &mut Context<Studio>) -> AnyElement {
     row()
         .h(px(36.))
         .flex_shrink_0()
@@ -642,22 +631,22 @@ fn titlebar(s: &Studio, cx: &mut Context<Studio>) -> AnyElement {
         .pr(px(8.))
         .gap(px(8.))
         .border_b_1()
-        .border_color(rgb(LINE))
-        .bg(rgb(PANEL))
+        .border_color(rgb(t.line))
+        .bg(rgb(t.panel))
         .child(
             row()
                 .gap(px(9.))
                 .flex_shrink_0()
-                .child(icon(Icon::Cube, ACCENT, 16.))
+                .child(icon(Icon::Cube, t.accent, 16.))
                 .child(
                     div()
                         .font_weight(FontWeight::BOLD)
                         .text_size(px(12.))
-                        .text_color(rgb(TEXT))
+                        .text_color(rgb(t.text))
                         .child("FORMA"),
                 ),
         )
-        .child(divider())
+        .child(divider(t))
         .child(
             row()
                 .gap(px(7.))
@@ -668,7 +657,7 @@ fn titlebar(s: &Studio, cx: &mut Context<Studio>) -> AnyElement {
                         .min_w(px(0.))
                         .overflow_hidden()
                         .text_ellipsis()
-                        .text_color(rgb(TEXT))
+                        .text_color(rgb(t.text))
                         .child(s.project_name.clone()),
                 )
                 .when(s.dirty, |d| {
@@ -677,13 +666,14 @@ fn titlebar(s: &Studio, cx: &mut Context<Studio>) -> AnyElement {
                             .size(px(5.))
                             .flex_shrink_0()
                             .rounded_full()
-                            .bg(rgb(ACCENT)),
+                            .bg(rgb(t.accent)),
                     )
                 }),
         )
         .child(div().flex_1())
         .child(
             button(
+                t,
                 "commands",
                 "Commands",
                 Some(Icon::Search),
@@ -691,10 +681,20 @@ fn titlebar(s: &Studio, cx: &mut Context<Studio>) -> AnyElement {
                 s.palette_open,
                 cx,
             )
-            .child(key(platform_shortcut("⌘K", "Ctrl+K"))),
+            .child(key(t, platform_shortcut("⌘K", "Ctrl+K"))),
         )
-        .child(divider())
         .child(button(
+            t,
+            "color-theme",
+            "Theme",
+            Some(Icon::Material),
+            Command::ToggleTheme,
+            s.theme_picker.is_some(),
+            cx,
+        ))
+        .child(divider(t))
+        .child(button(
+            t,
             "open",
             "Open",
             Some(Icon::Folder),
@@ -703,6 +703,7 @@ fn titlebar(s: &Studio, cx: &mut Context<Studio>) -> AnyElement {
             cx,
         ))
         .child(button(
+            t,
             "save",
             "Save",
             Some(Icon::Save),
@@ -711,6 +712,7 @@ fn titlebar(s: &Studio, cx: &mut Context<Studio>) -> AnyElement {
             cx,
         ))
         .child(primary(
+            t,
             "export-image",
             "Export image",
             Icon::Export,
@@ -722,6 +724,7 @@ fn titlebar(s: &Studio, cx: &mut Context<Studio>) -> AnyElement {
 
 /// Selection-mode segment. Only the inactive half dispatches the toggle.
 fn mode_segment(
+    t: Colors,
     id: &'static str,
     label: &'static str,
     active: bool,
@@ -733,14 +736,14 @@ fn mode_segment(
         .px(px(9.))
         .rounded(px(3.))
         .justify_center()
-        .text_color(rgb(if active { ACCENT } else { MUTED }))
-        .bg(if active { rgb(ACTIVE) } else { clear() })
+        .text_color(rgb(if active { t.accent } else { t.muted }))
+        .bg(if active { rgb(t.active) } else { clear() })
         .child(label)
         .when(!active, |d| {
             d.cursor_pointer()
-                .hover(|s| s.bg(rgb(RAISED)).text_color(rgb(TEXT)))
-                .tooltip(|_, cx| {
-                    cx.new(|_| Tooltip(command_hint(Command::ToggleEdit)))
+                .hover(move |s| s.bg(rgb(t.raised)).text_color(rgb(t.text)))
+                .tooltip(move |_, cx| {
+                    cx.new(|_| Tooltip(command_hint(Command::ToggleEdit), t))
                         .into()
                 })
                 .on_click(cx.listener(|s, _, window, cx| {
@@ -752,16 +755,16 @@ fn mode_segment(
 
 /// Everything that acts on the viewport: what you select, how it shades, where
 /// the camera looks.
-fn toolbar(s: &Studio, cx: &mut Context<Studio>) -> AnyElement {
-    editor_header()
+fn toolbar(t: Colors, s: &Studio, cx: &mut Context<Studio>) -> AnyElement {
+    editor_header(t)
         .h(px(32.))
-        .child(icon(Icon::Cube, MUTED, 14.))
+        .child(icon(Icon::Cube, t.muted, 14.))
         .child(
-            segmented()
-                .child(mode_segment("mode-object", "Object", !s.edit_mode, cx))
-                .child(mode_segment("mode-face", "Face", s.edit_mode, cx)),
+            segmented(t)
+                .child(mode_segment(t, "mode-object", "Object", !s.edit_mode, cx))
+                .child(mode_segment(t, "mode-face", "Face", s.edit_mode, cx)),
         )
-        .child(divider())
+        .child(divider(t))
         .child(
             row()
                 .id("add-menu")
@@ -770,12 +773,12 @@ fn toolbar(s: &Studio, cx: &mut Context<Studio>) -> AnyElement {
                 .gap(px(5.))
                 .rounded(px(3.))
                 .cursor_pointer()
-                .text_color(rgb(MUTED))
-                .hover(|d| d.bg(rgb(RAISED)).text_color(rgb(TEXT)))
-                .tooltip(|_, cx| cx.new(|_| Tooltip("Add geometry")).into())
-                .child(icon(Icon::Plus, MUTED, 12.))
+                .text_color(rgb(t.muted))
+                .hover(move |d| d.bg(rgb(t.raised)).text_color(rgb(t.text)))
+                .tooltip(move |_, cx| cx.new(|_| Tooltip("Add geometry", t)).into())
+                .child(icon(Icon::Plus, t.muted, 12.))
                 .child("Add")
-                .child(icon(Icon::Chevron, MUTED, 10.))
+                .child(icon(Icon::Chevron, t.muted, 10.))
                 .on_click(cx.listener(|s, _, w, cx| {
                     s.execute(Command::TogglePalette, w, cx);
                     s.palette_query = "Add ".into();
@@ -787,6 +790,7 @@ fn toolbar(s: &Studio, cx: &mut Context<Studio>) -> AnyElement {
             row()
                 .gap(px(1.))
                 .child(button(
+                    t,
                     "view-front",
                     "Front",
                     None,
@@ -795,6 +799,7 @@ fn toolbar(s: &Studio, cx: &mut Context<Studio>) -> AnyElement {
                     cx,
                 ))
                 .child(button(
+                    t,
                     "view-right",
                     "Right",
                     None,
@@ -802,8 +807,17 @@ fn toolbar(s: &Studio, cx: &mut Context<Studio>) -> AnyElement {
                     false,
                     cx,
                 ))
-                .child(button("view-top", "Top", None, Command::ViewTop, false, cx))
+                .child(button(
+                    t,
+                    "view-top",
+                    "Top",
+                    None,
+                    Command::ViewTop,
+                    false,
+                    cx,
+                ))
                 .child(icon_button(
+                    t,
                     "projection",
                     Icon::Cube,
                     Command::ToggleProjection,
@@ -812,12 +826,12 @@ fn toolbar(s: &Studio, cx: &mut Context<Studio>) -> AnyElement {
                     cx,
                 )),
         )
-        .child(divider())
-        .child(shading_controls(s, cx))
+        .child(divider(t))
+        .child(shading_controls(t, s, cx))
         .into_any_element()
 }
 
-fn outliner(s: &Studio, cx: &mut Context<Studio>) -> AnyElement {
+fn outliner(t: Colors, s: &Studio, cx: &mut Context<Studio>) -> AnyElement {
     let objects =
         s.scene
             .objects
@@ -826,7 +840,7 @@ fn outliner(s: &Studio, cx: &mut Context<Studio>) -> AnyElement {
             .map(|(index, object)| {
                 let id = object.id;
                 let selected = s.selected == Some(id);
-                let ink = if !object.visible { FAINT } else { TEXT };
+                let ink = if !object.visible { t.faint } else { t.text };
                 row()
                     .id(SharedString::from(format!("object-{id}")))
                     .h(px(22.))
@@ -834,16 +848,16 @@ fn outliner(s: &Studio, cx: &mut Context<Studio>) -> AnyElement {
                     .pr(px(5.))
                     .gap(px(6.))
                     .bg(rgb(if selected {
-                        ACTIVE
+                        t.active
                     } else if index % 2 == 0 {
-                        PANEL
+                        t.row_alt
                     } else {
-                        0x2c2d30
+                        t.panel
                     }))
                     .cursor_pointer()
-                    .hover(move |d| d.bg(rgb(if selected { ACTIVE_HOVER } else { RAISED })))
+                    .hover(move |d| d.bg(rgb(if selected { t.active_hover } else { t.raised })))
                     .child(div().w(px(2.)).h_full().bg(if selected {
-                        rgb(ACCENT)
+                        rgb(t.accent)
                     } else {
                         clear()
                     }))
@@ -853,11 +867,11 @@ fn outliner(s: &Studio, cx: &mut Context<Studio>) -> AnyElement {
                             .h_full()
                             .flex_shrink_0()
                             .border_r_1()
-                            .border_color(rgb(EDGE)),
+                            .border_color(rgb(t.edge)),
                     )
                     .child(icon(
                         Icon::Cube,
-                        if object.visible { ALERT } else { FAINT },
+                        if object.visible { t.alert } else { t.faint },
                         12.,
                     ))
                     .child(
@@ -870,6 +884,7 @@ fn outliner(s: &Studio, cx: &mut Context<Studio>) -> AnyElement {
                             .child(object.name.clone()),
                     )
                     .child(icon_button(
+                        t,
                         format!("visibility-{id}"),
                         if object.visible {
                             Icon::Eye
@@ -884,20 +899,21 @@ fn outliner(s: &Studio, cx: &mut Context<Studio>) -> AnyElement {
                     .on_click(cx.listener(move |s, _, w, cx| s.execute(Command::Select(id), w, cx)))
             })
             .collect::<Vec<_>>();
-    editor()
+    editor(t)
         .h(px(190.))
         .flex_shrink_0()
         .child(
-            editor_header()
-                .child(icon(Icon::Folder, MUTED, 13.))
+            editor_header(t)
+                .child(icon(Icon::Folder, t.muted, 13.))
                 .child(
                     div()
                         .font_weight(FontWeight::MEDIUM)
                         .child("Scene Collection"),
                 )
                 .child(div().flex_1())
-                .child(caption(s.scene.objects.len().to_string()))
+                .child(caption(t, s.scene.objects.len().to_string()))
                 .child(icon_button(
+                    t,
                     "scene-commands",
                     Icon::Search,
                     Command::TogglePalette,
@@ -920,17 +936,17 @@ fn outliner(s: &Studio, cx: &mut Context<Studio>) -> AnyElement {
                         .px(px(8.))
                         .gap(px(7.))
                         .cursor_pointer()
-                        .hover(|d| d.bg(rgb(RAISED)))
+                        .hover(move |d| d.bg(rgb(t.raised)))
                         .child(icon(
                             if s.panels.collection_open {
                                 Icon::Chevron
                             } else {
                                 Icon::ChevronRight
                             },
-                            MUTED,
+                            t.muted,
                             11.,
                         ))
-                        .child(icon(Icon::Folder, MUTED, 12.))
+                        .child(icon(Icon::Folder, t.muted, 12.))
                         .child("Collection")
                         .on_click(cx.listener(|s, _, _, cx| {
                             s.panels.collection_open = !s.panels.collection_open;
@@ -958,7 +974,7 @@ fn sources() -> [(Icon, &'static str, Command); 6] {
     ]
 }
 
-fn toolrail(s: &Studio, cx: &mut Context<Studio>) -> AnyElement {
+fn toolrail(t: Colors, s: &Studio, cx: &mut Context<Studio>) -> AnyElement {
     col()
         .w(px(36.))
         .h_full()
@@ -966,9 +982,9 @@ fn toolrail(s: &Studio, cx: &mut Context<Studio>) -> AnyElement {
         .items_center()
         .py(px(5.))
         .gap(px(2.))
-        .bg(rgb(PANEL))
+        .bg(rgb(t.panel))
         .border_r_1()
-        .border_color(rgb(LINE))
+        .border_color(rgb(t.line))
         .children(
             [
                 (Tool::Select, Icon::Select),
@@ -980,6 +996,7 @@ fn toolrail(s: &Studio, cx: &mut Context<Studio>) -> AnyElement {
             .enumerate()
             .map(|(i, (tool, glyph))| {
                 icon_button(
+                    t,
                     format!("tool-{i}"),
                     glyph,
                     Command::SetTool(tool),
@@ -989,8 +1006,9 @@ fn toolrail(s: &Studio, cx: &mut Context<Studio>) -> AnyElement {
                 )
             }),
         )
-        .child(div().w(px(16.)).h(px(1.)).my(px(5.)).bg(rgb(LINE)))
+        .child(div().w(px(16.)).h(px(1.)).my(px(5.)).bg(rgb(t.line)))
         .child(icon_button(
+            t,
             "rail-frame",
             Icon::Frame,
             Command::FrameSelected,
@@ -999,6 +1017,7 @@ fn toolrail(s: &Studio, cx: &mut Context<Studio>) -> AnyElement {
             cx,
         ))
         .child(icon_button(
+            t,
             "rail-grid",
             Icon::Grid,
             Command::ToggleGrid,
@@ -1009,18 +1028,23 @@ fn toolrail(s: &Studio, cx: &mut Context<Studio>) -> AnyElement {
         .into_any_element()
 }
 
-fn viewport_panel(s: &Studio, viewport: AnyElement, cx: &mut Context<Studio>) -> AnyElement {
-    editor()
+fn viewport_panel(
+    t: Colors,
+    s: &Studio,
+    viewport: AnyElement,
+    cx: &mut Context<Studio>,
+) -> AnyElement {
+    editor(t)
         .flex_1()
         .min_w(px(220.))
         .h_full()
-        .child(toolbar(s, cx))
+        .child(toolbar(t, s, cx))
         .child(
             row()
                 .flex_1()
                 .min_h(px(0.))
                 .overflow_hidden()
-                .child(toolrail(s, cx))
+                .child(toolrail(t, s, cx))
                 .child(
                     div()
                         .relative()
@@ -1035,8 +1059,8 @@ fn viewport_panel(s: &Studio, viewport: AnyElement, cx: &mut Context<Studio>) ->
 }
 
 /// Shading lives in the viewport header, alongside its other display controls.
-fn shading_controls(s: &Studio, cx: &mut Context<Studio>) -> AnyElement {
-    segmented()
+fn shading_controls(t: Colors, s: &Studio, cx: &mut Context<Studio>) -> AnyElement {
+    segmented(t)
         .children(
             [
                 (RenderMode::Wireframe, Icon::Wire),
@@ -1048,6 +1072,7 @@ fn shading_controls(s: &Studio, cx: &mut Context<Studio>) -> AnyElement {
             .enumerate()
             .map(|(i, (mode, glyph))| {
                 icon_button(
+                    t,
                     format!("render-mode-{i}"),
                     glyph,
                     Command::SetMode(mode),
@@ -1059,6 +1084,7 @@ fn shading_controls(s: &Studio, cx: &mut Context<Studio>) -> AnyElement {
         )
         .when(s.settings.mode == RenderMode::MaterialPreview, |d| {
             d.child(icon_button(
+                t,
                 "shading-lighting",
                 Icon::Chevron,
                 Command::TogglePreviewSettings,
@@ -1071,17 +1097,24 @@ fn shading_controls(s: &Studio, cx: &mut Context<Studio>) -> AnyElement {
 }
 
 /// Axis tint for a single-letter field label.
-fn axis_ink(label: &str) -> u32 {
+fn axis_ink(t: Colors, label: &str) -> u32 {
     match label {
-        "X" | "R" => AXIS_INK[0],
-        "Y" | "G" => AXIS_INK[1],
-        "Z" | "B" => AXIS_INK[2],
-        _ => MUTED,
+        "X" | "R" => t.axis_ink[0],
+        "Y" | "G" => t.axis_ink[1],
+        "Z" | "B" => t.axis_ink[2],
+        _ => t.muted,
     }
 }
 
 /// Editable numeric well. Callers give it its width.
-fn field(s: &Studio, id: &str, label: &str, f: Field, cx: &mut Context<Studio>) -> Stateful<Div> {
+fn field(
+    t: Colors,
+    s: &Studio,
+    id: &str,
+    label: &str,
+    f: Field,
+    cx: &mut Context<Studio>,
+) -> Stateful<Div> {
     let active = s.field_is_active(f);
     let value = match &s.active_field {
         Some((field, text)) if *field == f => format!("{text}│"),
@@ -1094,22 +1127,22 @@ fn field(s: &Studio, id: &str, label: &str, f: Field, cx: &mut Context<Studio>) 
         .px(px(7.))
         .gap(px(5.))
         .rounded(px(3.))
-        .bg(rgb(if active { WELL } else { INPUT }))
+        .bg(rgb(if active { t.well } else { t.input }))
         .border_1()
-        .border_color(if active { rgb(ACCENT) } else { clear() })
+        .border_color(if active { rgb(t.accent) } else { clear() })
         .cursor_pointer()
         .hover(move |d| {
             if active {
-                d.border_color(rgb(ACCENT))
+                d.border_color(rgb(t.accent))
             } else {
-                d.bg(rgb(0x53565b))
+                d.bg(rgb(t.input_hover))
             }
         })
         .when(!label.is_empty(), |d| {
             d.child(
                 div()
                     .text_size(px(10.))
-                    .text_color(rgb(axis_ink(label)))
+                    .text_color(rgb(axis_ink(t, label)))
                     .child(label.to_owned()),
             )
         })
@@ -1119,7 +1152,7 @@ fn field(s: &Studio, id: &str, label: &str, f: Field, cx: &mut Context<Studio>) 
                 .min_w(px(0.))
                 .overflow_hidden()
                 .text_ellipsis()
-                .text_color(rgb(if active { ACCENT } else { TEXT }))
+                .text_color(rgb(if active { t.accent } else { t.text }))
                 .text_right()
                 .when(!label.is_empty(), |d| d.text_center())
                 .when(f == Field::Name, |d| d.text_left())
@@ -1132,11 +1165,18 @@ fn field(s: &Studio, id: &str, label: &str, f: Field, cx: &mut Context<Studio>) 
 }
 
 /// Label on the left, editable value on the right.
-fn property(s: &Studio, id: &str, label: &str, f: Field, cx: &mut Context<Studio>) -> AnyElement {
+fn property(
+    t: Colors,
+    s: &Studio,
+    id: &str,
+    label: &str,
+    f: Field,
+    cx: &mut Context<Studio>,
+) -> AnyElement {
     row()
         .h(px(23.))
         .gap(px(8.))
-        .text_color(rgb(MUTED))
+        .text_color(rgb(t.muted))
         .child(
             div()
                 .w(px(92.))
@@ -1144,12 +1184,13 @@ fn property(s: &Studio, id: &str, label: &str, f: Field, cx: &mut Context<Studio
                 .text_right()
                 .child(label.to_owned()),
         )
-        .child(field(s, id, "", f, cx).flex_1().min_w(px(0.)))
+        .child(field(t, s, id, "", f, cx).flex_1().min_w(px(0.)))
         .into_any_element()
 }
 
 /// Blender-style vector stack: one group label and contiguous axis controls.
 fn axis_row(
+    t: Colors,
     s: &Studio,
     label: &str,
     id: &str,
@@ -1166,7 +1207,7 @@ fn axis_row(
                 .flex_shrink_0()
                 .pt(px(3.))
                 .text_right()
-                .text_color(rgb(MUTED))
+                .text_color(rgb(t.muted))
                 .child(label.to_owned()),
         )
         .child(
@@ -1177,9 +1218,16 @@ fn axis_row(
                 .rounded(px(3.))
                 .overflow_hidden()
                 .children((0..3).map(|axis| {
-                    field(s, &format!("{id}-{axis}"), axes[axis], field_of(axis), cx)
-                        .w_full()
-                        .rounded(px(0.))
+                    field(
+                        t,
+                        s,
+                        &format!("{id}-{axis}"),
+                        axes[axis],
+                        field_of(axis),
+                        cx,
+                    )
+                    .w_full()
+                    .rounded(px(0.))
                 })),
         )
         .into_any_element()
@@ -1211,7 +1259,7 @@ fn preview_light_name(s: &Studio) -> String {
 }
 
 /// Sampling and lighting controls for the modes that have them.
-fn render_settings(s: &Studio, cx: &mut Context<Studio>) -> AnyElement {
+fn render_settings(t: Colors, s: &Studio, cx: &mut Context<Studio>) -> AnyElement {
     let mode = s.settings.mode;
     let preview = mode == RenderMode::MaterialPreview;
     let progressive = mode.progressive();
@@ -1227,11 +1275,12 @@ fn render_settings(s: &Studio, cx: &mut Context<Studio>) -> AnyElement {
                             .w(px(92.))
                             .flex_shrink_0()
                             .text_right()
-                            .text_color(rgb(MUTED))
+                            .text_color(rgb(t.muted))
                             .child("Lighting"),
                     )
                     .child(
                         action(
+                            t,
                             "inspector-preview-settings",
                             Command::TogglePreviewSettings,
                             cx,
@@ -1242,10 +1291,10 @@ fn render_settings(s: &Studio, cx: &mut Context<Studio>) -> AnyElement {
                         .px(px(7.))
                         .gap(px(5.))
                         .rounded(px(3.))
-                        .bg(rgb(WELL))
+                        .bg(rgb(t.well))
                         .border_1()
-                        .border_color(rgb(EDGE))
-                        .hover(|d| d.bg(rgb(RAISED)))
+                        .border_color(rgb(t.edge))
+                        .hover(move |d| d.bg(rgb(t.raised)))
                         .child(
                             div()
                                 .flex_1()
@@ -1254,19 +1303,27 @@ fn render_settings(s: &Studio, cx: &mut Context<Studio>) -> AnyElement {
                                 .text_ellipsis()
                                 .child(preview_light_name(s)),
                         )
-                        .child(icon(Icon::Chevron, MUTED, 10.)),
+                        .child(icon(Icon::Chevron, t.muted, 10.)),
                     ),
             )
         })
         .when(progressive, |d| {
-            d.child(property(s, "samples", "Max samples", Field::Samples, cx))
-                .child(property(s, "bounces", "Light bounces", Field::Bounces, cx))
+            d.child(property(t, s, "samples", "Max samples", Field::Samples, cx))
+                .child(property(
+                    t,
+                    s,
+                    "bounces",
+                    "Light bounces",
+                    Field::Bounces,
+                    cx,
+                ))
         })
-        .child(property(s, "exposure", "Exposure", Field::Exposure, cx))
+        .child(property(t, s, "exposure", "Exposure", Field::Exposure, cx))
         .when(
             progressive || (preview && s.settings.preview.use_scene_world),
             |d| {
                 d.child(property(
+                    t,
                     s,
                     "world-strength",
                     "World strength",
@@ -1280,18 +1337,18 @@ fn render_settings(s: &Studio, cx: &mut Context<Studio>) -> AnyElement {
                 row()
                     .mt(px(6.))
                     .justify_between()
-                    .child(caption("Samples"))
-                    .child(caption(format!(
-                        "{} / {}",
-                        s.samples, s.settings.max_samples
-                    ))),
+                    .child(caption(t, "Samples"))
+                    .child(caption(
+                        t,
+                        format!("{} / {}", s.samples, s.settings.max_samples),
+                    )),
             )
             .child(
                 div()
                     .h(px(3.))
                     .mt(px(4.))
                     .rounded_full()
-                    .bg(rgb(WELL))
+                    .bg(rgb(t.well))
                     .child(
                         div()
                             .h_full()
@@ -1300,11 +1357,12 @@ fn render_settings(s: &Studio, cx: &mut Context<Studio>) -> AnyElement {
                                 (s.samples as f32 / s.settings.max_samples.max(1) as f32)
                                     .clamp(0., 1.),
                             ))
-                            .bg(rgb(ACCENT)),
+                            .bg(rgb(t.accent)),
                     ),
             )
         });
     panel_card(
+        t,
         s,
         PanelSection::Render,
         if preview {
@@ -1323,13 +1381,14 @@ fn render_settings(s: &Studio, cx: &mut Context<Studio>) -> AnyElement {
     .into_any_element()
 }
 
-fn geometry_sources(cx: &mut Context<Studio>) -> Div {
+fn geometry_sources(t: Colors, cx: &mut Context<Studio>) -> Div {
     col()
         .gap(px(3.))
         .children(sources().chunks(2).enumerate().map(|(r, pair)| {
             row().gap(px(3.)).children(pair.iter().enumerate().map(
                 |(c, (glyph, label, command))| {
                     button(
+                        t,
                         format!("add-{r}-{c}"),
                         label,
                         Some(*glyph),
@@ -1339,13 +1398,13 @@ fn geometry_sources(cx: &mut Context<Studio>) -> Div {
                     )
                     .flex_1()
                     .min_w(px(0.))
-                    .bg(rgb(RAISED))
+                    .bg(rgb(t.raised))
                 },
             ))
         }))
 }
 
-fn inspector(s: &Studio, cx: &mut Context<Studio>) -> AnyElement {
+fn inspector(t: Colors, s: &Studio, cx: &mut Context<Studio>) -> AnyElement {
     let object = s.selected_object();
     let mut contents = col().flex_shrink_0().p(px(5.)).gap(px(4.));
     if let Some(object) = object {
@@ -1353,6 +1412,7 @@ fn inspector(s: &Studio, cx: &mut Context<Studio>) -> AnyElement {
         let transform = col()
             .gap(px(7.))
             .child(axis_row(
+                t,
                 s,
                 "Location",
                 "transform-0",
@@ -1361,6 +1421,7 @@ fn inspector(s: &Studio, cx: &mut Context<Studio>) -> AnyElement {
                 cx,
             ))
             .child(axis_row(
+                t,
                 s,
                 "Rotation · °",
                 "transform-1",
@@ -1369,6 +1430,7 @@ fn inspector(s: &Studio, cx: &mut Context<Studio>) -> AnyElement {
                 cx,
             ))
             .child(axis_row(
+                t,
                 s,
                 "Scale",
                 "transform-2",
@@ -1377,6 +1439,7 @@ fn inspector(s: &Studio, cx: &mut Context<Studio>) -> AnyElement {
                 cx,
             ));
         contents = contents.child(panel_card(
+            t,
             s,
             PanelSection::Transform,
             "Transform",
@@ -1395,6 +1458,7 @@ fn inspector(s: &Studio, cx: &mut Context<Studio>) -> AnyElement {
                             let applied =
                                 (0..3).all(|axis| (base[axis] - color[axis]).abs() < 0.002);
                             action(
+                                t,
                                 format!("preset-{index}"),
                                 Command::MaterialPreset(index),
                                 cx,
@@ -1406,10 +1470,12 @@ fn inspector(s: &Studio, cx: &mut Context<Studio>) -> AnyElement {
                             .gap(px(4.))
                             .rounded(px(3.))
                             .border_1()
-                            .border_color(if applied { rgb(ACCENT_LINE) } else { clear() })
-                            .text_color(rgb(if applied { ACCENT } else { MUTED }))
-                            .bg(rgb(if applied { ACTIVE } else { PANEL }))
-                            .hover(move |d| d.bg(rgb(if applied { ACTIVE_HOVER } else { RAISED })))
+                            .border_color(if applied { rgb(t.accent_line) } else { clear() })
+                            .text_color(rgb(if applied { t.accent } else { t.muted }))
+                            .bg(rgb(if applied { t.active } else { t.panel }))
+                            .hover(move |d| {
+                                d.bg(rgb(if applied { t.active_hover } else { t.raised }))
+                            })
                             .child(
                                 div()
                                     .w(px(25.))
@@ -1417,7 +1483,7 @@ fn inspector(s: &Studio, cx: &mut Context<Studio>) -> AnyElement {
                                     .rounded(px(3.))
                                     .bg(rgb(swatch))
                                     .border_1()
-                                    .border_color(rgb(if applied { ACCENT } else { EDGE })),
+                                    .border_color(rgb(if applied { t.accent } else { t.edge })),
                             )
                             .child(div().text_size(px(9.)).child(name))
                         },
@@ -1432,6 +1498,7 @@ fn inspector(s: &Studio, cx: &mut Context<Studio>) -> AnyElement {
                                 .into_iter()
                                 .map(|kind| {
                                     button(
+                                        t,
                                         format!("shader-{kind:?}"),
                                         kind.label(),
                                         None,
@@ -1446,6 +1513,7 @@ fn inspector(s: &Studio, cx: &mut Context<Studio>) -> AnyElement {
                     )
                     .when(object.material.shader == ShaderKind::Custom, |d| {
                         d.child(button(
+                            t,
                             "edit-custom-shader",
                             "Edit shader code…",
                             Some(Icon::Material),
@@ -1457,9 +1525,9 @@ fn inspector(s: &Studio, cx: &mut Context<Studio>) -> AnyElement {
                     .child(
                         row()
                             .gap(px(6.))
-                            .child(div().text_color(rgb(MUTED)).child("Base color"))
+                            .child(div().text_color(rgb(t.muted)).child("Base color"))
                             .child(div().flex_1())
-                            .child(caption("sRGB"))
+                            .child(caption(t, "sRGB"))
                             .child(
                                 div()
                                     .w(px(24.))
@@ -1467,7 +1535,7 @@ fn inspector(s: &Studio, cx: &mut Context<Studio>) -> AnyElement {
                                     .rounded(px(2.))
                                     .bg(rgb(swatch_color(base)))
                                     .border_1()
-                                    .border_color(rgb(EDGE)),
+                                    .border_color(rgb(t.edge)),
                             ),
                     )
                     .child(
@@ -1477,6 +1545,7 @@ fn inspector(s: &Studio, cx: &mut Context<Studio>) -> AnyElement {
                             .overflow_hidden()
                             .children((0..3).map(|axis| {
                                 field(
+                                    t,
                                     s,
                                     &format!("base-color-{axis}"),
                                     ["R", "G", "B"][axis],
@@ -1492,15 +1561,23 @@ fn inspector(s: &Studio, cx: &mut Context<Studio>) -> AnyElement {
             .child(
                 col()
                     .gap(px(1.))
-                    .child(property(s, "roughness", "Roughness", Field::Roughness, cx))
+                    .child(property(
+                        t,
+                        s,
+                        "roughness",
+                        "Roughness",
+                        Field::Roughness,
+                        cx,
+                    ))
                     .when(object.material.shader != ShaderKind::Glass, |d| {
-                        d.child(property(s, "metallic", "Metallic", Field::Metallic, cx))
+                        d.child(property(t, s, "metallic", "Metallic", Field::Metallic, cx))
                     })
-                    .child(property(s, "ior", "IOR", Field::Ior, cx))
-                    .child(property(s, "emission", "Emission", Field::Emission, cx)),
+                    .child(property(t, s, "ior", "IOR", Field::Ior, cx))
+                    .child(property(t, s, "emission", "Emission", Field::Emission, cx)),
             )
-            .child(texture_inspector(s, object.material, cx));
+            .child(texture_inspector(t, s, object.material, cx));
         contents = contents.child(panel_card(
+            t,
             s,
             PanelSection::Surface,
             "Surface",
@@ -1525,8 +1602,8 @@ fn inspector(s: &Studio, cx: &mut Context<Studio>) -> AnyElement {
                             .h(px(25.))
                             .gap(px(6.))
                             .rounded(px(3.))
-                            .bg(rgb(PANEL))
-                            .child(caption(label))
+                            .bg(rgb(t.panel))
+                            .child(caption(t, label))
                             .child(div().flex_1())
                             .child(count.to_string())
                     }),
@@ -1537,6 +1614,7 @@ fn inspector(s: &Studio, cx: &mut Context<Studio>) -> AnyElement {
                     .gap(px(4.))
                     .child(
                         button(
+                            t,
                             "subdivide",
                             "Subdivide",
                             Some(Icon::Grid),
@@ -1546,10 +1624,11 @@ fn inspector(s: &Studio, cx: &mut Context<Studio>) -> AnyElement {
                         )
                         .flex_1()
                         .justify_center()
-                        .bg(rgb(RAISED)),
+                        .bg(rgb(t.raised)),
                     )
                     .child(
                         button(
+                            t,
                             "extrude",
                             "Extrude",
                             Some(Icon::Export),
@@ -1559,10 +1638,11 @@ fn inspector(s: &Studio, cx: &mut Context<Studio>) -> AnyElement {
                         )
                         .flex_1()
                         .justify_center()
-                        .bg(rgb(RAISED)),
+                        .bg(rgb(t.raised)),
                     ),
             );
         contents = contents.child(panel_card(
+            t,
             s,
             PanelSection::Geometry,
             "Geometry",
@@ -1572,18 +1652,19 @@ fn inspector(s: &Studio, cx: &mut Context<Studio>) -> AnyElement {
         ));
     } else {
         contents = contents.child(
-            col().p(px(14.)).gap(px(8.)).rounded(px(4.)).border_1().border_color(rgb(EDGE))
-                .bg(rgb(CARD)).child(icon(Icon::Select, MUTED, 18.))
+            col().p(px(14.)).gap(px(8.)).rounded(px(4.)).border_1().border_color(rgb(t.edge))
+                .bg(rgb(t.card)).child(icon(Icon::Select, t.muted, 18.))
                 .child("Nothing selected")
-                .child(div().text_size(px(10.)).line_height(px(15.)).text_color(rgb(MUTED))
+                .child(div().text_size(px(10.)).line_height(px(15.)).text_color(rgb(t.muted))
                     .child("Select an object in the viewport or Collection to edit its properties.")),
         );
     }
     if s.settings.mode == RenderMode::MaterialPreview || s.settings.mode.progressive() {
-        contents = contents.child(render_settings(s, cx));
+        contents = contents.child(render_settings(t, s, cx));
     }
-    let sources = geometry_sources(cx);
+    let sources = geometry_sources(t, cx);
     contents = contents.child(panel_card(
+        t,
         s,
         PanelSection::AddGeometry,
         "Add Geometry",
@@ -1591,14 +1672,14 @@ fn inspector(s: &Studio, cx: &mut Context<Studio>) -> AnyElement {
         sources,
         cx,
     ));
-    editor()
+    editor(t)
         .flex_1()
         .child(
-            editor_header()
-                .child(icon(Icon::Scale, MUTED, 13.))
+            editor_header(t)
+                .child(icon(Icon::Scale, t.muted, 13.))
                 .child(div().font_weight(FontWeight::MEDIUM).child("Properties"))
                 .child(div().flex_1())
-                .child(caption(if s.edit_mode { "Face" } else { "Object" })),
+                .child(caption(t, if s.edit_mode { "Face" } else { "Object" })),
         )
         .child(
             row()
@@ -1606,25 +1687,26 @@ fn inspector(s: &Studio, cx: &mut Context<Studio>) -> AnyElement {
                 .flex_shrink_0()
                 .px(px(8.))
                 .gap(px(7.))
-                .child(icon(Icon::Cube, ALERT, 13.))
+                .child(icon(Icon::Cube, t.alert, 13.))
                 .child(if object.is_some() {
-                    field(s, "object-name", "", Field::Name, cx)
+                    field(t, s, "object-name", "", Field::Name, cx)
                         .flex_1()
                         .min_w(px(0.))
-                        .bg(rgb(WELL))
+                        .bg(rgb(t.well))
                         .border_1()
                         .border_color(rgb(if s.field_is_active(Field::Name) {
-                            ACCENT
+                            t.accent
                         } else {
-                            EDGE
+                            t.edge
                         }))
-                        .tooltip(|_, cx| {
-                            cx.new(|_| Tooltip("Rename object · Enter to apply")).into()
+                        .tooltip(move |_, cx| {
+                            cx.new(|_| Tooltip("Rename object · Enter to apply", t))
+                                .into()
                         })
                         .into_any_element()
                 } else {
                     div()
-                        .text_color(rgb(MUTED))
+                        .text_color(rgb(t.muted))
                         .child("Scene")
                         .into_any_element()
                 }),
@@ -1640,7 +1722,7 @@ fn inspector(s: &Studio, cx: &mut Context<Studio>) -> AnyElement {
         .into_any_element()
 }
 
-fn footer(s: &Studio, cx: &mut Context<Studio>) -> AnyElement {
+fn footer(t: Colors, s: &Studio, cx: &mut Context<Studio>) -> AnyElement {
     let face = s.edit_mode.then(|| {
         s.selected_face
             .map(|face| format!("Face {}", face + 1))
@@ -1651,16 +1733,16 @@ fn footer(s: &Studio, cx: &mut Context<Studio>) -> AnyElement {
         .flex_shrink_0()
         .px(px(8.))
         .gap(px(10.))
-        .bg(rgb(PANEL))
+        .bg(rgb(t.panel))
         .border_t_1()
-        .border_color(rgb(LINE))
+        .border_color(rgb(t.line))
         .text_size(px(10.))
-        .text_color(rgb(FAINT))
+        .text_color(rgb(t.faint))
         .child(div().size(px(5.)).flex_shrink_0().rounded_full().bg(rgb(
             if s.render_error.is_some() {
-                ALERT
+                t.alert
             } else {
-                ACCENT
+                t.accent
             },
         )))
         .child(
@@ -1672,17 +1754,18 @@ fn footer(s: &Studio, cx: &mut Context<Studio>) -> AnyElement {
                 .child(s.status.clone()),
         )
         .when_some(face, |d, face| {
-            d.child(div().text_color(rgb(MUTED)).child(face))
-                .child(divider().h(px(12.)))
+            d.child(div().text_color(rgb(t.muted)).child(face))
+                .child(divider(t).h(px(12.)))
         })
         .child(
             div()
-                .text_color(rgb(MUTED))
+                .text_color(rgb(t.muted))
                 .child(format!("{:.1} ms", s.render_ms)),
         )
-        .child(divider().h(px(12.)))
+        .child(divider(t).h(px(12.)))
         .child(s.device_name.clone())
         .child(icon_button(
+            t,
             "footer-help",
             Icon::Help,
             Command::ToggleHelp,
@@ -1773,6 +1856,7 @@ fn studio_swatch(studio: StudioLight) -> AnyElement {
 }
 
 fn preview_toggle(
+    t: Colors,
     id: &'static str,
     label: &'static str,
     detail: &'static str,
@@ -1780,15 +1864,15 @@ fn preview_toggle(
     command: Command,
     cx: &mut Context<Studio>,
 ) -> AnyElement {
-    action(id, command, cx)
+    action(t, id, command, cx)
         .h(px(42.))
         .w_full()
         .justify_between()
         .child(
             col()
                 .gap(px(3.))
-                .child(div().text_color(rgb(TEXT)).child(label))
-                .child(caption(detail)),
+                .child(div().text_color(rgb(t.text)).child(label))
+                .child(caption(t, detail)),
         )
         .child(
             row()
@@ -1797,20 +1881,21 @@ fn preview_toggle(
                 .px(px(3.))
                 .flex_shrink_0()
                 .rounded_full()
-                .bg(rgb(if active { ACTIVE } else { WELL }))
+                .bg(rgb(if active { t.active } else { t.well }))
                 .border_1()
-                .border_color(rgb(if active { ACCENT_LINE } else { LINE }))
+                .border_color(rgb(if active { t.accent_line } else { t.line }))
                 .when(active, |d| d.justify_end())
                 .child(div().size(px(9.)).rounded_full().bg(rgb(if active {
-                    ACCENT
+                    t.accent
                 } else {
-                    FAINT
+                    t.faint
                 }))),
         )
         .into_any_element()
 }
 
 fn preview_property(
+    t: Colors,
     s: &Studio,
     id: &str,
     label: &str,
@@ -1819,12 +1904,12 @@ fn preview_property(
     cx: &mut Context<Studio>,
 ) -> AnyElement {
     if enabled {
-        return property(s, id, label, field_id, cx);
+        return property(t, s, id, label, field_id, cx);
     }
     row()
         .h(px(23.))
         .gap(px(8.))
-        .text_color(rgb(FAINT))
+        .text_color(rgb(t.faint))
         .child(
             div()
                 .w(px(92.))
@@ -1840,14 +1925,14 @@ fn preview_property(
                 .px(px(7.))
                 .justify_end()
                 .rounded(px(3.))
-                .bg(rgb(WELL))
+                .bg(rgb(t.well))
                 .child(s.field_value(field_id)),
         )
         .into_any_element()
 }
 
 /// Floating panel for viewport-only lighting, anchored to the viewport.
-fn preview_overlay(s: &Studio, cx: &mut Context<Studio>) -> AnyElement {
+fn preview_overlay(t: Colors, s: &Studio, cx: &mut Context<Studio>) -> AnyElement {
     let bounds = s.bounds.get();
     let width = 312.;
     let left = (f32::from(bounds.right()) - width - 10.).max(f32::from(bounds.left()) + 10.);
@@ -1889,9 +1974,9 @@ fn preview_overlay(s: &Studio, cx: &mut Context<Studio>) -> AnyElement {
                 .w(px(width))
                 .max_h(px(height))
                 .rounded(px(5.))
-                .bg(rgb(PANEL))
+                .bg(rgb(t.panel))
                 .border_1()
-                .border_color(rgb(EDGE))
+                .border_color(rgb(t.edge))
                 .shadow_lg()
                 .overflow_hidden()
                 .occlude()
@@ -1905,15 +1990,15 @@ fn preview_overlay(s: &Studio, cx: &mut Context<Studio>) -> AnyElement {
                         .px(px(14.))
                         .gap(px(9.))
                         .border_b_1()
-                        .border_color(rgb(LINE))
-                        .child(icon(Icon::Material, ACCENT, 15.))
+                        .border_color(rgb(t.line))
+                        .child(icon(Icon::Material, t.accent, 15.))
                         .child(
                             div()
                                 .font_weight(FontWeight::MEDIUM)
                                 .child("Preview lighting"),
                         )
                         .child(div().flex_1())
-                        .child(key("ESC")),
+                        .child(key(t, "ESC")),
                 )
                 .child(
                     col()
@@ -1924,7 +2009,7 @@ fn preview_overlay(s: &Studio, cx: &mut Context<Studio>) -> AnyElement {
                         .px(px(14.))
                         .py(px(10.))
                         .gap(px(8.))
-                        .child(section("STUDIO ENVIRONMENT"))
+                        .child(section(t, "STUDIO ENVIRONMENT"))
                         .child(
                             row().gap(px(6.)).children(
                                 [
@@ -1947,11 +2032,15 @@ fn preview_overlay(s: &Studio, cx: &mut Context<Studio>) -> AnyElement {
                                         .rounded(px(7.))
                                         .overflow_hidden()
                                         .border_1()
-                                        .border_color(rgb(if active { ACCENT_LINE } else { LINE }))
-                                        .bg(rgb(if active { ACTIVE } else { WELL }))
+                                        .border_color(rgb(if active {
+                                            t.accent_line
+                                        } else {
+                                            t.line
+                                        }))
+                                        .bg(rgb(if active { t.active } else { t.well }))
                                         .when(studio_enabled, |d| {
                                             d.cursor_pointer()
-                                                .hover(|d| d.border_color(rgb(EDGE)))
+                                                .hover(move |d| d.border_color(rgb(t.edge)))
                                                 .on_click(cx.listener(move |s, _, w, cx| {
                                                     s.execute(
                                                         Command::SetPreviewStudio(studio),
@@ -1968,9 +2057,9 @@ fn preview_overlay(s: &Studio, cx: &mut Context<Studio>) -> AnyElement {
                                                 .justify_center()
                                                 .text_size(px(10.))
                                                 .text_color(rgb(if active {
-                                                    ACCENT
+                                                    t.accent
                                                 } else {
-                                                    MUTED
+                                                    t.muted
                                                 }))
                                                 .child(studio.label()),
                                         )
@@ -1989,7 +2078,11 @@ fn preview_overlay(s: &Studio, cx: &mut Context<Studio>) -> AnyElement {
                                         .overflow_hidden()
                                         .text_ellipsis()
                                         .text_size(px(10.))
-                                        .text_color(rgb(if studio_enabled { MUTED } else { FAINT }))
+                                        .text_color(rgb(if studio_enabled {
+                                            t.muted
+                                        } else {
+                                            t.faint
+                                        }))
                                         .child(if s.preview_loading {
                                             "Loading environment…".to_owned()
                                         } else {
@@ -1998,6 +2091,7 @@ fn preview_overlay(s: &Studio, cx: &mut Context<Studio>) -> AnyElement {
                                 )
                                 .when(studio_enabled && !s.preview_loading, |d| {
                                     d.child(button(
+                                        t,
                                         "preview-load-hdr",
                                         "Load HDR…",
                                         Some(Icon::Folder),
@@ -2010,6 +2104,7 @@ fn preview_overlay(s: &Studio, cx: &mut Context<Studio>) -> AnyElement {
                         .child(
                             col()
                                 .child(preview_property(
+                                    t,
                                     s,
                                     "preview-rotation",
                                     "Rotation · °",
@@ -2018,6 +2113,7 @@ fn preview_overlay(s: &Studio, cx: &mut Context<Studio>) -> AnyElement {
                                     cx,
                                 ))
                                 .child(preview_property(
+                                    t,
                                     s,
                                     "preview-strength",
                                     "Strength",
@@ -2026,6 +2122,7 @@ fn preview_overlay(s: &Studio, cx: &mut Context<Studio>) -> AnyElement {
                                     cx,
                                 ))
                                 .child(preview_property(
+                                    t,
                                     s,
                                     "preview-opacity",
                                     "Background · %",
@@ -2034,6 +2131,7 @@ fn preview_overlay(s: &Studio, cx: &mut Context<Studio>) -> AnyElement {
                                     cx,
                                 ))
                                 .child(preview_property(
+                                    t,
                                     s,
                                     "preview-blur",
                                     "Blur · %",
@@ -2042,10 +2140,11 @@ fn preview_overlay(s: &Studio, cx: &mut Context<Studio>) -> AnyElement {
                                     cx,
                                 )),
                         )
-                        .child(div().h(px(1.)).flex_shrink_0().bg(rgb(LINE)).my(px(2.)))
+                        .child(div().h(px(1.)).flex_shrink_0().bg(rgb(t.line)).my(px(2.)))
                         .child(
                             col()
                                 .child(preview_toggle(
+                                    t,
                                     "preview-scene-world",
                                     "Scene world",
                                     "Use the project's world color and strength",
@@ -2054,6 +2153,7 @@ fn preview_overlay(s: &Studio, cx: &mut Context<Studio>) -> AnyElement {
                                     cx,
                                 ))
                                 .child(preview_toggle(
+                                    t,
                                     "preview-ao",
                                     "Contact shading",
                                     "Ambient occlusion around nearby surfaces",
@@ -2065,8 +2165,9 @@ fn preview_overlay(s: &Studio, cx: &mut Context<Studio>) -> AnyElement {
                         .child(
                             row()
                                 .justify_between()
-                                .child(caption("Viewport only · never rendered"))
+                                .child(caption(t, "Viewport only · never rendered"))
                                 .child(button(
+                                    t,
                                     "preview-reset",
                                     "Reset",
                                     None,
@@ -2080,7 +2181,250 @@ fn preview_overlay(s: &Studio, cx: &mut Context<Studio>) -> AnyElement {
         .into_any_element()
 }
 
-fn command_overlay(s: &Studio, cx: &mut Context<Studio>) -> AnyElement {
+/// A small workspace thumbnail makes each palette recognizable before applying it.
+fn theme_swatch(theme: Theme) -> AnyElement {
+    let t = theme.colors();
+    col()
+        .w(px(72.))
+        .h(px(44.))
+        .flex_shrink_0()
+        .rounded(px(5.))
+        .border_1()
+        .border_color(rgb(t.edge))
+        .bg(rgb(t.shell))
+        .overflow_hidden()
+        .child(
+            row()
+                .h(px(7.))
+                .bg(rgb(t.panel))
+                .px(px(4.))
+                .gap(px(2.))
+                .children(
+                    [t.accent, t.muted, t.faint]
+                        .map(|color| div().size(px(2.)).rounded_full().bg(rgb(color))),
+                ),
+        )
+        .child(
+            row()
+                .flex_1()
+                .p(px(3.))
+                .gap(px(3.))
+                .child(
+                    col()
+                        .flex_1()
+                        .h_full()
+                        .rounded(px(2.))
+                        .bg(rgb(t.well))
+                        .items_center()
+                        .justify_center()
+                        .child(icon(Icon::Cube, t.accent, 19.)),
+                )
+                .child(
+                    col()
+                        .w(px(21.))
+                        .h_full()
+                        .gap(px(3.))
+                        .p(px(3.))
+                        .bg(rgb(t.card))
+                        .child(div().w_full().h(px(3.)).bg(rgb(t.accent)))
+                        .child(div().w_full().h(px(2.)).bg(rgb(t.muted)))
+                        .child(div().w(px(8.)).h(px(2.)).bg(rgb(t.faint))),
+                ),
+        )
+        .into_any_element()
+}
+
+fn theme_overlay(t: Colors, s: &Studio, cx: &mut Context<Studio>) -> AnyElement {
+    let picker = s.theme_picker.as_ref().unwrap();
+    let themes = picker.matches();
+    let selected = picker.index;
+    div()
+        .id("theme-overlay")
+        .absolute()
+        .inset_0()
+        .occlude()
+        .flex()
+        .justify_center()
+        .items_start()
+        .pt(px(64.))
+        .on_mouse_down(
+            MouseButton::Left,
+            cx.listener(|s, _, _, cx| {
+                s.cancel_theme(cx);
+                cx.stop_propagation();
+            }),
+        )
+        .on_mouse_down(
+            MouseButton::Right,
+            cx.listener(|s, _, _, cx| {
+                s.cancel_theme(cx);
+                cx.stop_propagation();
+            }),
+        )
+        .on_mouse_down(MouseButton::Middle, |_, _, cx| cx.stop_propagation())
+        .on_scroll_wheel(|_, _, cx| cx.stop_propagation())
+        .child(
+            col()
+                .id("theme-picker")
+                .occlude()
+                .w(px(520.))
+                .max_w(relative(0.92))
+                .max_h(relative(0.86))
+                .rounded(px(12.))
+                .bg(rgb(t.panel))
+                .border_1()
+                .border_color(rgb(t.edge))
+                .shadow_lg()
+                .overflow_hidden()
+                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                .on_mouse_down(MouseButton::Right, |_, _, cx| cx.stop_propagation())
+                .child(
+                    row()
+                        .flex_shrink_0()
+                        .px(px(16.))
+                        .h(px(40.))
+                        .gap(px(8.))
+                        .child(icon(Icon::Material, t.accent, 16.))
+                        .child(
+                            div()
+                                .flex_1()
+                                .text_size(px(13.))
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .child("Color Theme"),
+                        )
+                        .child(
+                            div()
+                                .id("close-theme-picker")
+                                .cursor_pointer()
+                                .child(key(t, "ESC"))
+                                .on_click(cx.listener(|s, _, _, cx| {
+                                    s.cancel_theme(cx);
+                                    cx.stop_propagation();
+                                })),
+                        ),
+                )
+                .child(
+                    row()
+                        .flex_shrink_0()
+                        .mx(px(12.))
+                        .px(px(10.))
+                        .h(px(34.))
+                        .gap(px(8.))
+                        .rounded(px(5.))
+                        .bg(rgb(t.well))
+                        .border_1()
+                        .border_color(rgb(t.accent_line))
+                        .child(icon(Icon::Search, t.muted, 13.))
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w(px(0.))
+                                .overflow_hidden()
+                                .text_ellipsis()
+                                .text_color(rgb(if picker.query.is_empty() {
+                                    t.faint
+                                } else {
+                                    t.text
+                                }))
+                                .child(if picker.query.is_empty() {
+                                    "Search themes…".into()
+                                } else {
+                                    format!("{}│", picker.query)
+                                }),
+                        )
+                        .child(caption(
+                            t,
+                            format!(
+                                "{} {}",
+                                themes.len(),
+                                if themes.len() == 1 { "theme" } else { "themes" }
+                            ),
+                        )),
+                )
+                .child(
+                    col()
+                        .id("theme-list")
+                        .min_h(px(0.))
+                        .overflow_y_scroll()
+                        .p(px(6.))
+                        .gap(px(2.))
+                        .when(themes.is_empty(), |d| {
+                            d.child(
+                                col()
+                                    .p(px(20.))
+                                    .gap(px(6.))
+                                    .child("No matching themes")
+                                    .child(caption(t, "Try light, dark, pink, or green.")),
+                            )
+                        })
+                        .children(themes.into_iter().enumerate().map(|(index, theme)| {
+                            let active = index == selected;
+                            row()
+                                .id(SharedString::from(format!("theme-{}", theme.id())))
+                                .h(px(64.))
+                                .flex_shrink_0()
+                                .px(px(10.))
+                                .gap(px(12.))
+                                .rounded(px(6.))
+                                .border_1()
+                                .border_color(if active { rgb(t.accent_line) } else { clear() })
+                                .bg(if active { rgb(t.active) } else { clear() })
+                                .cursor_pointer()
+                                .child(theme_swatch(theme))
+                                .child(
+                                    col()
+                                        .flex_1()
+                                        .min_w(px(0.))
+                                        .gap(px(4.))
+                                        .child(
+                                            div()
+                                                .text_color(rgb(if active {
+                                                    t.accent
+                                                } else {
+                                                    t.text
+                                                }))
+                                                .font_weight(FontWeight::MEDIUM)
+                                                .child(theme.name()),
+                                        )
+                                        .child(
+                                            div()
+                                                .text_size(px(10.))
+                                                .text_color(rgb(t.muted))
+                                                .child(theme.description()),
+                                        ),
+                                )
+                                .when(theme == s.theme, |d| d.child(caption(t, "Current")))
+                                .on_hover(cx.listener(move |s, hovered, _, cx| {
+                                    if *hovered
+                                        && let Some(picker) = &mut s.theme_picker
+                                        && picker.index != index
+                                    {
+                                        picker.index = index;
+                                        cx.notify();
+                                    }
+                                }))
+                                .on_click(cx.listener(move |s, _, _, cx| s.apply_theme(theme, cx)))
+                        })),
+                )
+                .child(
+                    row()
+                        .flex_shrink_0()
+                        .h(px(34.))
+                        .px(px(16.))
+                        .gap(px(7.))
+                        .border_t_1()
+                        .border_color(rgb(t.line))
+                        .child(caption(t, "↑ ↓ preview"))
+                        .child(caption(t, "·"))
+                        .child(caption(t, "Enter to keep"))
+                        .child(div().flex_1())
+                        .child(caption(t, "Esc to cancel")),
+                ),
+        )
+        .into_any_element()
+}
+
+fn command_overlay(t: Colors, s: &Studio, cx: &mut Context<Studio>) -> AnyElement {
     let commands = crate::app::palette_commands(&s.palette_query);
     let selected = s.palette_index;
     div()
@@ -2102,9 +2446,9 @@ fn command_overlay(s: &Studio, cx: &mut Context<Studio>) -> AnyElement {
                 .w(px(460.))
                 .h(px(66. + 32. * commands.len().clamp(1, 12) as f32))
                 .rounded(px(12.))
-                .bg(rgb(PANEL))
+                .bg(rgb(t.panel))
                 .border_1()
-                .border_color(rgb(EDGE))
+                .border_color(rgb(t.edge))
                 .shadow_lg()
                 .overflow_hidden()
                 .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
@@ -2115,8 +2459,8 @@ fn command_overlay(s: &Studio, cx: &mut Context<Studio>) -> AnyElement {
                         .px(px(16.))
                         .gap(px(10.))
                         .border_b_1()
-                        .border_color(rgb(LINE))
-                        .child(icon(Icon::Search, ACCENT, 15.))
+                        .border_color(rgb(t.line))
+                        .child(icon(Icon::Search, t.accent, 15.))
                         .child(
                             div()
                                 .flex_1()
@@ -2125,9 +2469,9 @@ fn command_overlay(s: &Studio, cx: &mut Context<Studio>) -> AnyElement {
                                 .text_ellipsis()
                                 .text_size(px(13.))
                                 .text_color(rgb(if s.palette_query.is_empty() {
-                                    FAINT
+                                    t.faint
                                 } else {
-                                    TEXT
+                                    t.text
                                 }))
                                 .child(if s.palette_query.is_empty() {
                                     "Type a command…".into()
@@ -2135,7 +2479,7 @@ fn command_overlay(s: &Studio, cx: &mut Context<Studio>) -> AnyElement {
                                     format!("{}│", s.palette_query)
                                 }),
                         )
-                        .child(key("ESC")),
+                        .child(key(t, "ESC")),
                 )
                 .child(
                     col()
@@ -2145,7 +2489,7 @@ fn command_overlay(s: &Studio, cx: &mut Context<Studio>) -> AnyElement {
                             d.child(
                                 div()
                                     .p(px(12.))
-                                    .text_color(rgb(MUTED))
+                                    .text_color(rgb(t.muted))
                                     .child("No matching commands"),
                             )
                         })
@@ -2161,15 +2505,17 @@ fn command_overlay(s: &Studio, cx: &mut Context<Studio>) -> AnyElement {
                                         .h(px(31.))
                                         .px(px(10.))
                                         .rounded(px(6.))
-                                        .text_color(rgb(MUTED))
+                                        .text_color(rgb(t.muted))
                                         .when(i == selected, |d| {
-                                            d.bg(rgb(ACTIVE)).text_color(rgb(ACCENT))
+                                            d.bg(rgb(t.active)).text_color(rgb(t.accent))
                                         })
                                         .cursor_pointer()
-                                        .hover(|d| d.bg(rgb(ACTIVE)).text_color(rgb(ACCENT)))
+                                        .hover(move |d| {
+                                            d.bg(rgb(t.active)).text_color(rgb(t.accent))
+                                        })
                                         .child(label)
                                         .child(div().flex_1())
-                                        .child(caption(shortcut))
+                                        .child(caption(t, shortcut))
                                         .on_click(cx.listener(move |s, _, w, cx| {
                                             s.palette_open = false;
                                             s.execute(command, w, cx);
@@ -2182,7 +2528,7 @@ fn command_overlay(s: &Studio, cx: &mut Context<Studio>) -> AnyElement {
         .into_any_element()
 }
 
-fn help_overlay(cx: &mut Context<Studio>) -> AnyElement {
+fn help_overlay(t: Colors, cx: &mut Context<Studio>) -> AnyElement {
     let columns = [
         vec![
             (
@@ -2230,6 +2576,7 @@ fn help_overlay(cx: &mut Context<Studio>) -> AnyElement {
                     "Save / open",
                 ),
                 (platform_shortcut("⌘ K", "Ctrl+K"), "Workspace commands"),
+                (platform_shortcut("⇧ ⌘ T", "Ctrl+Shift+T"), "Color theme"),
                 ("?", "This reference"),
             ],
         )],
@@ -2259,9 +2606,9 @@ fn help_overlay(cx: &mut Context<Studio>) -> AnyElement {
                 .max_h(relative(0.88))
                 .overflow_y_scroll()
                 .rounded(px(12.))
-                .bg(rgb(PANEL))
+                .bg(rgb(t.panel))
                 .border_1()
-                .border_color(rgb(EDGE))
+                .border_color(rgb(t.edge))
                 .shadow_lg()
                 .p(px(20.))
                 .gap(px(18.))
@@ -2272,10 +2619,10 @@ fn help_overlay(cx: &mut Context<Studio>) -> AnyElement {
                         .child(
                             div()
                                 .text_size(px(15.))
-                                .text_color(rgb(TEXT))
+                                .text_color(rgb(t.text))
                                 .child("Keyboard reference"),
                         )
-                        .child(key("ESC")),
+                        .child(key(t, "ESC")),
                 )
                 .child(
                     row()
@@ -2284,7 +2631,7 @@ fn help_overlay(cx: &mut Context<Studio>) -> AnyElement {
                         .children(columns.into_iter().map(|groups| {
                             col().flex_1().min_w(px(0.)).gap(px(14.)).children(
                                 groups.into_iter().map(|(title, keys)| {
-                                    col().gap(px(2.)).child(section(title)).children(
+                                    col().gap(px(2.)).child(section(t, title)).children(
                                         keys.into_iter().map(|(shortcut, label)| {
                                             row()
                                                 .justify_between()
@@ -2296,10 +2643,10 @@ fn help_overlay(cx: &mut Context<Studio>) -> AnyElement {
                                                         .min_w(px(0.))
                                                         .overflow_hidden()
                                                         .text_ellipsis()
-                                                        .text_color(rgb(MUTED))
+                                                        .text_color(rgb(t.muted))
                                                         .child(label),
                                                 )
-                                                .child(key(shortcut))
+                                                .child(key(t, shortcut))
                                         }),
                                     )
                                 }),
@@ -2310,7 +2657,7 @@ fn help_overlay(cx: &mut Context<Studio>) -> AnyElement {
         .into_any_element()
 }
 
-fn shading_overlay(s: &Studio, cx: &mut Context<Studio>) -> AnyElement {
+fn shading_overlay(t: Colors, s: &Studio, cx: &mut Context<Studio>) -> AnyElement {
     let pie = s.shading_pie.as_ref().unwrap();
     let center = pie.center;
     let scale = pie.scale;
@@ -2361,7 +2708,7 @@ fn shading_overlay(s: &Studio, cx: &mut Context<Studio>) -> AnyElement {
 
                     // Paint one uninterrupted annulus first. Selection is then
                     // layered over it, so no background can show between modes.
-                    paint_ring_segment(0., std::f32::consts::TAU, PANEL, window);
+                    paint_ring_segment(0., std::f32::consts::TAU, t.panel, window);
 
                     let selected = hovered.unwrap_or(current);
                     if let Some(choice) = CHOICES.into_iter().find(|choice| choice.mode == selected)
@@ -2373,9 +2720,9 @@ fn shading_overlay(s: &Studio, cx: &mut Context<Studio>) -> AnyElement {
                             start,
                             end,
                             if hovered.is_some() {
-                                ACTIVE_HOVER
+                                t.active_hover
                             } else {
-                                ACTIVE
+                                t.active
                             },
                             window,
                         );
@@ -2388,7 +2735,7 @@ fn shading_overlay(s: &Studio, cx: &mut Context<Studio>) -> AnyElement {
                             accent.line_to(at(60., start + (end - start) * i as f32 / 32.));
                         }
                         if let Ok(path) = accent.build() {
-                            window.paint_path(path, rgb(ACCENT));
+                            window.paint_path(path, rgb(t.accent));
                         }
                     }
 
@@ -2404,7 +2751,7 @@ fn shading_overlay(s: &Studio, cx: &mut Context<Studio>) -> AnyElement {
                         divider.move_to(at(38., angle));
                         divider.line_to(at(60., angle));
                         if let Ok(path) = divider.build() {
-                            window.paint_path(path, rgb(LINE));
+                            window.paint_path(path, rgb(t.line));
                         }
                     }
                 },
@@ -2421,22 +2768,22 @@ fn shading_overlay(s: &Studio, cx: &mut Context<Studio>) -> AnyElement {
                 .top(px(center.y - 32. * scale))
                 .size(px(64. * scale))
                 .rounded_full()
-                .bg(rgb(PANEL))
+                .bg(rgb(t.panel))
                 .border_1()
-                .border_color(rgb(LINE))
+                .border_color(rgb(t.line))
                 .items_center()
                 .justify_center()
                 .gap(px(1. * scale))
                 .child(
                     div()
                         .text_size(px(19. * scale))
-                        .text_color(rgb(TEXT))
+                        .text_color(rgb(t.text))
                         .child("Z"),
                 )
                 .child(
                     div()
                         .text_size(px(8. * scale))
-                        .text_color(rgb(FAINT))
+                        .text_color(rgb(t.faint))
                         .child("SHADING"),
                 ),
         )
@@ -2464,18 +2811,22 @@ fn shading_overlay(s: &Studio, cx: &mut Context<Studio>) -> AnyElement {
                 .rounded(px(9. * scale))
                 .border_1()
                 .border_color(rgb(if highlighted {
-                    ACCENT
+                    t.accent
                 } else if active {
-                    ACCENT_LINE
+                    t.accent_line
                 } else {
-                    EDGE
+                    t.edge
                 }))
-                .bg(rgb(if highlighted { ACTIVE } else { PANEL }))
+                .bg(rgb(if highlighted { t.active } else { t.panel }))
                 .shadow_lg()
                 .cursor_pointer()
                 .child(icon(
                     glyph,
-                    if active || highlighted { ACCENT } else { MUTED },
+                    if active || highlighted {
+                        t.accent
+                    } else {
+                        t.muted
+                    },
                     18. * scale,
                 ))
                 .child(
@@ -2483,13 +2834,13 @@ fn shading_overlay(s: &Studio, cx: &mut Context<Studio>) -> AnyElement {
                         .flex_1()
                         .text_size(px(11. * scale))
                         .font_weight(FontWeight::MEDIUM)
-                        .text_color(rgb(if highlighted { 0xe4f4ee } else { TEXT }))
+                        .text_color(rgb(t.text))
                         .child(mode.label()),
                 )
                 .child(
                     div()
                         .text_size(px(10. * scale))
-                        .text_color(rgb(if highlighted { ACCENT } else { FAINT }))
+                        .text_color(rgb(if highlighted { t.accent } else { t.faint }))
                         .child(number),
                 )
                 .on_mouse_down(
@@ -2504,15 +2855,16 @@ fn shading_overlay(s: &Studio, cx: &mut Context<Studio>) -> AnyElement {
 }
 
 pub fn render(studio: &Studio, viewport: AnyElement, cx: &mut Context<Studio>) -> AnyElement {
+    let t = studio.theme_colors();
     col()
         .relative()
         .size_full()
         .overflow_hidden()
-        .bg(rgb(SHELL))
-        .text_color(rgb(TEXT))
+        .bg(rgb(t.shell))
+        .text_color(rgb(t.text))
         .text_size(px(11.))
         .font_family(".SystemUIFont")
-        .child(titlebar(studio, cx))
+        .child(titlebar(t, studio, cx))
         .child(
             row()
                 .flex_1()
@@ -2521,35 +2873,39 @@ pub fn render(studio: &Studio, viewport: AnyElement, cx: &mut Context<Studio>) -
                 .overflow_hidden()
                 .p(px(4.))
                 .gap(px(4.))
-                .child(viewport_panel(studio, viewport, cx))
+                .child(viewport_panel(t, studio, viewport, cx))
                 .child(
                     col()
                         .w(px(292.))
                         .h_full()
                         .flex_shrink_0()
                         .gap(px(4.))
-                        .child(outliner(studio, cx))
-                        .child(inspector(studio, cx)),
+                        .child(outliner(t, studio, cx))
+                        .child(inspector(t, studio, cx)),
                 ),
         )
-        .child(footer(studio, cx))
+        .child(footer(t, studio, cx))
         .when(studio.preview_open, |d| {
-            d.child(preview_overlay(studio, cx))
+            d.child(preview_overlay(t, studio, cx))
         })
         .when(studio.palette_open, |d| {
-            d.child(command_overlay(studio, cx))
+            d.child(command_overlay(t, studio, cx))
         })
-        .when(studio.help_open, |d| d.child(help_overlay(cx)))
+        .when(studio.theme_picker.is_some(), |d| {
+            d.child(theme_overlay(t, studio, cx))
+        })
+        .when(studio.help_open, |d| d.child(help_overlay(t, cx)))
         .when(studio.shader_editor.is_some(), |d| {
-            d.child(shader_overlay(studio, cx))
+            d.child(shader_overlay(t, studio, cx))
         })
         .when(studio.shading_pie.is_some(), |d| {
-            d.child(shading_overlay(studio, cx))
+            d.child(shading_overlay(t, studio, cx))
         })
         .into_any_element()
 }
 
 fn texture_inspector(
+    t: Colors,
     s: &Studio,
     material: &forma_core::Material,
     cx: &mut Context<Studio>,
@@ -2568,6 +2924,7 @@ fn texture_inspector(
                 "Linear data"
             };
             let picker = action(
+                t,
                 format!("load-texture-{slot:?}"),
                 Command::LoadTexture(slot),
                 cx,
@@ -2577,19 +2934,20 @@ fn texture_inspector(
             .h(px(27.))
             .px(px(7.))
             .rounded(px(5.))
-            .bg(rgb(WELL))
-            .hover(|d| d.bg(rgb(RAISED)))
+            .bg(rgb(t.well))
+            .hover(move |d| d.bg(rgb(t.raised)))
             .child(div().truncate().text_size(px(10.)).child(label));
             col()
                 .gap(px(3.))
                 .child(
                     div()
-                        .text_color(rgb(MUTED))
+                        .text_color(rgb(t.muted))
                         .text_size(px(10.))
                         .child(format!("{} · {space}", slot.label())),
                 )
                 .child(row().gap(px(4.)).child(picker).when(image.is_some(), |d| {
                     d.child(button(
+                        t,
                         format!("clear-texture-{slot:?}"),
                         "×",
                         None,
@@ -2608,6 +2966,7 @@ fn texture_inspector(
     .into_iter()
     .map(|mapping| {
         button(
+            t,
             format!("texture-mapping-{mapping:?}"),
             mapping.label(),
             None,
@@ -2623,6 +2982,7 @@ fn texture_inspector(
     let tiles: Vec<_> = (0..2)
         .map(|axis| {
             field(
+                t,
                 s,
                 &format!("texture-scale-{axis}"),
                 ["Tile U", "Tile V"][axis],
@@ -2636,6 +2996,7 @@ fn texture_inspector(
     let offsets: Vec<_> = (0..2)
         .map(|axis| {
             field(
+                t,
                 s,
                 &format!("texture-offset-{axis}"),
                 ["Offset U", "Offset V"][axis],
@@ -2646,39 +3007,40 @@ fn texture_inspector(
             .min_w(px(0.))
         })
         .collect();
-    col().px(px(14.)).py(px(12.)).gap(px(8.)).border_b_1().border_color(rgb(LINE))
-        .child(section("IMAGE TEXTURES"))
-        .child(div().text_size(px(10.)).text_color(rgb(MUTED)).child(
+    col().px(px(14.)).py(px(12.)).gap(px(8.)).border_b_1().border_color(rgb(t.line))
+        .child(section(t, "IMAGE TEXTURES"))
+        .child(div().text_size(px(10.)).text_color(rgb(t.muted)).child(
             if s.texture_loading { "Loading image…" } else { "PNG / JPEG · Images saved in project" }
         ))
         .children(slots)
-        .child(div().text_size(px(10.)).text_color(rgb(MUTED)).child("Generated coordinates"))
+        .child(div().text_size(px(10.)).text_color(rgb(t.muted)).child("Generated coordinates"))
         .child(row().gap(px(2.)).children(mappings))
         .child(row().gap(px(6.)).children(tiles))
         .child(row().gap(px(6.)).children(offsets))
         .when(material.textures[TextureSlot::Normal as usize].is_some(), |d| {
-            d.child(property(s, "normal-strength", "Normal strength", Field::NormalStrength, cx))
+            d.child(property(t, s, "normal-strength", "Normal strength", Field::NormalStrength, cx))
         })
-        .child(div().text_size(px(9.)).text_color(rgb(FAINT)).child(
+        .child(div().text_size(px(9.)).text_color(rgb(t.faint)).child(
             "Color maps multiply the color above. Roughness and metallic maps replace their values. Normal maps use OpenGL +Y."
         ))
         .into_any_element()
 }
 
-fn shader_overlay(s: &Studio, cx: &mut Context<Studio>) -> AnyElement {
+fn shader_overlay(t: Colors, s: &Studio, cx: &mut Context<Studio>) -> AnyElement {
     let heading = col()
         .gap(px(4.))
         .child(div().text_size(px(16.)).child("Custom surface shader"))
         .child(
             div()
                 .text_size(px(10.))
-                .text_color(rgb(MUTED))
+                .text_color(rgb(t.muted))
                 .child(format!(
                     "{} · Function body · Shared by Preview and Rendered",
                     s.renderer_backend.shader_language().label()
                 )),
         );
     let header = row().justify_between().child(heading).child(button(
+        t,
         "close-shader",
         "Close",
         None,
@@ -2686,7 +3048,7 @@ fn shader_overlay(s: &Studio, cx: &mut Context<Studio>) -> AnyElement {
         false,
         cx,
     ));
-    let instructions = div().text_size(px(10.)).text_color(rgb(MUTED)).child(
+    let instructions = div().text_size(px(10.)).text_color(rgb(t.muted)).child(
         "Edit surface.color, roughness, metallic, emission, normal or ior; set surface.glass = true for refraction. Use input.uv, generated, position, normal and view_direction. Image textures are applied before your code."
     );
     let footer = row()
@@ -2694,13 +3056,14 @@ fn shader_overlay(s: &Studio, cx: &mut Context<Studio>) -> AnyElement {
         .child(
             div()
                 .text_size(px(10.))
-                .text_color(rgb(FAINT))
+                .text_color(rgb(t.faint))
                 .child(platform_shortcut(
                     "⌘ Return to apply · ⌘ Z to undo code · Only applied code is saved",
                     "Ctrl+Return to apply · Ctrl+Z to undo code · Only applied code is saved",
                 )),
         )
         .child(button(
+            t,
             "apply-shader",
             if s.shader_compiling {
                 "Compiling…"
@@ -2719,9 +3082,9 @@ fn shader_overlay(s: &Studio, cx: &mut Context<Studio>) -> AnyElement {
         .max_h(relative(0.94))
         .overflow_y_scroll()
         .rounded(px(12.))
-        .bg(rgb(PANEL))
+        .bg(rgb(t.panel))
         .border_1()
-        .border_color(rgb(EDGE))
+        .border_color(rgb(t.edge))
         .shadow_lg()
         .p(px(16.))
         .gap(px(12.))
@@ -2730,9 +3093,9 @@ fn shader_overlay(s: &Studio, cx: &mut Context<Studio>) -> AnyElement {
         .child(s.shader_editor.as_ref().unwrap().clone())
         .when_some(s.shader_message.clone(), |d, message| {
             let color = if message.contains("failed") {
-                ALERT
+                t.alert
             } else {
-                MUTED
+                t.muted
             };
             d.child(
                 div()
@@ -2741,7 +3104,7 @@ fn shader_overlay(s: &Studio, cx: &mut Context<Studio>) -> AnyElement {
                     .overflow_y_scroll()
                     .p(px(8.))
                     .rounded(px(5.))
-                    .bg(rgb(WELL))
+                    .bg(rgb(t.well))
                     .text_size(px(11.))
                     .text_color(rgb(color))
                     .child(message),
