@@ -44,7 +44,7 @@ Serve `.mjs` files with a JavaScript MIME type.
 The canonical and social metadata target `https://lachyfs.github.io/forma/`.
 When publishing under another domain, update the canonical URL,
 `og:url`, `og:image`, and `twitter:image` in `index.html` to that domain.
-The social image is `assets/social.png`.
+The social image is `assets/social-studio.png`.
 The custom social card is 1200 × 630. Do not use a local preview URL in public
 metadata.
 
@@ -92,14 +92,17 @@ releases, source-only releases, and network/API failures.
 
 ## Assets and accessibility
 
-The visual layout is inspired by Zed's website: a dark slate palette, blue
-controls, serif headings, compact navigation, and a grid of ruled sections.
+Forma's visual identity uses a warm paper background, deep green typography,
+and a bright green accent. The asymmetric composition puts the real app
+workspace beside a large sans-serif headline. Feature descriptions reflect
+existing app capabilities; there are no simulated editor controls or demos.
+
 The app icon and screenshots come from `assets/` and `docs/images/` in this
-repository. WebP screenshots are resized for the page. `assets/social.png`
-is a 1200 × 630 browser-rendered social card using the same typography,
+repository. WebP screenshots are resized for the page. `assets/social-studio.png`
+is a 1200 × 630 browser-rendered social card with the site's typography,
 colors, and actual Forma workspace image.
 
-IBM Plex Sans, Serif, and Mono are self-hosted as compact Latin WOFF2 fonts.
+IBM Plex Sans and Mono are self-hosted as compact Latin WOFF2 fonts.
 Their SIL Open Font License files are included in `assets/fonts/`; the page
 makes no font requests to an external service.
 
