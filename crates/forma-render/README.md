@@ -51,8 +51,15 @@ are ignored by studio-preview frame identity when Scene World is disabled.
 
 ## Transport and geometry
 
-The opaque surface model combines energy-partitioned Lambert diffuse and
-single-scattering isotropic GGX, with Schlick Fresnel and dielectric IOR 1.5.
+The PBR surface model combines energy-partitioned Lambert diffuse and
+single-scattering isotropic GGX, with Schlick Fresnel and configurable dielectric IOR (1.5 by default).
+Glass adds a rough GGX dielectric BSDF with exact Fresnel, refraction, total
+internal reflection, matched sampling/PDFs and radiance IOR scaling.
+A shared evaluator applies embedded image maps and optional custom Metal/WGSL code
+in both Material Preview and Rendered. Preview follows glass interfaces through
+scene objects and uses environment reflections; Rendered samples full light paths.
+See the [material guide](../../docs/MATERIALS.md) for the shader contract, texture
+mapping, persistence and fallback behavior.
 GGX uses visible-normal sampling. Every scattering vertex samples finite area
 emitters and the environment, combining each with BSDF sampling via power-
 heuristic multiple importance sampling. Russian roulette starts after four
@@ -147,9 +154,9 @@ SPIR-V, MSL and HLSL without a GPU. See [platform validation](../../docs/PLATFOR
 
 ## Deliberate scope
 
-This is a foundational path tracer, not Cycles feature parity. Transmission,
-refraction, volumes, subsurface scattering, anisotropy, material texture maps,
-denoising, adaptive sampling, motion blur and animation are not yet
+This is a foundational path tracer, not Cycles feature parity. Volumes,
+nested dielectric media, subsurface scattering, anisotropy, displacement, alpha
+cutouts, denoising, adaptive sampling, motion blur and animation are not yet
 implemented. Very smooth roughness values are bounded at 0.025 to avoid a delta
 BSDF singularity. GGX uses single scattering, so rough metals lose the energy
 that a multiple-scattering model would recover. Mesh lights are sampled uniformly

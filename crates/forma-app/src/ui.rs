@@ -3,7 +3,7 @@ use crate::app::{Command, Field, Studio, Tool};
 use crate::platform_shortcut;
 use crate::shading_pie::{CARD_HALF_SIZE, CHOICES};
 use crate::theme::{Colors, Theme};
-use forma_core::Primitive;
+use forma_core::{Primitive, ShaderKind, TextureMapping, TextureSlot};
 use forma_render::{RenderMode, StudioLight};
 use gpui::{prelude::*, *};
 
@@ -32,7 +32,14 @@ impl PanelSection {
                 Field::Translation(_) | Field::Rotation(_) | Field::Scale(_)
             ) | (
                 Self::Surface,
-                Field::Color(_) | Field::Roughness | Field::Metallic | Field::Emission
+                Field::Color(_)
+                    | Field::Roughness
+                    | Field::Metallic
+                    | Field::Emission
+                    | Field::Ior
+                    | Field::NormalStrength
+                    | Field::TextureScale(_)
+                    | Field::TextureOffset(_)
             ) | (
                 Self::Render,
                 Field::Samples | Field::Bounces | Field::Exposure | Field::WorldStrength
@@ -125,6 +132,16 @@ fn command_hint(command: Command) -> &'static str {
         Command::Subdivide => "Subdivide selected mesh",
         Command::ToggleGrid => "Toggle ground grid",
         Command::MaterialPreset(_) => "Apply surface preset",
+        Command::SetShader(_) => "Choose a surface shader",
+        Command::SetTextureMapping(_) => "Choose generated image coordinates",
+        Command::LoadTexture(_) => "Choose a PNG or JPEG image texture",
+        Command::ClearTexture(_) => "Remove this texture",
+        Command::EditShader => "Edit custom surface code",
+        Command::ApplyShader => platform_shortcut(
+            "Compile and apply · ⌘ Return",
+            "Compile and apply · Ctrl+Return",
+        ),
+        Command::CloseShader => "Close shader editor · Esc",
         Command::TogglePalette => {
             platform_shortcut("Workspace commands · ⌘ K", "Workspace commands · Ctrl+K")
         }
@@ -1476,6 +1493,36 @@ fn inspector(t: Colors, s: &Studio, cx: &mut Context<Studio>) -> AnyElement {
                 col()
                     .gap(px(4.))
                     .child(
+                        row().gap(px(3.)).children(
+                            [ShaderKind::Pbr, ShaderKind::Glass, ShaderKind::Custom]
+                                .into_iter()
+                                .map(|kind| {
+                                    button(
+                                        t,
+                                        format!("shader-{kind:?}"),
+                                        kind.label(),
+                                        None,
+                                        Command::SetShader(kind),
+                                        object.material.shader == kind,
+                                        cx,
+                                    )
+                                    .flex_1()
+                                    .justify_center()
+                                }),
+                        ),
+                    )
+                    .when(object.material.shader == ShaderKind::Custom, |d| {
+                        d.child(button(
+                            t,
+                            "edit-custom-shader",
+                            "Edit shader code…",
+                            Some(Icon::Material),
+                            Command::EditShader,
+                            false,
+                            cx,
+                        ))
+                    })
+                    .child(
                         row()
                             .gap(px(6.))
                             .child(div().text_color(rgb(t.muted)).child("Base color"))
@@ -1522,9 +1569,13 @@ fn inspector(t: Colors, s: &Studio, cx: &mut Context<Studio>) -> AnyElement {
                         Field::Roughness,
                         cx,
                     ))
-                    .child(property(t, s, "metallic", "Metallic", Field::Metallic, cx))
+                    .when(object.material.shader != ShaderKind::Glass, |d| {
+                        d.child(property(t, s, "metallic", "Metallic", Field::Metallic, cx))
+                    })
+                    .child(property(t, s, "ior", "IOR", Field::Ior, cx))
                     .child(property(t, s, "emission", "Emission", Field::Emission, cx)),
-            );
+            )
+            .child(texture_inspector(t, s, object.material, cx));
         contents = contents.child(panel_card(
             t,
             s,
@@ -2844,8 +2895,236 @@ pub fn render(studio: &Studio, viewport: AnyElement, cx: &mut Context<Studio>) -
             d.child(theme_overlay(t, studio, cx))
         })
         .when(studio.help_open, |d| d.child(help_overlay(t, cx)))
+        .when(studio.shader_editor.is_some(), |d| {
+            d.child(shader_overlay(t, studio, cx))
+        })
         .when(studio.shading_pie.is_some(), |d| {
             d.child(shading_overlay(t, studio, cx))
         })
+        .into_any_element()
+}
+
+fn texture_inspector(
+    t: Colors,
+    s: &Studio,
+    material: &forma_core::Material,
+    cx: &mut Context<Studio>,
+) -> AnyElement {
+    let slots: Vec<_> = TextureSlot::ALL
+        .into_iter()
+        .map(|slot| {
+            let image = &material.textures[slot as usize];
+            let label = image
+                .as_ref()
+                .map(|image| format!("{} · {} × {}", image.name, image.width, image.height))
+                .unwrap_or_else(|| "Choose image…".into());
+            let space = if matches!(slot, TextureSlot::BaseColor | TextureSlot::Emission) {
+                "sRGB"
+            } else {
+                "Linear data"
+            };
+            let picker = action(
+                t,
+                format!("load-texture-{slot:?}"),
+                Command::LoadTexture(slot),
+                cx,
+            )
+            .flex_1()
+            .min_w(px(0.))
+            .h(px(27.))
+            .px(px(7.))
+            .rounded(px(5.))
+            .bg(rgb(t.well))
+            .hover(move |d| d.bg(rgb(t.raised)))
+            .child(div().truncate().text_size(px(10.)).child(label));
+            col()
+                .gap(px(3.))
+                .child(
+                    div()
+                        .text_color(rgb(t.muted))
+                        .text_size(px(10.))
+                        .child(format!("{} · {space}", slot.label())),
+                )
+                .child(row().gap(px(4.)).child(picker).when(image.is_some(), |d| {
+                    d.child(button(
+                        t,
+                        format!("clear-texture-{slot:?}"),
+                        "×",
+                        None,
+                        Command::ClearTexture(slot),
+                        false,
+                        cx,
+                    ))
+                }))
+        })
+        .collect();
+    let mappings: Vec<_> = [
+        TextureMapping::Box,
+        TextureMapping::Sphere,
+        TextureMapping::Plane,
+    ]
+    .into_iter()
+    .map(|mapping| {
+        button(
+            t,
+            format!("texture-mapping-{mapping:?}"),
+            mapping.label(),
+            None,
+            Command::SetTextureMapping(mapping),
+            material.mapping == mapping,
+            cx,
+        )
+        .flex_1()
+        .justify_center()
+        .text_size(px(10.))
+    })
+    .collect();
+    let tiles: Vec<_> = (0..2)
+        .map(|axis| {
+            field(
+                t,
+                s,
+                &format!("texture-scale-{axis}"),
+                ["Tile U", "Tile V"][axis],
+                Field::TextureScale(axis),
+                cx,
+            )
+            .flex_1()
+            .min_w(px(0.))
+        })
+        .collect();
+    let offsets: Vec<_> = (0..2)
+        .map(|axis| {
+            field(
+                t,
+                s,
+                &format!("texture-offset-{axis}"),
+                ["Offset U", "Offset V"][axis],
+                Field::TextureOffset(axis),
+                cx,
+            )
+            .flex_1()
+            .min_w(px(0.))
+        })
+        .collect();
+    col().px(px(14.)).py(px(12.)).gap(px(8.)).border_b_1().border_color(rgb(t.line))
+        .child(section(t, "IMAGE TEXTURES"))
+        .child(div().text_size(px(10.)).text_color(rgb(t.muted)).child(
+            if s.texture_loading { "Loading image…" } else { "PNG / JPEG · Images saved in project" }
+        ))
+        .children(slots)
+        .child(div().text_size(px(10.)).text_color(rgb(t.muted)).child("Generated coordinates"))
+        .child(row().gap(px(2.)).children(mappings))
+        .child(row().gap(px(6.)).children(tiles))
+        .child(row().gap(px(6.)).children(offsets))
+        .when(material.textures[TextureSlot::Normal as usize].is_some(), |d| {
+            d.child(property(t, s, "normal-strength", "Normal strength", Field::NormalStrength, cx))
+        })
+        .child(div().text_size(px(9.)).text_color(rgb(t.faint)).child(
+            "Color maps multiply the color above. Roughness and metallic maps replace their values. Normal maps use OpenGL +Y."
+        ))
+        .into_any_element()
+}
+
+fn shader_overlay(t: Colors, s: &Studio, cx: &mut Context<Studio>) -> AnyElement {
+    let heading = col()
+        .gap(px(4.))
+        .child(div().text_size(px(16.)).child("Custom surface shader"))
+        .child(
+            div()
+                .text_size(px(10.))
+                .text_color(rgb(t.muted))
+                .child(format!(
+                    "{} · Function body · Shared by Preview and Rendered",
+                    s.renderer_backend.shader_language().label()
+                )),
+        );
+    let header = row().justify_between().child(heading).child(button(
+        t,
+        "close-shader",
+        "Close",
+        None,
+        Command::CloseShader,
+        false,
+        cx,
+    ));
+    let instructions = div().text_size(px(10.)).text_color(rgb(t.muted)).child(
+        "Edit surface.color, roughness, metallic, emission, normal or ior; set surface.glass = true for refraction. Use input.uv, generated, position, normal and view_direction. Image textures are applied before your code."
+    );
+    let footer = row()
+        .justify_between()
+        .child(
+            div()
+                .text_size(px(10.))
+                .text_color(rgb(t.faint))
+                .child(platform_shortcut(
+                    "⌘ Return to apply · ⌘ Z to undo code · Only applied code is saved",
+                    "Ctrl+Return to apply · Ctrl+Z to undo code · Only applied code is saved",
+                )),
+        )
+        .child(button(
+            t,
+            "apply-shader",
+            if s.shader_compiling {
+                "Compiling…"
+            } else {
+                "Compile & apply"
+            },
+            None,
+            Command::ApplyShader,
+            true,
+            cx,
+        ));
+    let panel = col()
+        .id("shader-editor-panel")
+        .w(px(780.))
+        .max_w(relative(0.94))
+        .max_h(relative(0.94))
+        .overflow_y_scroll()
+        .rounded(px(12.))
+        .bg(rgb(t.panel))
+        .border_1()
+        .border_color(rgb(t.edge))
+        .shadow_lg()
+        .p(px(16.))
+        .gap(px(12.))
+        .child(header)
+        .child(instructions)
+        .child(s.shader_editor.as_ref().unwrap().clone())
+        .when_some(s.shader_message.clone(), |d, message| {
+            let color = if message.contains("failed") {
+                t.alert
+            } else {
+                t.muted
+            };
+            d.child(
+                div()
+                    .id("shader-diagnostics")
+                    .max_h(px(100.))
+                    .overflow_y_scroll()
+                    .p(px(8.))
+                    .rounded(px(5.))
+                    .bg(rgb(t.well))
+                    .text_size(px(11.))
+                    .text_color(rgb(color))
+                    .child(message),
+            )
+        })
+        .child(footer);
+    div()
+        .id("shader-editor-overlay")
+        .absolute()
+        .inset_0()
+        .occlude()
+        .bg(rgba(0x00000088))
+        .flex()
+        .items_center()
+        .justify_center()
+        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+        .on_mouse_down(MouseButton::Right, |_, _, cx| cx.stop_propagation())
+        .on_mouse_down(MouseButton::Middle, |_, _, cx| cx.stop_propagation())
+        .on_mouse_move(|_, _, cx| cx.stop_propagation())
+        .on_scroll_wheel(|_, _, cx| cx.stop_propagation())
+        .child(panel)
         .into_any_element()
 }

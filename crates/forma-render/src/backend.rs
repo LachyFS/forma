@@ -1,7 +1,7 @@
 use std::{fmt, path::Path, str::FromStr, sync::Arc};
 
 use anyhow::{Context, Result, bail};
-use forma_core::Scene;
+use forma_core::{Scene, ShaderLanguage};
 
 use crate::RenderSettings;
 
@@ -26,6 +26,30 @@ impl Backend {
             Ok(value) => value.parse().context("Invalid FORMA_RENDERER"),
             Err(std::env::VarError::NotPresent) => Ok(Self::Auto),
             Err(error) => Err(error).context("Invalid FORMA_RENDERER"),
+        }
+    }
+
+    pub fn shader_language(self) -> ShaderLanguage {
+        if self == Self::NativeMetal || (self == Self::Auto && cfg!(target_os = "macos")) {
+            ShaderLanguage::Metal
+        } else {
+            ShaderLanguage::Wgsl
+        }
+    }
+
+    /// Compile both surface entry points on the selected graphics API.
+    pub fn validate_custom_shaders(self, scene: &Scene) -> Result<()> {
+        scene.validate()?;
+        crate::material::validate_language(scene, self.shader_language())?;
+        #[cfg(target_os = "macos")]
+        if self.shader_language() == ShaderLanguage::Metal {
+            return crate::native::validate_custom_shaders(scene);
+        }
+        let renderer = Renderer::with_backend(self)?;
+        match &renderer.implementation {
+            Implementation::Portable(renderer) => renderer.validate_custom_shaders(scene),
+            #[cfg(target_os = "macos")]
+            Implementation::Native(_) => unreachable!(),
         }
     }
 
@@ -87,6 +111,7 @@ pub struct Frame {
     storage: FrameStorage,
     pub samples: u32,
     pub elapsed_ms: f64,
+    pub shader_error: Option<String>,
 }
 
 impl Frame {
@@ -215,15 +240,20 @@ impl Renderer {
                 FrameStorage::Rgba(renderer.render(scene, settings, revision)?)
             }
         };
-        let (samples, elapsed_ms) = match &storage {
+        let (samples, elapsed_ms, shader_error) = match &storage {
             #[cfg(target_os = "macos")]
-            FrameStorage::Native(frame) => (frame.samples, frame.elapsed_ms),
-            FrameStorage::Rgba(frame) => (frame.samples, frame.elapsed_ms),
+            FrameStorage::Native(frame) => {
+                (frame.samples, frame.elapsed_ms, frame.shader_error.clone())
+            }
+            FrameStorage::Rgba(frame) => {
+                (frame.samples, frame.elapsed_ms, frame.shader_error.clone())
+            }
         };
         Ok(Frame {
             storage,
             samples,
             elapsed_ms,
+            shader_error,
         })
     }
 
@@ -243,6 +273,11 @@ impl Renderer {
             Implementation::Portable(renderer) => renderer.read_linear_pixels(),
         }
     }
+}
+
+/// Validate using the same default backend as `Renderer::new`.
+pub fn validate_custom_shaders(scene: &Scene) -> Result<()> {
+    Backend::from_env()?.validate_custom_shaders(scene)
 }
 
 #[cfg(test)]

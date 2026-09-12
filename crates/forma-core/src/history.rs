@@ -86,6 +86,21 @@ fn scene_bytes(scene: &Scene) -> usize {
                     .sum::<usize>()
         })
         .sum::<usize>();
-    let materials = scene.materials.len() * std::mem::size_of::<crate::MaterialData>();
+    let materials = scene
+        .materials
+        .iter()
+        .map(|data| {
+            std::mem::size_of_val(data)
+                + data.name.len()
+                + data.material.custom_code.len()
+                + data
+                    .material
+                    .textures
+                    .iter()
+                    .flatten()
+                    .map(|image| image.rgba.len() + image.name.len())
+                    .sum::<usize>()
+        })
+        .sum::<usize>();
     objects + meshes + materials
 }

@@ -1,5 +1,6 @@
 use super::*;
 use forma_core::Primitive;
+use glam::Vec3;
 
 fn renderer_pair() -> Option<(Renderer, Renderer)> {
     let hardware = Renderer::with_preview_acceleration(true).unwrap();

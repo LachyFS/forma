@@ -34,7 +34,7 @@ fn validate_and_translate(source: &str, expected_entries: &[&str]) {
         let Some(binding) = global.binding else {
             continue;
         };
-        let slot = (binding.group * 8 + binding.binding) as u8;
+        let slot = (binding.group * 16 + binding.binding) as u8;
         let is_image = matches!(module.types[global.ty].inner, TypeInner::Image { .. });
         resources.resources.insert(
             binding,
@@ -125,7 +125,8 @@ fn environment_bake_compiles_for_vulkan_metal_and_dx12() {
 fn shader_structs_preserve_native_scene_buffer_layouts() {
     let module = naga::front::wgsl::parse_str(SHADER).unwrap();
     for (name, expected_span, expected_offsets) in [
-        ("Triangle", 144, (0..9).map(|i| i * 16).collect::<Vec<_>>()),
+        ("Triangle", 192, (0..12).map(|i| i * 16).collect::<Vec<_>>()),
+        ("GpuMaterial", 112, vec![0, 16, 32, 48, 64, 80]),
         ("BvhNode", 48, vec![0, 16, 32]),
         ("Uniforms", 176, (0..11).map(|i| i * 16).collect()),
     ] {

@@ -6,8 +6,8 @@ use forma_core::{Primitive, Scene};
 use forma_render::{PreviewSettings, RenderMode, StudioLight};
 use glam::Vec2;
 use gpui::{
-    AnyWindowHandle, App, AsyncApp, KeyDownEvent, KeyUpEvent, Keystroke, MouseButton,
-    MouseDownEvent, MouseMoveEvent, Timer, WindowHandle, point, px, size,
+    AnyWindowHandle, App, AsyncApp, EntityInputHandler, KeyDownEvent, KeyUpEvent, Keystroke,
+    MouseButton, MouseDownEvent, MouseMoveEvent, Timer, WindowHandle, point, px, size,
 };
 use std::{
     path::PathBuf,
@@ -57,7 +57,12 @@ async fn settle(window: WindowHandle<Studio>, cx: &mut AsyncApp) -> Result<()> {
 
 async fn keys(window: WindowHandle<Studio>, sequence: &[&str], cx: &mut AsyncApp) -> Result<()> {
     for key in sequence {
-        let key = Keystroke::parse(key)?;
+        let key = if cfg!(target_os = "macos") {
+            (*key).to_owned()
+        } else {
+            key.replace("cmd-", "ctrl-")
+        };
+        let key = Keystroke::parse(&key)?;
         let handle: AnyWindowHandle = window.into();
         handle.update(cx, |_, window, cx| {
             window.dispatch_keystroke(key, cx);
@@ -765,6 +770,30 @@ async fn check_theme_workflow(
         window.update(cx, |s, w, _| {
             capture_window(s, w, &output.join(format!("theme-{}.png", theme.id())))
         })??;
+        if matches!(theme, Theme::Paper | Theme::Synthwave) {
+            window.update(cx, |s, w, cx| -> Result<()> {
+                s.execute(Command::EditShader, w, cx);
+                let editor = s.shader_editor.as_ref().unwrap().read(cx);
+                let colors = s.theme_colors();
+                ensure!(
+                    editor.colors.text == colors.text
+                        && editor.colors.well == colors.well
+                        && editor.colors.active == colors.active,
+                    "shader editor did not inherit the selected theme"
+                );
+                Ok(())
+            })??;
+            prepare_capture(window, cx).await?;
+            window.update(cx, |s, w, cx| -> Result<()> {
+                capture_window(
+                    s,
+                    w,
+                    &output.join(format!("theme-{}-shader.png", theme.id())),
+                )?;
+                s.execute(Command::CloseShader, w, cx);
+                Ok(())
+            })??;
+        }
     }
     window.update(cx, |s, _, cx| -> Result<()> {
         ensure!(
@@ -842,6 +871,7 @@ async fn run(window: WindowHandle<Studio>, output: PathBuf, cx: &mut AsyncApp) -
     })?;
     check_theme_workflow(window, &output, cx).await?;
     check_preview_workflow(window, &output, cx).await?;
+    check_shader_workflow(window, cx).await?;
     let palette_key = platform_shortcut("cmd-k", "ctrl-k");
     keys(window, &[palette_key, palette_key], cx).await?;
     window.update(cx, |s, _, _| -> Result<()> {
@@ -1347,6 +1377,134 @@ fn capture_window(_studio: &Studio, window: &gpui::Window, path: &std::path::Pat
         height as u32,
         image::ColorType::Rgba8,
     )?;
+    Ok(())
+}
+
+async fn check_shader_workflow(window: WindowHandle<Studio>, cx: &mut AsyncApp) -> Result<()> {
+    let (before, history, dirty) = window.update(cx, |s, w, cx| {
+        let before = s.scene.clone();
+        let history = std::mem::take(&mut s.history);
+        let dirty = s.dirty;
+        s.execute(Command::SetShader(forma_core::ShaderKind::Glass), w, cx);
+        (before, history, dirty)
+    })?;
+    window.update(cx, |s, w, cx| -> Result<()> {
+        ensure!(
+            s.selected_object().unwrap().material.shader == forma_core::ShaderKind::Glass,
+            "Glass shader was not selected"
+        );
+        s.execute(Command::Undo, w, cx);
+        ensure!(s.scene == before, "Glass shader change was not undoable");
+        s.execute(Command::EditShader, w, cx);
+        Ok(())
+    })??;
+    let source = window.update(cx, |s, _, cx| {
+        s.shader_editor.as_ref().unwrap().read(cx).text.clone()
+    })?;
+    Timer::after(Duration::from_millis(100)).await;
+    keys(
+        window,
+        &[
+            platform_shortcut("cmd-a", "ctrl-a"),
+            "a",
+            "enter",
+            "b",
+            "left",
+            "delete",
+            "tab",
+            "x",
+        ],
+        cx,
+    )
+    .await?;
+    window.update(cx, |s, _, cx| -> Result<()> {
+        ensure!(
+            s.shader_editor.as_ref().unwrap().read(cx).text == "a\n    x",
+            "Shader multiline input/selection failed"
+        );
+        ensure!(s.scene == before, "Draft shader text modified the document");
+        Ok(())
+    })??;
+    keys(
+        window,
+        &[
+            platform_shortcut("cmd-z", "ctrl-z"),
+            platform_shortcut("cmd-z", "ctrl-z"),
+        ],
+        cx,
+    )
+    .await?;
+    window.update(cx, |s, _, cx| -> Result<()> {
+        ensure!(
+            s.shader_editor.as_ref().unwrap().read(cx).text == "a\n",
+            "Shader undo affected scene history instead of text"
+        );
+        Ok(())
+    })??;
+    keys(
+        window,
+        &[
+            platform_shortcut("cmd-shift-z", "ctrl-shift-z"),
+            platform_shortcut("cmd-shift-z", "ctrl-shift-z"),
+            platform_shortcut("cmd-enter", "ctrl-enter"),
+        ],
+        cx,
+    )
+    .await?;
+    wait_for(window, cx, |s| !s.shader_compiling).await?;
+    window.update(cx, |s, _, _| -> Result<()> {
+        ensure!(s.scene == before, "Failed compilation changed the scene");
+        ensure!(
+            s.shader_message
+                .as_ref()
+                .is_some_and(|m| m.contains("Compilation failed")),
+            "Missing shader compiler diagnostics"
+        );
+        Ok(())
+    })??;
+    keys(window, &[platform_shortcut("cmd-a", "ctrl-a")], cx).await?;
+    window.update(cx, |s, w, cx| {
+        let editor = s.shader_editor.as_ref().unwrap().clone();
+        editor.update(cx, |editor, cx| {
+            editor.replace_text_in_range(None, &source, w, cx)
+        });
+    })?;
+    keys(window, &[platform_shortcut("cmd-enter", "ctrl-enter")], cx).await?;
+    wait_for(window, cx, |s| !s.shader_compiling).await?;
+    window.update(cx, |s, _, _| -> Result<()> {
+        ensure!(
+            s.selected_object().unwrap().material.shader == forma_core::ShaderKind::Custom,
+            "Valid shader was not applied"
+        );
+        ensure!(
+            s.shader_message
+                .as_ref()
+                .is_some_and(|m| m.starts_with("Compiled and applied")),
+            "Valid shader did not compile"
+        );
+        Ok(())
+    })??;
+    keys(
+        window,
+        &["escape", platform_shortcut("cmd-z", "ctrl-z")],
+        cx,
+    )
+    .await?;
+    window.update(cx, |s, _, _| -> Result<()> {
+        ensure!(s.shader_editor.is_none(), "Shader editor did not close");
+        ensure!(
+            s.scene == before,
+            "Applying shader code was not one undo transaction"
+        );
+        Ok(())
+    })??;
+    window.update(cx, |s, _, cx| {
+        s.history = history;
+        s.dirty = dirty;
+        cx.notify();
+    })?;
+    settle(window, cx).await?;
+    println!("shader_editor=multiline,local_undo,compiler_diagnostics,atomic_apply,scene_undo");
     Ok(())
 }
 

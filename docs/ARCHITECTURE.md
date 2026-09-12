@@ -44,10 +44,14 @@ top/bottom views. Picking transforms rays into each object's local coordinates
 while preserving world-space hit distances under hierarchy and nonuniform
 scaling.
 
-Materials contain linear RGB base color and emission, metallic weight and
-roughness. The renderer computes smooth corner normals with a 45-degree crease
-threshold and transforms them correctly under nonuniform scale. The current
-surface model is opaque; there is no texture or transmission graph.
+Materials contain linear RGB base color and emission, metallic weight,
+roughness, IOR, a PBR/Glass/Custom shader selection, generated texture coordinates,
+five immutable embedded image slots and a custom Metal/WGSL surface function body with its language. The renderer computes smooth corner normals with a 45-degree crease
+threshold and transforms them correctly under nonuniform scale. Image mip levels and material buffers feed a common surface evaluator in Preview
+and Rendered. Custom code compiles on a background executor before an editor
+transaction commits; the renderer caches both entry-point pipelines by source.
+Invalid project code uses a reported PBR fallback. There is no node graph.
+See [material contracts and limits](MATERIALS.md).
 
 ## Interaction and scheduling
 
@@ -162,9 +166,11 @@ Detailed BSDF, estimator, BVH and display behavior lives in the
 ## Documents and undo
 
 The `.forma` format is versioned JSON with `format`, `version` and `scene` fields.
-Version 2 stores the object graph, reusable mesh/material data blocks,
+Version 3 stores shader settings, custom code and embedded texture images alongside
+the object graph, reusable mesh/material data blocks,
 collections, typed object payloads, camera, world and render preferences.
 Version-1 files are migrated on load into independent mesh/material data blocks;
+version-1 and version-2 materials receive PBR defaults and empty image slots;
 older files without render preferences receive defaults. Selection, active
 tool, viewport shading mode and preview environment controls are session state.
 

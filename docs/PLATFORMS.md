@@ -19,6 +19,12 @@ equivalent library API. Invalid values and unavailable graphics APIs fail with
 an error instead of switching silently. Renderer tests and headless tools honor
 `FORMA_RENDERER` through `Renderer::new()`.
 
+PBR, glass and embedded image textures share the same controls and buffer layouts
+on every backend. Custom surface bodies use Metal on `native-metal` and WGSL on
+all wgpu backends. The editor shows the required language. Projects retain the
+source language; incompatible code reports diagnostics and falls back to textured
+PBR until adapted. See [surface shaders](MATERIALS.md).
+
 ## Product and display behavior
 
 No document migration or backend-specific scene data is needed. Camera behavior,

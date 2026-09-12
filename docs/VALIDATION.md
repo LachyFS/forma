@@ -63,6 +63,35 @@ The remaining record describes checks executed before this portability change
 on macOS with an Apple M4 Pro. It is historical evidence for the native renderer,
 not a claim that the new wgpu Metal path was run on that hardware.
 
+## Surface shader integration (2026-09-12)
+
+The shader branch was integrated with both the cross-platform renderer and the
+compact workspace UI. Checks executed on Linux with Rust 1.98.1:
+
+- **101 tests passed**: 22 application, 41 core, 12 renderer unit, 23 GPU
+  integration and three shader translation/layout tests. Core coverage includes
+  embedded images, source-language persistence, legacy material migration and
+  undo/redo. GPU regressions used Mesa llvmpipe Vulkan and exercised both preview
+  and rendered PBR/glass/textures/custom code, compile-error fallback/recovery,
+  incompatible-language recovery, the default WGSL template and finite film output.
+- `cargo clippy --locked --workspace --all-targets -- -D warnings`: passed.
+- `cargo fmt --all -- --check` and `git diff --check`: passed.
+- Renderer `cargo check --locked --all-targets` passed for
+  `aarch64-apple-darwin` and `x86_64-pc-windows-msvc`.
+- WGSL validation and SPIR-V/MSL/HLSL generation passed for render, preview and
+  IBL kernels. Layout checks cover the expanded triangles and material buffers.
+- The complete Linux GPUI application builds with the actual Vulkan renderer.
+  The live X11/llvmpipe smoke workflow passed, including multiline shader input,
+  local undo/redo, failed compilation with document retention, successful WGSL
+  apply, scene undo, all viewport modes, preview/HDR controls, navigation,
+  resizing, asynchronous project/OBJ operations and concurrent image export.
+  It reported `FORMA_NATIVE_SMOKE_PASS`.
+
+Native Metal runtime compilation and DirectX 12 GPU execution still require
+validation on their respective operating systems. Cross-target Rust checks and
+WGSL translation do not establish native Metal source compilation or hardware
+behavior. The earlier Mac validation below describes pre-existing functionality.
+
 ## Geometry and documents
 
 `cargo test -p forma-core` passed 30 tests covering primitive winding, closed topology,
@@ -128,8 +157,8 @@ reference-image parity, or performance at the maximum import limits.
 
 ## Editor themes (Linux, September 2026)
 
-The theme change passes all **92 workspace tests**, formatting and strict Clippy
-across all targets. Four theme unit tests cover search/navigation, contrast,
+The integrated theme change passes all **107 workspace tests** using software
+Vulkan, plus formatting and strict Clippy across all targets. Four theme unit tests cover search/navigation, contrast,
 preference-file replacement and recovery, and platform configuration paths.
 
 The native smoke test passes on Linux/X11 with software Vulkan (llvmpipe). It
@@ -141,8 +170,13 @@ preferences are isolated inside the output directory.
 
 Full-window X11 captures of the theme picker and light/dark presets were visually
 inspected, including all five choices at the 1000 × 650 minimum window size.
+The shader editor inherits the selected palette; Paper and Synthwave code-editor
+captures were also inspected. The combined smoke run exercises shader editing,
+compiler diagnostics, apply and undo using platform-appropriate shortcuts.
 Artifacts are in `artifacts/theme-smoke/`. Native theme interactions on macOS and
-Windows have not been run in this environment.
+Windows have not been run in this environment. The default GPU test run exited
+with SIGSEGV in the material renderer tests; the complete suite passed with
+`VK_DRIVER_FILES=/usr/share/vulkan/icd.d/lvp_icd.json`.
 
 ## Native editor
 

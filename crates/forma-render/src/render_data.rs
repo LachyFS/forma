@@ -123,10 +123,30 @@ pub(crate) fn geometry_hash(scene: &Scene) -> u64 {
         collection.parent.hash(&mut hasher);
         collection.visible.hash(&mut hasher);
     }
+    for data in &scene.materials {
+        let m = &data.material;
+        data.id.hash(&mut hasher);
+        m.shader.hash(&mut hasher);
+        m.mapping.hash(&mut hasher);
+        m.custom_code.hash(&mut hasher);
+        m.custom_language.hash(&mut hasher);
+        m.textures.hash(&mut hasher);
+        for v in [
+            m.ior,
+            m.normal_strength,
+            m.texture_scale.x,
+            m.texture_scale.y,
+            m.texture_offset.x,
+            m.texture_offset.y,
+        ] {
+            v.to_bits().hash(&mut hasher);
+        }
+    }
     scene.objects.len().hash(&mut hasher);
     for object in &scene.objects {
         object.id.hash(&mut hasher);
         object.visible.hash(&mut hasher);
+        object.data.material_ids().hash(&mut hasher);
         object.parent.hash(&mut hasher);
         object.collections.hash(&mut hasher);
         if !scene.is_effectively_visible(object.id) {

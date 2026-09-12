@@ -1,4 +1,4 @@
-use crate::{Camera, Mesh, Primitive, Ray};
+use crate::{Camera, Material, Mesh, Primitive, Ray};
 use anyhow::{Context, Result, ensure};
 use glam::{EulerRot, Mat4, Quat, Vec3};
 use serde::{Deserialize, Serialize};
@@ -13,14 +13,6 @@ use std::{
 
 pub(crate) const MAX_FILE_BYTES: u64 = 256 * 1024 * 1024;
 static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
-
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct Material {
-    pub base_color: Vec3,
-    pub metallic: f32,
-    pub roughness: f32,
-    pub emission: Vec3,
-}
 
 /// A named, reusable material data block. Objects refer to this by ID instead
 /// of embedding a private material, so linked duplicates and future material
@@ -38,17 +30,6 @@ pub struct MeshData {
     pub id: u64,
     pub name: String,
     pub mesh: Mesh,
-}
-
-impl Default for Material {
-    fn default() -> Self {
-        Self {
-            base_color: Vec3::new(0.48, 0.53, 0.59),
-            metallic: 0.0,
-            roughness: 0.36,
-            emission: Vec3::ZERO,
-        }
-    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
@@ -360,7 +341,7 @@ struct LegacyObject {
     visible: bool,
 }
 
-const FILE_VERSION: u32 = 2;
+const FILE_VERSION: u32 = 3;
 
 impl Default for Scene {
     fn default() -> Self {
@@ -377,6 +358,7 @@ impl Default for Scene {
             metallic: 0.45,
             roughness: 0.24,
             emission: Vec3::ZERO,
+            ..Material::default()
         };
 
         let sphere = scene.add(Primitive::Sphere);
@@ -390,6 +372,7 @@ impl Default for Scene {
             metallic: 0.72,
             roughness: 0.19,
             emission: Vec3::ZERO,
+            ..Material::default()
         };
 
         let cube = scene.add(Primitive::Cube);
@@ -522,6 +505,27 @@ impl Scene {
         material: Material,
     ) -> Result<u64> {
         validate_material(&material)?;
+        let texture_bytes: usize = self
+            .materials
+            .iter()
+            .map(|data| &data.material)
+            .chain(std::iter::once(&material))
+            .flat_map(|material| material.textures.iter().flatten())
+            .map(|image| image.rgba.len())
+            .sum();
+        ensure!(
+            texture_bytes <= crate::MAX_SCENE_TEXTURE_BYTES,
+            "Scene textures exceed 64 MiB"
+        );
+        let codes: BTreeSet<_> = self
+            .materials
+            .iter()
+            .map(|data| &data.material)
+            .chain(std::iter::once(&material))
+            .filter(|material| material.shader == crate::ShaderKind::Custom)
+            .map(|material| (material.custom_language, &material.custom_code))
+            .collect();
+        ensure!(codes.len() <= 32, "Scene exceeds 32 unique custom shaders");
         ensure!(
             self.materials.len() < 100_000,
             "Scene exceeds 100,000 materials"
@@ -1141,8 +1145,8 @@ impl Scene {
             1 => Self::from_legacy(
                 serde_json::from_value(document.scene).context("Invalid version 1 scene")?,
             )?,
-            FILE_VERSION => {
-                serde_json::from_value(document.scene).context("Invalid version 2 scene")?
+            2 | FILE_VERSION => {
+                serde_json::from_value(document.scene).context("Invalid scene data")?
             }
             version => anyhow::bail!("Unsupported Forma scene version {version}"),
         };
@@ -1242,7 +1246,27 @@ impl Scene {
                 "Scene exceeds five million vertices or faces"
             );
         }
+        let mut texture_bytes = 0usize;
+        let mut custom_shaders = BTreeSet::new();
         for data in &self.materials {
+            texture_bytes += data
+                .material
+                .textures
+                .iter()
+                .flatten()
+                .map(|image| image.rgba.len())
+                .sum::<usize>();
+            ensure!(
+                texture_bytes <= crate::MAX_SCENE_TEXTURE_BYTES,
+                "Scene textures exceed 64 MiB"
+            );
+            if data.material.shader == crate::ShaderKind::Custom {
+                custom_shaders.insert((data.material.custom_language, &data.material.custom_code));
+            }
+            ensure!(
+                custom_shaders.len() <= 32,
+                "Scene exceeds 32 unique custom shaders"
+            );
             ensure!(
                 data.id > 0 && ids.insert(data.id),
                 "Data-block IDs must be nonzero and globally unique"
@@ -1530,16 +1554,7 @@ fn valid_name(name: &str) -> bool {
 }
 
 fn validate_material(material: &Material) -> Result<()> {
-    ensure!(
-        valid_color(material.base_color, 1.0)
-            && valid_color(material.emission, 1.0e6)
-            && material.metallic.is_finite()
-            && (0.0..=1.0).contains(&material.metallic)
-            && material.roughness.is_finite()
-            && (0.0..=1.0).contains(&material.roughness),
-        "Invalid material values"
-    );
-    Ok(())
+    material.validate()
 }
 
 fn validate_light(light: &Light) -> Result<()> {

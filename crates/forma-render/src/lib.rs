@@ -5,6 +5,8 @@
 
 mod bvh;
 mod environment;
+mod material;
+pub use material::load_texture;
 #[cfg(target_os = "macos")]
 mod native;
 mod portable;
@@ -14,7 +16,7 @@ mod preview;
 mod render_data;
 
 mod backend;
-pub use backend::{Backend, Frame, Renderer};
+pub use backend::{Backend, Frame, Renderer, validate_custom_shaders};
 pub use environment::validate_hdri;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]

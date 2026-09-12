@@ -12,13 +12,16 @@ use std::{
 
 use anyhow::{Context, Result, anyhow, ensure};
 use bytemuck::Pod;
-use forma_core::Scene;
+use forma_core::{Scene, ShaderLanguage};
 use wgpu::util::DeviceExt;
 
 use crate::{
     Backend, RenderMode, RenderSettings,
     bvh::Geometry,
     environment::EnvironmentKey,
+    material::{
+        MaterialResources, custom_cache_key, custom_sources, validate_language, wgsl_source,
+    },
     portable_preview::PreviewResources,
     render_data::{Uniforms, geometry_hash},
 };
@@ -30,6 +33,7 @@ pub(crate) struct Frame {
     pub rgba: Arc<[u8]>,
     pub samples: u32,
     pub elapsed_ms: f64,
+    pub shader_error: Option<String>,
 }
 
 struct Film {
@@ -46,6 +50,9 @@ struct GpuGeometry {
     triangles: wgpu::Buffer,
     nodes: wgpu::Buffer,
     lights: wgpu::Buffer,
+    materials: wgpu::Buffer,
+    texture_pixels: wgpu::Buffer,
+    texture_levels: wgpu::Buffer,
     counts: [u32; 3],
 }
 
@@ -55,6 +62,9 @@ pub(crate) struct Renderer {
     adapter_info: wgpu::AdapterInfo,
     render_pipeline: wgpu::ComputePipeline,
     preview_pipeline: wgpu::ComputePipeline,
+    custom_pipelines: Option<(wgpu::ComputePipeline, wgpu::ComputePipeline)>,
+    compiled_codes: Vec<(ShaderLanguage, String)>,
+    shader_error: Option<String>,
     bindings: wgpu::BindGroupLayout,
     uniforms: wgpu::Buffer,
     preview_resources: PreviewResources,
@@ -101,14 +111,7 @@ impl Renderer {
             checked_gpu(&device, "Initialize Forma shaders", || {
                 let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
                     label: Some("Forma viewport and path tracer"),
-                    source: wgpu::ShaderSource::Wgsl(
-                        format!(
-                            "{}\n{}",
-                            include_str!("shader.wgsl"),
-                            include_str!("preview.wgsl")
-                        )
-                        .into(),
-                    ),
+                    source: wgpu::ShaderSource::Wgsl(wgsl_source(&[]).into()),
                 });
                 let bindings = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
                     label: Some("Forma scene and film bindings"),
@@ -119,6 +122,9 @@ impl Renderer {
                         buffer_layout(3, wgpu::BufferBindingType::Storage { read_only: true }),
                         buffer_layout(4, wgpu::BufferBindingType::Storage { read_only: false }),
                         storage_texture_layout(5, wgpu::TextureFormat::Rgba8Unorm),
+                        buffer_layout(6, wgpu::BufferBindingType::Storage { read_only: true }),
+                        buffer_layout(7, wgpu::BufferBindingType::Storage { read_only: true }),
+                        buffer_layout(8, wgpu::BufferBindingType::Storage { read_only: true }),
                     ],
                 });
                 let preview_resources = PreviewResources::new(&device)?;
@@ -154,6 +160,9 @@ impl Renderer {
             device,
             queue,
             adapter_info,
+            custom_pipelines: None,
+            compiled_codes: Vec::new(),
+            shader_error: None,
             render_pipeline,
             preview_pipeline,
             bindings,
@@ -167,6 +176,46 @@ impl Renderer {
             samples: 0,
             frame: None,
         })
+    }
+
+    fn compile_custom(
+        &self,
+        scene: &Scene,
+    ) -> Result<(wgpu::ComputePipeline, wgpu::ComputePipeline)> {
+        validate_language(scene, ShaderLanguage::Wgsl)?;
+        checked_gpu(&self.device, "Compile custom WGSL surfaces", || {
+            let module = self
+                .device
+                .create_shader_module(wgpu::ShaderModuleDescriptor {
+                    label: Some("Custom surface code"),
+                    source: wgpu::ShaderSource::Wgsl(wgsl_source(&custom_sources(scene)).into()),
+                });
+            let layout = |groups: &[&wgpu::BindGroupLayout]| {
+                self.device
+                    .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                        label: Some("Custom surface layout"),
+                        bind_group_layouts: groups,
+                        push_constant_ranges: &[],
+                    })
+            };
+            let render = pipeline(
+                &self.device,
+                &module,
+                &layout(&[&self.bindings]),
+                "render_main",
+            );
+            let preview = pipeline(
+                &self.device,
+                &module,
+                &layout(&[&self.bindings, &self.preview_resources.bindings]),
+                "preview_main",
+            );
+            Ok((render, preview))
+        })
+    }
+
+    pub fn validate_custom_shaders(&self, scene: &Scene) -> Result<()> {
+        self.compile_custom(scene).map(|_| ())
     }
 
     pub fn device_name(&self) -> String {
@@ -244,14 +293,41 @@ impl Renderer {
 
         if self.checked_revision != Some(revision) {
             scene.validate().context("Cannot render invalid scene")?;
+            let codes = custom_cache_key(scene);
+            if codes != self.compiled_codes {
+                match self.compile_custom(scene) {
+                    Ok(pipelines) => {
+                        self.custom_pipelines = Some(pipelines);
+                        self.shader_error = None;
+                    }
+                    Err(error) => {
+                        self.custom_pipelines = None;
+                        self.shader_error =
+                            Some(format!("Custom shader: {error:#} · Using PBR fallback"));
+                    }
+                }
+                self.compiled_codes = codes;
+            }
             let hash = geometry_hash(scene);
             if self.geometry_hash != Some(hash) {
                 let geometry = Geometry::from_scene(scene);
+                let materials = MaterialResources::from_scene(scene);
                 let replacement = checked_gpu(&self.device, "Upload scene geometry", || {
                     Ok(GpuGeometry {
                         triangles: upload(&self.device, &geometry.triangles, "Forma triangles")?,
                         nodes: upload(&self.device, &geometry.nodes, "Forma BVH")?,
                         lights: upload(&self.device, &geometry.lights, "Forma emissive triangles")?,
+                        materials: upload(&self.device, &materials.materials, "Forma materials")?,
+                        texture_pixels: upload(
+                            &self.device,
+                            &materials.pixels,
+                            "Forma texture pixels",
+                        )?,
+                        texture_levels: upload(
+                            &self.device,
+                            &materials.levels,
+                            "Forma texture levels",
+                        )?,
                         counts: [
                             geometry.triangles.len() as u32,
                             geometry.nodes.len() as u32,
@@ -343,6 +419,18 @@ impl Renderer {
                         binding: 5,
                         resource: wgpu::BindingResource::TextureView(&film.view),
                     },
+                    wgpu::BindGroupEntry {
+                        binding: 6,
+                        resource: geometry.materials.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 7,
+                        resource: geometry.texture_pixels.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 8,
+                        resource: geometry.texture_levels.as_entire_binding(),
+                    },
                 ],
             });
             let mut encoder = self
@@ -356,7 +444,13 @@ impl Renderer {
                     timestamp_writes: None,
                 });
                 pass.set_pipeline(if environment_key.is_some() {
-                    &self.preview_pipeline
+                    self.custom_pipelines
+                        .as_ref()
+                        .map_or(&self.preview_pipeline, |p| &p.1)
+                } else if settings.mode == RenderMode::Rendered {
+                    self.custom_pipelines
+                        .as_ref()
+                        .map_or(&self.render_pipeline, |p| &p.0)
                 } else {
                     &self.render_pipeline
                 });
@@ -401,6 +495,7 @@ impl Renderer {
             rgba: pixels.into(),
             samples: self.samples,
             elapsed_ms: started.elapsed().as_secs_f64() * 1000.0,
+            shader_error: self.shader_error.clone(),
         };
         self.frame = Some(frame.clone());
         Ok(frame)
