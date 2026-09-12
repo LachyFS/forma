@@ -1,5 +1,6 @@
 //! Opt-in runtime regression: exercises the real GPUI window, input dispatch and GPU worker.
 use crate::app::{Command, Field, Studio};
+use crate::platform_shortcut;
 use anyhow::{Result, ensure};
 use forma_core::{Primitive, Scene};
 use forma_render::{PreviewSettings, RenderMode, StudioLight};
@@ -40,12 +41,9 @@ async fn settle(window: WindowHandle<Studio>, cx: &mut AsyncApp) -> Result<()> {
             s.samples > 0
                 && s.render_error.is_none()
                 && (s.settings.width, s.settings.height) == expected
-                && s.frame.as_ref().is_some_and(|frame| {
-                    (
-                        frame.surface.get_width() as u32,
-                        frame.surface.get_height() as u32,
-                    ) == expected
-                })
+                && s.frame
+                    .as_ref()
+                    .is_some_and(|frame| (frame.width(), frame.height()) == expected)
         })?;
         if ready {
             return Ok(());
@@ -59,7 +57,12 @@ async fn settle(window: WindowHandle<Studio>, cx: &mut AsyncApp) -> Result<()> {
 
 async fn keys(window: WindowHandle<Studio>, sequence: &[&str], cx: &mut AsyncApp) -> Result<()> {
     for key in sequence {
-        let key = Keystroke::parse(key)?;
+        let key = if cfg!(target_os = "macos") {
+            (*key).to_owned()
+        } else {
+            key.replace("cmd-", "ctrl-")
+        };
+        let key = Keystroke::parse(&key)?;
         let handle: AnyWindowHandle = window.into();
         handle.update(cx, |_, window, cx| {
             window.dispatch_keystroke(key, cx);
@@ -123,7 +126,7 @@ async fn check_preview_workflow(
             s.samples == 1 && !s.settings.mode.progressive(),
             "material preview did not complete in one deterministic frame"
         );
-        capture_window(w, &output.join("material-preview.png"))?;
+        capture_window(s, w, &output.join("material-preview.png"))?;
         println!(
             "preview_resolution={}x{} logical={:.0}x{:.0} backing_scale={}",
             s.settings.width,
@@ -157,8 +160,8 @@ async fn check_preview_workflow(
         Ok(())
     })??;
     prepare_capture(window, cx).await?;
-    window.update(cx, |_, w, _| {
-        capture_window(w, &output.join("material-preview-lighting.png"))
+    window.update(cx, |s, w, _| {
+        capture_window(s, w, &output.join("material-preview-lighting.png"))
     })??;
     window.update(cx, |s, w, cx| {
         s.execute(Command::TogglePreviewWorld, w, cx);
@@ -202,7 +205,7 @@ async fn check_preview_workflow(
         );
         Ok((
             s.settings.preview.clone(),
-            s.frame.as_ref().unwrap().surface.clone(),
+            s.frame.as_ref().unwrap().clone(),
         ))
     })??;
     let invalid = output.join("invalid-preview.hdr");
@@ -214,7 +217,7 @@ async fn check_preview_workflow(
             s.settings.preview == loaded_settings
                 && s.frame
                     .as_ref()
-                    .is_some_and(|frame| frame.surface == loaded_surface)
+                    .is_some_and(|frame| frame.same_surface(&loaded_surface))
                 && s.status.starts_with("HDR environment:")
                 && s.render_error.is_none(),
             "invalid HDR input replaced a working preview or became a renderer error"
@@ -287,7 +290,7 @@ async fn check_preview_workflow(
         let bounds = s.bounds.get();
         (
             bounds.origin + point(bounds.size.width * 0.5, bounds.size.height * 0.5),
-            s.frame.as_ref().unwrap().surface.clone(),
+            s.frame.as_ref().unwrap().clone(),
         )
     })?;
     window.update(cx, |s, w, cx| {
@@ -317,10 +320,10 @@ async fn check_preview_workflow(
         Timer::after(Duration::from_millis(16)).await;
         window.update(cx, |s, _, _| {
             if let Some(frame) = &s.frame
-                && frame.surface != surface
+                && !frame.same_surface(&surface)
             {
                 presentations += 1;
-                surface = frame.surface.clone();
+                surface = frame.clone();
             }
         })?;
     }
@@ -403,7 +406,7 @@ async fn check_preview_workflow(
             s.preview_open,
             "lighting popover closed at minimum window size"
         );
-        capture_window(w, &output.join("material-preview-lighting-small.png"))
+        capture_window(s, w, &output.join("material-preview-lighting-small.png"))
     })??;
     window.update(cx, |s, w, cx| {
         s.execute(Command::TogglePreviewSettings, w, cx);
@@ -497,7 +500,7 @@ async fn check_shading_pie(
                 && s.settings.mode == RenderMode::Solid,
             "hover changed the renderer before selection"
         );
-        capture_window(w, &output.join("shading-pie.png"))?;
+        capture_window(s, w, &output.join("shading-pie.png"))?;
         Ok(())
     })??;
     keys(window, &["escape"], cx).await?;
@@ -539,8 +542,8 @@ async fn check_shading_pie(
         Ok(())
     })??;
     prepare_capture(window, cx).await?;
-    window.update(cx, |_, w, _| {
-        capture_window(w, &output.join("shading-pie-edge.png"))
+    window.update(cx, |s, w, _| {
+        capture_window(s, w, &output.join("shading-pie-edge.png"))
     })??;
     keys(window, &["escape"], cx).await?;
     window.update(cx, |s, _, _| -> Result<()> {
@@ -663,24 +666,40 @@ async fn check_shading_pie(
 async fn run(window: WindowHandle<Studio>, output: PathBuf, cx: &mut AsyncApp) -> Result<()> {
     std::fs::create_dir_all(&output)?;
     settle(window, cx).await?;
+    let device = window.update(cx, |s, _, _| s.device_name.clone())?;
+    println!("renderer={device}");
     Timer::after(Duration::from_secs(1)).await;
     prepare_capture(window, cx).await?;
-    window.update(cx, |_, window, _| {
-        match capture_window(window, &output.join("workspace.png")) {
+    window.update(cx, |s, window, _| {
+        match capture_window(s, window, &output.join("workspace.png")) {
             Ok(()) => println!("workspace_capture=ok"),
             Err(error) => println!("workspace_capture=unavailable ({error:#})"),
         }
     })?;
     check_preview_workflow(window, &output, cx).await?;
     check_shader_workflow(window, cx).await?;
-    keys(window, &["cmd-k", "w", "i", "r", "e"], cx).await?;
+    let palette_key = platform_shortcut("cmd-k", "ctrl-k");
+    keys(window, &[palette_key, palette_key], cx).await?;
+    window.update(cx, |s, _, _| -> Result<()> {
+        ensure!(
+            !s.palette_open,
+            "platform shortcut did not close the command palette"
+        );
+        Ok(())
+    })??;
+    keys(
+        window,
+        &[platform_shortcut("cmd-k", "ctrl-k"), "w", "i", "r", "e"],
+        cx,
+    )
+    .await?;
     prepare_capture(window, cx).await?;
     window.update(cx, |s, w, _| -> Result<()> {
         ensure!(
             s.palette_open && s.palette_query == "wire",
             "command search leaked keys into editing"
         );
-        let _ = capture_window(w, &output.join("commands.png"));
+        let _ = capture_window(s, w, &output.join("commands.png"));
         Ok(())
     })??;
     keys(window, &["enter"], cx).await?;
@@ -699,7 +718,7 @@ async fn run(window: WindowHandle<Studio>, output: PathBuf, cx: &mut AsyncApp) -
         (
             b.origin + point(b.size.width * 0.5, b.size.height * 0.5),
             s.scene.camera.yaw,
-            s.frame.as_ref().unwrap().surface.clone(),
+            s.frame.as_ref().unwrap().clone(),
         )
     })?;
     window.update(cx, |s, w, cx| {
@@ -730,10 +749,10 @@ async fn run(window: WindowHandle<Studio>, output: PathBuf, cx: &mut AsyncApp) -
         Timer::after(Duration::from_millis(8)).await;
         window.update(cx, |s, _, _| {
             if let Some(frame) = &s.frame
-                && frame.surface != surface
+                && !frame.same_surface(&surface)
             {
                 presentations += 1;
-                surface = frame.surface.clone();
+                surface = frame.clone();
             }
         })?;
     }
@@ -767,10 +786,10 @@ async fn run(window: WindowHandle<Studio>, output: PathBuf, cx: &mut AsyncApp) -
         Timer::after(Duration::from_millis(8)).await;
         window.update(cx, |s, _, _| {
             if let Some(frame) = &s.frame
-                && frame.surface != surface
+                && !frame.same_surface(&surface)
             {
                 trackpad_presentations += 1;
-                surface = frame.surface.clone();
+                surface = frame.clone();
             }
         })?;
     }
@@ -881,7 +900,7 @@ async fn run(window: WindowHandle<Studio>, output: PathBuf, cx: &mut AsyncApp) -
         );
         Ok(())
     })??;
-    keys(window, &["cmd-z"], cx).await?;
+    keys(window, &[platform_shortcut("cmd-z", "ctrl-z")], cx).await?;
     window.update(cx, |s, _, _| -> Result<()> {
         ensure!(
             (s.scene.object(id).unwrap().transform.translation.x - before_x).abs() < 0.001,
@@ -889,7 +908,18 @@ async fn run(window: WindowHandle<Studio>, output: PathBuf, cx: &mut AsyncApp) -
         );
         Ok(())
     })??;
-    keys(window, &["cmd-shift-z", "g", "x", "4", "escape"], cx).await?;
+    keys(
+        window,
+        &[
+            platform_shortcut("cmd-shift-z", "ctrl-shift-z"),
+            "g",
+            "x",
+            "4",
+            "escape",
+        ],
+        cx,
+    )
+    .await?;
     window.update(cx, |s, _, _| -> Result<()> {
         ensure!(
             (s.scene.object(id).unwrap().transform.translation.x - before_x - 2.).abs() < 0.001,
@@ -990,7 +1020,7 @@ async fn run(window: WindowHandle<Studio>, output: PathBuf, cx: &mut AsyncApp) -
             "resized_viewport={}x{}",
             s.settings.width, s.settings.height
         );
-        let _ = capture_window(w, &output.join("workspace-small.png"));
+        let _ = capture_window(s, w, &output.join("workspace-small.png"));
         s.dirty = false;
         Ok(())
     })??;
@@ -1057,7 +1087,7 @@ async fn run(window: WindowHandle<Studio>, output: PathBuf, cx: &mut AsyncApp) -
     std::fs::write(
         output.join("native-smoke.txt"),
         format!(
-            "PASS: real GPUI window; deterministic material preview; studio/world/contact lighting; preview numeric input without document or history mutation; valid/invalid/stale HDR loading; preview export with a 4096-sample path target; material-preview orbit; searchable command palette; four mode keyboard shortcuts and Metal frames; continuous orbit through pointer handlers at 8ms intervals ({presentations} frames presented); constrained numeric move; undo/redo; cancel; face extrusion; subdivision; numeric exposure; object rename; sRGB material input; exact top view; project/OBJ persistence; duplicate/delete/undo; resize; background save snapshot and dirty guard; stale-open rejection; background open/import/export; concurrent PNG export. Native file-picker and OS pointer routing are separate manual checks.\n"
+            "PASS: real GPUI window; deterministic material preview; studio/world/contact lighting; preview numeric input without document or history mutation; valid/invalid/stale HDR loading; preview export with a 4096-sample path target; material-preview orbit; searchable command palette; four mode keyboard shortcuts and GPU frames; continuous orbit through pointer handlers at 8ms intervals ({presentations} frames presented); constrained numeric move; undo/redo; cancel; face extrusion; subdivision; numeric exposure; object rename; sRGB material input; exact top view; project/OBJ persistence; duplicate/delete/undo; resize; background save snapshot and dirty guard; stale-open rejection; background open/import/export; concurrent PNG export. Renderer: {device}. Native file-picker and OS pointer routing are separate manual checks.\n"
         ),
     )?;
     Ok(())
@@ -1065,6 +1095,7 @@ async fn run(window: WindowHandle<Studio>, output: PathBuf, cx: &mut AsyncApp) -
 
 /// AppKit may suspend display-link ticks for a background smoke window. Ask its
 /// own layer to display before capture, without activating or focusing the app.
+#[cfg(target_os = "macos")]
 async fn prepare_capture(window: WindowHandle<Studio>, cx: &mut AsyncApp) -> Result<()> {
     use objc2::{msg_send, runtime::AnyObject};
     use raw_window_handle::{HasWindowHandle, RawWindowHandle};
@@ -1092,7 +1123,8 @@ async fn prepare_capture(window: WindowHandle<Studio>, cx: &mut AsyncApp) -> Res
 }
 
 /// Captures only this application's own window. Never requests screen recording access.
-fn capture_window(window: &gpui::Window, path: &std::path::Path) -> Result<()> {
+#[cfg(target_os = "macos")]
+fn capture_window(_studio: &Studio, window: &gpui::Window, path: &std::path::Path) -> Result<()> {
     use core_graphics::{
         color_space::CGColorSpace,
         context::CGContext,
@@ -1248,5 +1280,40 @@ async fn check_shader_workflow(window: WindowHandle<Studio>, cx: &mut AsyncApp) 
     })?;
     settle(window, cx).await?;
     println!("shader_editor=multiline,local_undo,compiler_diagnostics,atomic_apply,scene_undo");
+    Ok(())
+}
+
+/// A portable run still exercises the actual GPUI window and event handlers.
+/// Frame captures are explicitly labelled because GPUI does not expose a portable
+/// window screenshot API; compositor routing remains a platform manual check.
+#[cfg(not(target_os = "macos"))]
+async fn prepare_capture(window: WindowHandle<Studio>, cx: &mut AsyncApp) -> Result<()> {
+    window.update(cx, |_, window, _| window.refresh())?;
+    Timer::after(Duration::from_millis(100)).await;
+    Ok(())
+}
+
+#[cfg(not(target_os = "macos"))]
+fn capture_window(studio: &Studio, _window: &gpui::Window, path: &std::path::Path) -> Result<()> {
+    let frame = studio
+        .frame
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("no completed viewport frame"))?;
+    let rgba = frame
+        .rgba()
+        .ok_or_else(|| anyhow::anyhow!("viewport frame has no portable pixels"))?;
+    let stem = path.file_stem().unwrap_or_default().to_string_lossy();
+    let path = path.with_file_name(format!("{stem}-viewport.png"));
+    image::save_buffer(
+        &path,
+        rgba,
+        frame.width(),
+        frame.height(),
+        image::ColorType::Rgba8,
+    )?;
+    println!(
+        "viewport_capture={} (full-window capture is available on macOS)",
+        path.display()
+    );
     Ok(())
 }

@@ -1,0 +1,113 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="theme-color" content="#0c100f">
+    <meta name="description" content="Meet Forma, a native 3D modelling and rendering app for Mac. A focused workspace, direct mesh editing, and a Metal-powered viewport. Get the latest release.">
+    <meta property="og:type" content="website">
+    <meta property="og:title" content="Forma — Good things take shape.">
+    <meta property="og:description" content="A little less interface. A lot more imagination. Native 3D modelling and rendering for Mac.">
+    <meta property="og:url" content="https://lachyfs.github.io/forma/">
+    <meta property="og:image" content="https://lachyfs.github.io/forma/assets/og.png">
+    <meta property="og:image:width" content="1200">
+    <meta property="og:image:height" content="800">
+    <meta property="og:image:alt" content="Forma — Good things take shape. Mint typography alongside a teal torus, champagne sphere, and porcelain cube.">
+    <meta name="twitter:card" content="summary_large_image">
+    <meta name="twitter:title" content="Forma — Good things take shape.">
+    <meta name="twitter:description" content="A little less interface. A lot more imagination. Native 3D modelling and rendering for Mac.">
+    <meta name="twitter:image" content="https://lachyfs.github.io/forma/assets/og.png">
+    <meta name="twitter:image:alt" content="Forma — Good things take shape. Your native 3D studio for Mac.">
+    <title>Forma — Good things take shape.</title>
+    <link rel="canonical" href="https://lachyfs.github.io/forma/">
+    <link rel="icon" type="image/png" href="./assets/favicon.png">
+    <link rel="apple-touch-icon" href="./assets/apple-touch-icon.png">
+    <link rel="stylesheet" href="./styles.css">
+    <script type="module" src="./app.js"></script>
+  </head>
+  <body>
+    <a class="skip-link" href="#main">Skip to content</a>
+    <header class="site-header wrap">
+      <a class="wordmark" href="#" aria-label="Forma home"><img src="./assets/icon.png" width="38" height="38" alt=""><span>forma</span></a>
+      <nav aria-label="Main navigation">
+        <a href="#features">Features</a>
+        <a class="source-link" href="https://github.com/lachyfs/forma">Source <span aria-hidden="true">↗</span></a>
+        <a class="nav-download" href="#download">Get Forma <span aria-hidden="true">↓</span></a>
+      </nav>
+    </header>
+    <main id="main">
+      <section class="hero wrap" aria-labelledby="hero-title">
+        <div class="hero-grid" aria-hidden="true"></div>
+        <a class="announcement" href="#download"><span class="status-dot"></span> A new space for your next idea <span aria-hidden="true">↗</span></a>
+        <h1 id="hero-title">Good things<br><span>take shape.</span></h1>
+        <p class="hero-copy">A little less interface. A lot more imagination.<br>Meet Forma, your native 3D studio for Mac.</p>
+        <div class="hero-actions">
+          <a class="button button-primary" href="#download"><span class="download-icon" aria-hidden="true">↓</span> Get Forma for macOS</a>
+          <a class="text-link" href="#workspace">Explore the workspace <span aria-hidden="true">↗</span></a>
+        </div>
+        <p class="hero-note">Made for Mac. Built with Rust. Open source.</p>
+        <span class="hero-coordinate coordinate-left" aria-hidden="true">X 0.00<br>Y 0.00<br>Z 0.00</span>
+        <span class="hero-coordinate coordinate-right" aria-hidden="true">IDEA → OBJECT<br>001 / ∞</span>
+      </section>
+      <section class="workspace wrap" id="workspace" aria-label="Inside the Forma workspace">
+        <div class="section-label"><span><span class="tiny-cross" aria-hidden="true">+</span> YOUR IDEAS. IN THEIR ELEMENT.</span><span>NATIVE macOS APP</span></div>
+        <figure class="app-preview">
+          <img id="workspace-image" src="./assets/workspace.webp" width="2200" height="1276" fetchpriority="high" alt="Forma's native workspace with a teal torus, metallic sphere, and rounded cube on a studio plinth, surrounded by the scene outliner and material inspector.">
+          <figcaption class="visually-hidden">The Forma modelling workspace with Material Preview shading.</figcaption>
+        </figure>
+        <div class="preview-caption"><span><span class="status-dot"></span> Actual app. Actual pixels.</span><span id="preview-description">From a first primitive to a finished perspective.</span></div>
+        <div class="preview-switcher" role="group" aria-label="Choose an app screenshot" hidden>
+          <button type="button" data-preview="workspace" aria-pressed="true" aria-controls="workspace-image"><span aria-hidden="true">01</span> The workspace</button>
+          <button type="button" data-preview="lighting" aria-pressed="false" aria-controls="workspace-image"><span aria-hidden="true">02</span> Find your light</button>
+          <button type="button" data-preview="commands" aria-pressed="false" aria-controls="workspace-image"><span aria-hidden="true">03</span> Keep your flow</button>
+        </div>
+      </section>
+      <div class="tech-strip wrap" aria-label="Made with Rust, GPUI, and Apple Metal"><span>Thoughtfully simple.<br><strong>Native at every layer.</strong></span><span class="tech-name">Rust<span class="tech-detail">THE FOUNDATION</span></span><span class="tech-name">GPUI<span class="tech-detail">THE INTERFACE</span></span><span class="tech-name">Metal<span class="tech-detail">THE ENGINE</span></span></div>
+      <section class="features wrap" id="features" aria-labelledby="features-title">
+        <div class="section-intro"><div><p class="eyebrow">LESS BETWEEN YOU AND YOUR IDEA</p><h2 id="features-title">Find your shape.<br><span>Stay in your flow.</span></h2></div><p>A focused set of tools for making things in 3D.<br>Everything close at hand, with room to explore.</p></div>
+        <div class="feature-grid">
+          <article class="feature-card modelling-card">
+            <div class="feature-art shape-art" aria-hidden="true"><div class="construction-grid"></div><div class="wire-cube"><div class="cube-face cube-front"></div><div class="cube-face cube-back"></div><div class="cube-face cube-left"></div><div class="cube-face cube-right"></div><div class="cube-face cube-top"></div><div class="cube-face cube-bottom"></div></div><span class="art-coordinate">X 1.00 &nbsp; Y 1.00 &nbsp; Z 1.00</span></div>
+            <p class="card-index">01 / SHAPE</p><h3>Start simple. Go somewhere.</h3><p>Add a primitive. Pull a face. Find a form. Direct mesh editing, extrusion, and subdivision make room for happy accidents.</p><div class="card-tags"><span>Primitives</span><span>Face editing</span><span>Subdivision</span></div>
+          </article>
+          <article class="feature-card material-card">
+            <div class="feature-art material-art" aria-hidden="true"><span class="material-orb orb-jade"></span><span class="material-orb orb-porcelain"></span><span class="material-orb orb-copper"></span><div class="material-labels"><span>JADE</span><span>PORCELAIN</span><span>COPPER</span></div></div>
+            <p class="card-index">02 / SURFACE</p><h3>A different side of your idea.</h3><p>Explore materials under studio lighting. Dial in the surface, then switch to progressive path tracing to let the scene’s light do its thing.</p><div class="card-tags"><span>Material presets</span><span>HDR preview</span></div>
+          </article>
+          <article class="feature-card keyboard-card">
+            <div class="feature-art keyboard-art" aria-hidden="true"><div class="key-row"><span class="art-key">G</span><span class="art-key">R</span><span class="art-key">S</span></div><div class="key-labels"><span>MOVE</span><span>ROTATE</span><span>SCALE</span></div></div>
+            <p class="card-index">03 / FLOW</p><h3>Keep up with your hands.</h3><p>Familiar shortcuts. Exact transforms. A command palette one keystroke away. Follow an idea without hunting through menus.</p><div class="card-tags"><span>Keyboard first</span><span>Command palette</span></div>
+          </article>
+        </div>
+        <div class="workflow-note"><span class="workflow-symbol" aria-hidden="true">↔</span><p><strong>Your work, wherever it goes next.</strong> Save a .forma project, exchange geometry with OBJ, or export your viewport to PNG.</p><a href="https://github.com/lachyfs/forma#current-workflow">Explore the workflow <span aria-hidden="true">↗</span></a></div>
+      </section>
+      <section class="download-section wrap" id="download" aria-labelledby="download-title">
+        <img src="./assets/icon.png" alt="" width="80" height="80" loading="lazy">
+        <p class="eyebrow">YOUR NEXT IDEA STARTS HERE</p>
+        <h2 id="download-title">Make something<br><span>you haven’t seen before.</span></h2>
+        <p>A fresh canvas. A few primitives. Endless possibilities.</p>
+        <div class="release-card">
+          <div class="release-heading"><span class="release-platform"><span class="platform-mark" aria-hidden="true">⌘</span><span>Forma for macOS<small>A native space to create.</small></span></span><span class="release-badge" id="release-badge">EARLY DEVELOPMENT</span></div>
+          <div class="release-details"><span id="release-version">Latest release</span><span id="release-date">Distributed on GitHub</span></div>
+          <div class="build-picker" id="build-picker" hidden><label for="build-select">Choose your Mac build</label><select id="build-select" aria-describedby="download-status"></select></div>
+          <a class="button button-primary release-download" id="release-download" href="https://github.com/lachyfs/forma/releases/latest"><span id="download-label">View latest release</span><span id="download-arrow" aria-hidden="true">↗</span></a>
+          <p class="download-status" id="download-status" role="status">Find the latest available downloads and installation notes on GitHub.</p>
+          <div class="release-links"><a id="release-notes" href="https://github.com/lachyfs/forma/releases/latest">Release notes <span aria-hidden="true">↗</span></a><a href="https://github.com/lachyfs/forma/releases">All releases <span aria-hidden="true">↗</span></a></div>
+        </div>
+        <p class="fine-print">macOS · Metal GPU required · Free &amp; open source</p>
+        <p class="source-note">Like to make it your own? <a href="https://github.com/lachyfs/forma#run">Build from source <span aria-hidden="true">↗</span></a></p>
+      </section>
+      <section class="faq wrap" aria-labelledby="faq-title">
+        <div><p class="eyebrow">A FEW THINGS TO KNOW</p><h2 id="faq-title">Before you<br>take shape.</h2><p>Small details. Clear answers.</p></div>
+        <div class="faq-list">
+          <details><summary>What do I need to run Forma?<span aria-hidden="true">+</span></summary><p>Forma currently targets macOS with a Metal GPU. Development has been verified on an Apple M4 Pro running macOS 26.6.2. An older macOS compatibility floor has not yet been established. Check the release notes for the requirements of the build you download.</p></details>
+          <details><summary>Is Forma free and open source?<span aria-hidden="true">+</span></summary><p>Yes. The project declares dual MIT and Apache-2.0 licensing. You can explore the code, build it yourself, and contribute on <a href="https://github.com/lachyfs/forma">GitHub</a>.</p></details>
+          <details><summary>What can I make with it?<span aria-hidden="true">+</span></summary><p>Forma focuses on direct mesh modelling and rendering: add primitives, transform objects and faces, extrude, subdivide, explore materials, and render a scene. It is in early development; animation, sculpting, UV editing, and material textures are outside the current scope.</p></details>
+          <details><summary>Can I bring my own models?<span aria-hidden="true">+</span></summary><p>Yes. Import OBJ polygon geometry, save editable .forma projects, export scene geometry as OBJ, and export the current render mode as PNG. OBJ imports combine groups into one object; imported UVs, supplied normals, and MTL materials are not retained.</p></details>
+          <details><summary>How do I install it?<span aria-hidden="true">+</span></summary><p>Choose the build that matches your Mac and follow that release’s installation notes. If a packaged download is not available yet, the <a href="https://github.com/lachyfs/forma#run">source build instructions</a> explain how to run Forma with Rust and the Apple Command Line Tools. Local bundles are currently unsigned and not notarized.</p></details>
+        </div>
+      </section>
+    </main>
+    <footer class="wrap"><div class="footer-word" aria-hidden="true">forma<span>✳</span></div><div class="site-footer"><a class="wordmark" href="#" aria-label="Forma home">forma</a><span>A space to make things.</span><a href="https://github.com/lachyfs/forma">Built in the open <span aria-hidden="true">↗</span></a></div></footer>
+  </body>
+</html>

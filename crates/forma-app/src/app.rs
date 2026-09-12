@@ -1,11 +1,12 @@
 use crate::code_editor::{CodeEditor, EditorEvent};
 use crate::render_worker::{RenderWorker, Request};
 use crate::shading_pie::ShadingPie;
+use crate::{command_modifier, platform_shortcut};
 use forma_core::{
     History, Material, MeshInstance, Object, Primitive, Scene, ShaderKind, TextureMapping,
     TextureSlot,
 };
-use forma_render::{Frame, PreviewSettings, RenderMode, RenderSettings, StudioLight};
+use forma_render::{Backend, Frame, PreviewSettings, RenderMode, RenderSettings, StudioLight};
 use glam::{Vec2, Vec3};
 use gpui::{prelude::*, *};
 use std::{cell::Cell, path::PathBuf, rc::Rc, sync::Arc};
@@ -119,6 +120,7 @@ pub struct Studio {
     pub preview_open: bool,
     pub preview_loading: bool,
     pub shader_editor: Option<Entity<CodeEditor>>,
+    pub renderer_backend: Backend,
     pub shader_message: Option<String>,
     pub shader_compiling: bool,
     pub texture_loading: bool,
@@ -133,6 +135,7 @@ pub struct Studio {
     pub(crate) bounds: Rc<Cell<Bounds<Pixels>>>,
     pub(crate) viewport_scale: f32,
     pub(crate) frame: Option<Frame>,
+    pub(crate) frame_image: Option<Arc<RenderImage>>,
     pub(crate) last_mouse: Vec2,
     pub(crate) navigation: Option<(MouseButton, bool)>,
     pub(crate) trackpad_gesture: crate::viewport::TrackpadGesture,
@@ -157,12 +160,18 @@ pub struct Studio {
 }
 
 impl Studio {
-    pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
+    pub fn new(backend: Backend, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let focus = cx.focus_handle();
         window.focus(&focus);
         let scene = Scene::default();
         let selected = scene.objects.first().map(|o| o.id);
-        let (worker, notifications) = RenderWorker::new();
+        let (worker, notifications) = RenderWorker::new(backend);
+        cx.on_release(|studio, cx| {
+            if let Some(image) = studio.frame_image.take() {
+                cx.drop_image(image, None);
+            }
+        })
+        .detach();
         cx.spawn(async move |this, cx| {
             while notifications.recv().await.is_ok() {
                 if this.update(cx, |this, cx| this.receive_output(cx)).is_err() {
@@ -209,7 +218,7 @@ impl Studio {
             },
             samples: 0,
             render_ms: 0.,
-            device_name: "Starting Metal…".into(),
+            device_name: "Starting GPU renderer…".into(),
             status: "Ready · Select an object to begin".into(),
             project_name: "Studio study".into(),
             dirty: false,
@@ -220,6 +229,7 @@ impl Studio {
             preview_open: false,
             preview_loading: false,
             shader_editor: None,
+            renderer_backend: backend,
             shader_message: None,
             shader_compiling: false,
             texture_loading: false,
@@ -234,6 +244,7 @@ impl Studio {
             bounds: Rc::new(Cell::new(Bounds::default())),
             viewport_scale: window.scale_factor(),
             frame: None,
+            frame_image: None,
             last_mouse: Vec2::ZERO,
             navigation: None,
             trackpad_gesture: Default::default(),
@@ -342,7 +353,7 @@ impl Studio {
                 self.device_name = name;
                 changed = true;
             }
-            if let Some((generation, frame)) = output.frame.take() {
+            if let Some((generation, frame, image)) = output.frame.take() {
                 // Display the latest completed work while input advances. Requiring an
                 // exact generation here would starve presentation throughout a drag.
                 self.samples = if generation == self.generation {
@@ -355,6 +366,11 @@ impl Studio {
                 }
                 self.render_ms = frame.elapsed_ms;
                 self.frame = Some(frame);
+                // Each completed frame has a unique image ID. Evict its predecessor
+                // from GPUI's GPU atlas as well as releasing its CPU pixels.
+                if let Some(previous) = std::mem::replace(&mut self.frame_image, image) {
+                    cx.drop_image(previous, None);
+                }
                 self.render_error = None;
                 changed = true;
             }
@@ -516,7 +532,11 @@ impl Studio {
                     self.selected = None;
                     self.selected_face = None;
                     self.dirty = true;
-                    self.status = "Object deleted · ⌘Z to undo".into();
+                    self.status = platform_shortcut(
+                        "Object deleted · ⌘Z to undo",
+                        "Object deleted · Ctrl+Z to undo",
+                    )
+                    .into();
                     self.invalidate(true, cx);
                 }
             }
@@ -1390,7 +1410,7 @@ impl Studio {
             let commands = palette_commands(&self.palette_query);
             match key {
                 "escape" => self.palette_open = false,
-                "k" if mods.platform => self.palette_open = false,
+                "k" if command_modifier(mods) => self.palette_open = false,
                 "up" => self.palette_index = self.palette_index.saturating_sub(1),
                 "down" => {
                     self.palette_index =
@@ -1478,7 +1498,7 @@ impl Studio {
                         self.open_shading_pie(Vec2::new(pointer.x.into(), pointer.y.into()), cx);
                     }
                 }
-                "k" if mods.platform => self.execute(Command::TogglePalette, window, cx),
+                "k" if command_modifier(mods) => self.execute(Command::TogglePalette, window, cx),
                 _ => {}
             }
             cx.stop_propagation();
@@ -1517,7 +1537,7 @@ impl Studio {
             cx.stop_propagation();
             return;
         }
-        let command = if mods.platform || mods.control {
+        let command = if command_modifier(mods) {
             match key {
                 "s" if mods.shift => Some(Command::SaveAs),
                 "s" => Some(Command::Save),
@@ -1525,10 +1545,13 @@ impl Studio {
                 "n" => Some(Command::New),
                 "z" if mods.shift => Some(Command::Redo),
                 "z" => Some(Command::Undo),
+                "y" if cfg!(not(target_os = "macos")) => Some(Command::Redo),
                 "d" => Some(Command::Duplicate),
                 "k" => Some(Command::TogglePalette),
                 _ => None,
             }
+        } else if mods.platform || mods.control {
+            None
         } else {
             match key {
                 "escape" => {
@@ -1634,10 +1657,26 @@ fn srgb_to_linear(value: f32) -> f32 {
 pub(crate) fn palette_commands(query: &str) -> Vec<(&'static str, &'static str, Command)> {
     let query = query.to_lowercase();
     [
-        ("New project", "⌘ N", Command::New),
-        ("Open project…", "⌘ O", Command::Open),
-        ("Save project", "⌘ S", Command::Save),
-        ("Save project as…", "⇧ ⌘ S", Command::SaveAs),
+        (
+            "New project",
+            platform_shortcut("⌘ N", "Ctrl+N"),
+            Command::New,
+        ),
+        (
+            "Open project…",
+            platform_shortcut("⌘ O", "Ctrl+O"),
+            Command::Open,
+        ),
+        (
+            "Save project",
+            platform_shortcut("⌘ S", "Ctrl+S"),
+            Command::Save,
+        ),
+        (
+            "Save project as…",
+            platform_shortcut("⇧ ⌘ S", "Ctrl+Shift+S"),
+            Command::SaveAs,
+        ),
         ("Add cube", "", Command::Add(Primitive::Cube)),
         ("Add sphere", "", Command::Add(Primitive::Sphere)),
         ("Add cylinder", "", Command::Add(Primitive::Cylinder)),
@@ -1731,13 +1770,17 @@ impl Studio {
         let Some(id) = self.selected_material_id() else {
             return;
         };
-        let code = self
-            .scene
-            .material(id)
-            .unwrap()
-            .material
-            .custom_code
-            .clone();
+        let material = &self.scene.material(id).unwrap().material;
+        let language = self.renderer_backend.shader_language();
+        let mismatch = material.custom_language != language;
+        let code = if mismatch && material.custom_code == material.custom_language.default_code() {
+            language.default_code().to_owned()
+        } else {
+            material.custom_code.clone()
+        };
+        let language_message = mismatch.then(|| format!(
+            "This renderer uses {}. Applying replaces the saved {} body; adapt any existing code before applying.",
+            language.label(), material.custom_language.label()));
         let editor = cx.new(|cx| CodeEditor::new(code, cx));
         cx.subscribe_in(&editor, window, |s, _, event, w, cx| {
             s.execute(
@@ -1756,7 +1799,8 @@ impl Studio {
         self.shader_message = self
             .frame
             .as_ref()
-            .and_then(|frame| frame.shader_error.clone());
+            .and_then(|frame| frame.shader_error.clone())
+            .or(language_message);
         self.shader_compiling = false;
         self.shader_request_id += 1;
         self.preview_open = false;
@@ -1776,7 +1820,10 @@ impl Studio {
         let original = data.material.clone();
         let mut scene = self.scene.clone();
         let material = &mut scene.material_mut(id).unwrap().material;
+        let backend = self.renderer_backend;
+        let language = backend.shader_language();
         material.custom_code = code.clone();
+        material.custom_language = language;
         material.shader = ShaderKind::Custom;
         if let Err(error) = scene.validate() {
             self.shader_message = Some(format!("{error:#}"));
@@ -1790,7 +1837,7 @@ impl Studio {
         let epoch = self.project_epoch;
         let compile = cx
             .background_executor()
-            .spawn(async move { forma_render::validate_custom_shaders(&scene) });
+            .spawn(async move { backend.validate_custom_shaders(&scene) });
         cx.spawn(async move |this, cx| {
             let result = compile.await;
             let _ = this.update(cx, |s, cx| {
@@ -1820,10 +1867,14 @@ impl Studio {
                 }
                 match result {
                     Ok(()) => {
-                        if original.shader != ShaderKind::Custom || original.custom_code != code {
+                        if original.shader != ShaderKind::Custom
+                            || original.custom_code != code
+                            || original.custom_language != language
+                        {
                             s.history.checkpoint(&s.scene);
                             let material = &mut s.scene.material_mut(id).unwrap().material;
                             material.custom_code = code;
+                            material.custom_language = language;
                             material.shader = ShaderKind::Custom;
                             s.dirty = true;
                             s.invalidate(true, cx);

@@ -166,7 +166,7 @@ impl CodeEditor {
         let range = self.range();
         match key {
             "escape" => cx.emit(EditorEvent::Cancel),
-            "enter" if m.platform || m.control => cx.emit(EditorEvent::Apply),
+            "enter" if crate::command_modifier(m) || m.control => cx.emit(EditorEvent::Apply),
             "enter" => {
                 let indent: String = self.text[self.line_start()..self.cursor]
                     .chars()
@@ -194,7 +194,7 @@ impl CodeEditor {
                 cx,
             ),
             "left" => self.move_to(
-                if m.platform {
+                if crate::command_modifier(m) {
                     self.line_start()
                 } else if !m.shift && !range.is_empty() {
                     range.start
@@ -205,7 +205,7 @@ impl CodeEditor {
                 cx,
             ),
             "right" => self.move_to(
-                if m.platform {
+                if crate::command_modifier(m) {
                     self.line_end()
                 } else if !m.shift && !range.is_empty() {
                     range.end
@@ -218,12 +218,16 @@ impl CodeEditor {
             "home" => self.move_to(self.line_start(), m.shift, cx),
             "end" => self.move_to(self.line_end(), m.shift, cx),
             "up" => self.move_to(
-                if m.platform { 0 } else { self.vertical(false) },
+                if crate::command_modifier(m) {
+                    0
+                } else {
+                    self.vertical(false)
+                },
                 m.shift,
                 cx,
             ),
             "down" => self.move_to(
-                if m.platform {
+                if crate::command_modifier(m) {
                     self.text.len()
                 } else {
                     self.vertical(true)
@@ -231,13 +235,13 @@ impl CodeEditor {
                 m.shift,
                 cx,
             ),
-            "a" if m.platform => {
+            "a" if crate::command_modifier(m) => {
                 self.anchor = 0;
                 self.cursor = self.text.len();
                 self.reveal();
                 cx.notify();
             }
-            "c" | "x" if m.platform => {
+            "c" | "x" if crate::command_modifier(m) => {
                 if !range.is_empty() {
                     cx.write_to_clipboard(ClipboardItem::new_string(
                         self.text[range.clone()].into(),
@@ -247,12 +251,12 @@ impl CodeEditor {
                     self.replace(range, "", cx);
                 }
             }
-            "v" if m.platform => {
+            "v" if crate::command_modifier(m) => {
                 if let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) {
                     self.replace(range, &text, cx);
                 }
             }
-            "z" if m.platform => self.undo(m.shift, cx),
+            "z" if crate::command_modifier(m) => self.undo(m.shift, cx),
             _ => return, // Text input and IME are delivered by EntityInputHandler.
         }
         cx.stop_propagation();

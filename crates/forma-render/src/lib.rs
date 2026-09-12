@@ -1,20 +1,23 @@
-//! Native Metal viewport and progressive path tracer.
+//! GPU viewport and progressive path tracer for macOS, Windows, and Linux.
 //!
-//! The display path stays on the GPU: the film is converted to an IOSurface-backed
-//! NV12 pixel buffer, which GPUI consumes directly. CPU readback is explicit export.
+//! Native Metal retains the zero-copy macOS display path. The portable wgpu
+//! implementation uses Metal, DirectX 12, or Vulkan behind the same render API.
 
 mod bvh;
+mod environment;
 mod material;
 pub use material::load_texture;
 #[cfg(target_os = "macos")]
 mod native;
+mod portable;
+mod portable_preview;
 #[cfg(target_os = "macos")]
 mod preview;
+mod render_data;
 
-#[cfg(target_os = "macos")]
-pub use native::{Frame, Renderer, validate_custom_shaders};
-#[cfg(target_os = "macos")]
-pub use preview::validate_hdri;
+mod backend;
+pub use backend::{Backend, Frame, Renderer, validate_custom_shaders};
+pub use environment::validate_hdri;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
 #[repr(u32)]

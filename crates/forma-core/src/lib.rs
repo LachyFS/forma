@@ -18,6 +18,7 @@ pub use scene::{
 };
 
 pub use material::{
-    DEFAULT_SHADER_CODE, MAX_SCENE_TEXTURE_BYTES, MAX_SHADER_BYTES, MAX_TEXTURE_PIXELS, Material,
-    ShaderKind, TextureImage, TextureMapping, TextureSlot,
+    DEFAULT_SHADER_CODE, DEFAULT_WGSL_CODE, MAX_SCENE_TEXTURE_BYTES, MAX_SHADER_BYTES,
+    MAX_TEXTURE_PIXELS, Material, ShaderKind, ShaderLanguage, TextureImage, TextureMapping,
+    TextureSlot,
 };

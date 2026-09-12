@@ -1,5 +1,3 @@
-#![cfg(target_os = "macos")]
-
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use forma_core::{Primitive, Scene};
@@ -7,27 +5,35 @@ use forma_render::{RenderMode, RenderSettings, Renderer};
 use glam::{Vec2, Vec3};
 
 fn surface_bytes(frame: &forma_render::Frame) -> Vec<u8> {
-    use core_video::pixel_buffer::kCVPixelBufferLock_ReadOnly;
-    let surface = &frame.surface;
-    assert_eq!(surface.lock_base_address(kCVPixelBufferLock_ReadOnly), 0);
-    let mut bytes = Vec::new();
-    for plane in 0..2 {
-        let stride = surface.get_bytes_per_row_of_plane(plane);
-        let width = surface.get_width_of_plane(plane) * if plane == 0 { 1 } else { 2 };
-        let height = surface.get_height_of_plane(plane);
-        // SAFETY: completed Frame, read-only CoreVideo lock, plane-sized slice.
-        let source = unsafe {
-            std::slice::from_raw_parts(
-                surface.get_base_address_of_plane(plane).cast::<u8>(),
-                stride * height,
-            )
-        };
-        for row in source.chunks_exact(stride) {
-            bytes.extend_from_slice(&row[..width]);
-        }
+    if let Some(rgba) = frame.rgba() {
+        return rgba.to_vec();
     }
-    assert_eq!(surface.unlock_base_address(kCVPixelBufferLock_ReadOnly), 0);
-    bytes
+    #[cfg(target_os = "macos")]
+    {
+        use core_video::pixel_buffer::kCVPixelBufferLock_ReadOnly;
+        let surface = frame.native_surface().unwrap();
+        assert_eq!(surface.lock_base_address(kCVPixelBufferLock_ReadOnly), 0);
+        let mut bytes = Vec::new();
+        for plane in 0..2 {
+            let stride = surface.get_bytes_per_row_of_plane(plane);
+            let width = surface.get_width_of_plane(plane) * if plane == 0 { 1 } else { 2 };
+            let height = surface.get_height_of_plane(plane);
+            // SAFETY: completed Frame, read-only CoreVideo lock, plane-sized slice.
+            let source = unsafe {
+                std::slice::from_raw_parts(
+                    surface.get_base_address_of_plane(plane).cast::<u8>(),
+                    stride * height,
+                )
+            };
+            for row in source.chunks_exact(stride) {
+                bytes.extend_from_slice(&row[..width]);
+            }
+        }
+        assert_eq!(surface.unlock_base_address(kCVPixelBufferLock_ReadOnly), 0);
+        bytes
+    }
+    #[cfg(not(target_os = "macos"))]
+    unreachable!("Portable frames contain RGBA pixels")
 }
 
 fn pixels(renderer: &mut Renderer) -> Vec<u8> {
@@ -139,8 +145,8 @@ fn published_surface_survives_new_frames_and_worker_handoff() {
         ..Default::default()
     };
     let retained = renderer.render(&scene, &settings, 1).unwrap();
-    assert_eq!(retained.surface.get_width(), 34);
-    assert_eq!(retained.surface.get_height(), 26);
+    assert_eq!(retained.width(), 34);
+    assert_eq!(retained.height(), 26);
     let original = surface_bytes(&retained);
     for index in 0..8 {
         scene.world.color = Vec3::splat(index as f32 * 0.1);
@@ -152,5 +158,68 @@ fn published_surface_survives_new_frames_and_worker_handoff() {
     assert_eq!(
         original, handed_off,
         "A published surface must remain immutable while retained by another thread"
+    );
+}
+
+#[test]
+fn invalid_requests_leave_the_last_frame_exportable() {
+    let mut renderer = Renderer::new().unwrap();
+    let scene = Scene::default();
+    let mut settings = RenderSettings {
+        width: 32,
+        height: 24,
+        ..Default::default()
+    };
+    renderer.render(&scene, &settings, 1).unwrap();
+    let valid = pixels(&mut renderer);
+    for dimensions in [(0, 24), (32, 0), (8193, 24), (32, u32::MAX)] {
+        settings.width = dimensions.0;
+        settings.height = dimensions.1;
+        assert!(renderer.render(&scene, &settings, 1).is_err());
+        assert_eq!(pixels(&mut renderer), valid);
+    }
+    settings.width = 32;
+    settings.height = 24;
+    settings.exposure = f32::NAN;
+    assert!(renderer.render(&scene, &settings, 1).is_err());
+    assert_eq!(pixels(&mut renderer), valid);
+}
+
+#[test]
+fn portable_frames_survive_resize_and_renderer_destruction() {
+    let mut renderer = Renderer::with_backend(forma_render::Backend::Wgpu).unwrap();
+    let mut scene = Scene::default();
+    scene.objects.clear();
+    let mut settings = RenderSettings {
+        width: 17,
+        height: 9,
+        mode: RenderMode::Rendered,
+        max_samples: 0,
+        ..Default::default()
+    };
+    let frame = renderer.render(&scene, &settings, 1).unwrap();
+    assert_eq!((frame.width(), frame.height()), (18, 10));
+    assert_eq!(frame.samples, 1);
+    assert_eq!(frame.rgba().unwrap().len(), 18 * 10 * 4);
+    assert!(
+        frame
+            .rgba()
+            .unwrap()
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .all(|p| p[3] == 255)
+    );
+    assert!(frame.same_surface(&renderer.render(&scene, &settings, 1).unwrap()));
+    let expected = frame.rgba().unwrap().to_vec();
+    settings.width = 64;
+    settings.height = 48;
+    renderer.render(&scene, &settings, 1).unwrap();
+    drop(renderer);
+    assert_eq!(
+        std::thread::spawn(move || frame.rgba().unwrap().to_vec())
+            .join()
+            .unwrap(),
+        expected
     );
 }

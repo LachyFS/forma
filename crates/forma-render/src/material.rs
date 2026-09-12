@@ -1,8 +1,10 @@
 //! Texture decoding, mip preparation and custom source assembly are CPU-only and
-//! testable without Metal. GPU compilation is transactional in native.rs.
+//! testable without a GPU. Both renderers compile custom code transactionally.
 use anyhow::{Context, Result, ensure};
 use bytemuck::{Pod, Zeroable};
-use forma_core::{MAX_TEXTURE_PIXELS, Scene, ShaderKind, TextureImage, TextureSlot};
+use forma_core::{
+    MAX_TEXTURE_PIXELS, Scene, ShaderKind, ShaderLanguage, TextureImage, TextureSlot,
+};
 use image::{ImageDecoder, ImageFormat, ImageReader, Limits};
 use std::{
     collections::HashMap,
@@ -192,6 +194,7 @@ pub(crate) fn custom_sources(scene: &Scene) -> Vec<&str> {
     codes
 }
 
+#[cfg(any(target_os = "macos", test))]
 pub(crate) fn shader_source(codes: &[&str], accelerated: bool) -> String {
     let mut functions = String::new();
     for (index, code) in codes.iter().enumerate() {
@@ -327,4 +330,48 @@ mod tests {
         assert!(load_texture(&path).is_err());
         std::fs::remove_dir_all(directory).unwrap();
     }
+}
+
+/// The same source ordering must be used by CPU dispatch indices and pipelines.
+pub(crate) fn validate_language(scene: &Scene, language: ShaderLanguage) -> Result<()> {
+    if let Some(data) = scene.materials.iter().find(|data| {
+        data.material.shader == ShaderKind::Custom && data.material.custom_language != language
+    }) {
+        anyhow::bail!(
+            "Material '{}' contains {} code; this renderer requires {}. Select a compatible renderer or edit the material's custom code.",
+            data.name,
+            data.material.custom_language.label(),
+            language.label()
+        );
+    }
+    Ok(())
+}
+
+pub(crate) fn wgsl_source(codes: &[&str]) -> String {
+    let mut functions = String::new();
+    for (index, code) in codes.iter().enumerate() {
+        functions.push_str(&format!("// custom_{index}.wgsl\nfn forma_custom_{index}(initial: Surface, input: ShaderInput) -> Surface {{\nvar surface = initial;\n{code}\nreturn surface;\n}}\n"));
+    }
+    functions.push_str("fn forma_custom(index: u32, surface: Surface, input: ShaderInput) -> Surface {\nswitch index {\n");
+    for index in 0..codes.len() {
+        functions.push_str(&format!(
+            "case {index}u: {{ return forma_custom_{index}(surface, input); }}\n"
+        ));
+    }
+    functions.push_str("default: { return surface; }\n}\n}\n");
+    format!("{}\n{}", include_str!("shader.wgsl").replace(
+        "fn forma_custom(index: u32, surface: Surface, input: ShaderInput) -> Surface { return surface; }",
+        &functions), include_str!("preview.wgsl"))
+}
+
+pub(crate) fn custom_cache_key(scene: &Scene) -> Vec<(ShaderLanguage, String)> {
+    let mut result: Vec<_> = scene
+        .materials
+        .iter()
+        .filter(|m| m.material.shader == ShaderKind::Custom)
+        .map(|m| (m.material.custom_language, m.material.custom_code.clone()))
+        .collect();
+    result.sort_unstable();
+    result.dedup();
+    result
 }

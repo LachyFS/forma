@@ -1,5 +1,6 @@
 use super::*;
 use forma_core::Primitive;
+use glam::Vec3;
 
 fn renderer_pair() -> Option<(Renderer, Renderer)> {
     let hardware = Renderer::with_preview_acceleration(true).unwrap();
@@ -78,8 +79,10 @@ fn pixels(renderer: &Renderer) -> Vec<[u8; 4]> {
             .chunks_exact(stride)
             .flat_map(|row| {
                 row[..film.width as usize * 4]
-                    .chunks_exact(4)
-                    .map(|pixel| <[u8; 4]>::try_from(pixel).unwrap())
+                    .as_chunks::<4>()
+                    .0
+                    .iter()
+                    .copied()
             })
             .collect()
     })

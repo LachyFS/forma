@@ -1,7 +1,67 @@
 # Implementation validation
 
-Validated on macOS with an Apple M4 Pro. This records executed checks, rather
-than asserting equivalence to Blender or Cycles.
+## Cross-platform implementation (2026-09-12)
+
+Executed locally with Rust 1.98.1 on Linux, Mesa 26.0.3 and an AMD Ryzen 7
+9800X3D integrated RADV Vulkan adapter:
+
+- `cargo test --locked --workspace -- --test-threads=1`: **88 passed**, including
+  22 application tests, 36 core tests, 8 renderer unit tests, 19 renderer
+  integration tests and 3 shader translation/layout tests.
+- `cargo clippy --locked --workspace --all-targets -- -D warnings`: passed.
+- `cargo fmt --all -- --check` and `git diff --check`: passed.
+- `cargo run --locked -p forma-render --bin render-smoke -- artifacts/linux-render-smoke 32`
+  with `FORMA_RENDERER=vulkan`: all four 640 × 480 modes completed and exported
+  nonblank PNGs. Observed sample costs were 10.4 ms Wireframe, 6.4 ms Solid,
+  149.0 ms initial Material Preview (including environment baking), and 29.2 ms
+  Rendered at 32 samples. These observations are not performance guarantees.
+- Renderer `cargo check` and `cargo clippy -- -D warnings`, both `--all-targets
+  --locked`, passed for **aarch64-apple-darwin** and **x86_64-pc-windows-msvc**.
+  This includes native Metal, wgpu Metal and wgpu DirectX 12 Rust paths. The
+  Windows check caught and fixed a `gpu-allocator`/`wgpu-hal` Windows crate
+  version mismatch in the lockfile.
+- `scripts/bundle-linux.sh debug`: built a host Linux directory and tarball
+  containing the executable, desktop file and icons. Windows/macOS package scripts
+  were not executed on this host.
+- WGSL validation and native SPIR-V/MSL/HLSL generation passed for all rendering
+  and IBL baking kernels, without optional shader capabilities.
+
+The full live GPUI smoke workflow passed on **X11 with Mesa llvmpipe Vulkan**:
+
+```sh
+env -u WAYLAND_DISPLAY VK_DRIVER_FILES=/usr/share/vulkan/icd.d/lvp_icd.json \
+  target/debug/forma --renderer vulkan --smoke-test artifacts/linux-app-smoke
+```
+
+It exercised all viewport modes, HDR/preview controls, invalid and stale imports,
+commands, constrained transforms, undo/redo, extrusion/subdivision, resizing,
+project/OBJ persistence, asynchronous save/open/import/export and concurrent PNG
+export. During continuous input it presented nine mouse-navigation frames and
+ten trackpad-navigation frames; the pre-existing smoke thresholds were retained.
+The report is `artifacts/linux-app-smoke/native-smoke.txt`. Portable captures are
+explicitly labelled viewport images; they are not full compositor screenshots.
+Material Preview and Rendered PNGs were visually inspected after the run.
+
+This machine's hardware-backed **GPUI/Blade window presentation** failed before
+application rendering: Wayland rejected DMA-BUF import, and X11 reported swapchain
+initialization failure. Headless hardware Vulkan rendering passed separately.
+The llvmpipe override above is a diagnostic workaround, not the default renderer
+or a hardware-performance result. The app leaves platform/driver selection to
+GPUI and does not globally change display environment variables.
+
+Native execution on macOS and Windows, full application linking/packaging on
+those hosts, hardware window presentation on this Linux desktop, native file
+pickers and OS input routing remain unverified in this session. CI now supplies
+per-platform compile/lint/unit checks and Linux renderer execution; it has been
+added to the repository but was not run remotely. Shader translation and
+cross-compilation do not substitute for Metal/DirectX driver tests. See
+[platform support](PLATFORMS.md) for the intended release validation matrix.
+
+## Earlier native Metal validation
+
+The remaining record describes checks executed before this portability change
+on macOS with an Apple M4 Pro. It is historical evidence for the native renderer,
+not a claim that the new wgpu Metal path was run on that hardware.
 
 ## Surface shader change (September 2026)
 
