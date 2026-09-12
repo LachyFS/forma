@@ -46,6 +46,14 @@ test("accepts a simple Mac app bundle and sorts formats consistently", () => {
   assert.equal(downloads.at(-1).name, "Forma.zip");
 });
 
+test("accepts GitHub's canonical capitalization without changing asset names", () => {
+  const url = "https://github.com/LachyFS/forma/releases/download/v0.2.0/Forma-macos-arm64.dmg";
+  const downloads = macDownloads([asset("Forma-macos-arm64.dmg", { browser_download_url: url })]);
+  assert.equal(downloads.length, 1);
+  assert.equal(downloads[0].url, url);
+  assert.equal(describeRelease(release({ html_url: "https://github.com/LachyFS/forma/releases/tag/v0.2.0" })).version, "v0.2.0");
+});
+
 test("handles source-only releases and rejects drafts, prereleases, and malformed data", () => {
   assert.deepEqual(describeRelease(release({ assets: [] })).downloads, []);
   assert.equal(describeRelease(release({ published_at: "invalid" })).date, "Latest stable release");

@@ -1,5 +1,22 @@
 # Implementation validation
 
+## Denoising merge validation (2026-09-12)
+
+Validated denoising together with the current material shaders, compact panels,
+themes, CI configuration and website on the pinned Rust 1.98.1 toolchain:
+
+- All **113 workspace tests** passed. New renderer coverage checks guides from
+  textures, custom shader colors/normals and glass, and preserves shader diagnostics.
+- The real OIDN runtime test passed separately on the selected NVIDIA GPU.
+- Strict workspace Clippy and renderer Clippy for Apple ARM64 and Windows x64
+  passed, as did formatting, actionlint, ShellCheck and all **8 website tests**.
+  Cross-compilation does not establish native execution on macOS or Windows.
+- The full GPUI smoke passed on X11 with llvmpipe Vulkan and
+  `FORMA_SMOKE_DENOISE=1`, including themes, material shaders, navigation,
+  final-sample denoising, raw/denoised switching, undo and concurrent PNG export.
+  The report and images are in `artifacts/app-denoise-merged/`; the full-window
+  capture was inspected with the denoising controls in the compact render card.
+
 ## AI denoising (2026-09-12)
 
 - `cargo test --locked --workspace -- --test-threads=1`: **93 passed**; the
@@ -36,6 +53,25 @@ link the existing GPUI app. Ubuntu packages were extracted under
 `target/native-libs`, with local linker/runtime search paths used for the app
 checks; no system packages were changed. Source setup and the design are in
 [AI denoising](DENOISING.md).
+
+## CI checks (2026-09-12)
+
+Validated the CI configuration locally on Linux with the repository's pinned
+Rust 1.98.1 toolchain:
+
+- All **103 workspace tests** passed with `FORMA_RENDERER=vulkan` and the Mesa
+  llvmpipe driver explicitly selected, including shader translation tests.
+- `cargo build --locked --workspace --bins` built the Linux application and
+  renderer tools successfully.
+- Strict workspace Clippy, rustfmt, actionlint 1.7.12, ShellCheck, JavaScript
+  syntax checks, all **7 website tests**, and `git diff --check` passed.
+- The headless smoke tool exported all four nonblank 640 × 480 modes through
+  llvmpipe, using four samples for Rendered, to `artifacts/ci-render/`.
+- cargo-audit 0.22.2 reported **zero known vulnerabilities**. Unmaintained
+  transitive dependencies remain reported as warnings; no advisories are ignored.
+- The workflow's checksum-verified actionlint download and Mesa-driver selection
+  steps were executed locally. GitHub-hosted execution of the revised workflows,
+  Windows/macOS builds, and Pages deployment are not established by these checks.
 
 ## Cross-platform implementation (2026-09-12)
 
@@ -191,6 +227,29 @@ Preview uses split-sum IBL and contact AO; local scene reflections and indirect
 light transport remain Rendered features. Numerical tests cover
 the implemented estimators; they do not establish Cycles feature parity,
 reference-image parity, or performance at the maximum import limits.
+
+## Editor themes (Linux, September 2026)
+
+The integrated theme change passes all **107 workspace tests** using software
+Vulkan, plus formatting and strict Clippy across all targets. Four theme unit tests cover search/navigation, contrast,
+preference-file replacement and recovery, and platform configuration paths.
+
+The native smoke test passes on Linux/X11 with software Vulkan (llvmpipe). It
+checks theme shortcuts and command search, live preview, Escape and outside-click
+cancellation, empty search, commit/persistence, and all five presets. Scene data,
+selection, dirty state, undo/redo availability, render settings, samples, and the
+completed viewport image remain unchanged during appearance changes. Smoke
+preferences are isolated inside the output directory.
+
+Full-window X11 captures of the theme picker and light/dark presets were visually
+inspected, including all five choices at the 1000 × 650 minimum window size.
+The shader editor inherits the selected palette; Paper and Synthwave code-editor
+captures were also inspected. The combined smoke run exercises shader editing,
+compiler diagnostics, apply and undo using platform-appropriate shortcuts.
+Artifacts are in `artifacts/theme-smoke/`. Native theme interactions on macOS and
+Windows have not been run in this environment. The default GPU test run exited
+with SIGSEGV in the material renderer tests; the complete suite passed with
+`VK_DRIVER_FILES=/usr/share/vulkan/icd.d/lvp_icd.json`.
 
 ## Native editor
 

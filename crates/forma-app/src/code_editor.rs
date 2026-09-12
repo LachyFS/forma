@@ -1,5 +1,6 @@
 //! Small native multiline shader editor: UTF-8 selections, IME input, clipboard,
 //! local undo/redo and scrolling. Document history is touched only by Apply.
+use crate::theme::Colors;
 use gpui::{prelude::*, *};
 use std::ops::Range;
 
@@ -19,6 +20,7 @@ pub enum EditorEvent {
 pub struct CodeEditor {
     pub focus: FocusHandle,
     pub text: String,
+    pub(crate) colors: Colors,
     cursor: usize,
     anchor: usize,
     marked: Option<Range<usize>>,
@@ -32,10 +34,11 @@ pub struct CodeEditor {
 }
 impl EventEmitter<EditorEvent> for CodeEditor {}
 impl CodeEditor {
-    pub fn new(text: String, cx: &mut Context<Self>) -> Self {
+    pub(crate) fn new(text: String, colors: Colors, cx: &mut Context<Self>) -> Self {
         Self {
             focus: cx.focus_handle(),
             text,
+            colors,
             cursor: 0,
             anchor: 0,
             marked: None,
@@ -456,14 +459,17 @@ impl Element for CodeElement {
         let mut scroll_x = editor.scroll_x;
         for (row, text) in editor.text.split('\n').enumerate() {
             if row >= editor.scroll && lines.len() < (HEIGHT / ROW) as usize {
-                let line = shape(text.into(), rgb(0xdce2e4).into());
+                let line = shape(text.into(), rgb(editor.colors.text).into());
                 if editor.cursor >= offset && editor.cursor <= offset + text.len() {
                     let x = line.x_for_index(editor.cursor - offset);
                     let width = (bounds.size.width - px(GUTTER + 12.)).max(px(20.));
                     scroll_x = scroll_x.min(x).max(x - width).max(px(0.));
                 }
                 lines.push((offset, line));
-                numbers.push(shape(format!("{:>4}", row + 1), rgb(0x5c656a).into()));
+                numbers.push(shape(
+                    format!("{:>4}", row + 1),
+                    rgb(editor.colors.faint).into(),
+                ));
             }
             offset += text.len() + 1;
         }
@@ -486,6 +492,7 @@ impl Element for CodeElement {
         let range = editor.range();
         let cursor = editor.cursor;
         let scroll_x = editor.scroll_x;
+        let colors = editor.colors;
         window.handle_input(
             &focus,
             ElementInputHandler::new(bounds, self.editor.clone()),
@@ -522,7 +529,7 @@ impl Element for CodeElement {
                                 point(origin.x + a, origin.y),
                                 size((b - a).max(px(1.)), px(ROW)),
                             ),
-                            rgb(0x294c43),
+                            rgb(colors.active),
                         ));
                     }
                     let _ = line.paint(origin, px(ROW), window, cx);
@@ -532,7 +539,7 @@ impl Element for CodeElement {
                                 point(origin.x + line.x_for_index(cursor - start), origin.y),
                                 size(px(1.5), px(ROW)),
                             ),
-                            rgb(0x84cfba),
+                            rgb(colors.accent),
                         ));
                     }
                 }
@@ -559,7 +566,7 @@ impl Render for CodeEditor {
             .w_full()
             .h(px(HEIGHT))
             .overflow_hidden()
-            .bg(rgb(0x0d0f11))
+            .bg(rgb(self.colors.well))
             .font_family(if cfg!(target_os = "macos") {
                 "Menlo"
             } else {

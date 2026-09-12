@@ -2,26 +2,43 @@ name: Platforms
 
 on:
   push:
+    branches: [main]
   pull_request:
+  merge_group:
   workflow_dispatch:
 
 permissions:
   contents: read
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+  RUST_BACKTRACE: "1"
+
 jobs:
   build:
+    name: Build and test (${{ matrix.os }})
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-24.04, windows-latest, macos-14]
+        os: [ubuntu-24.04, windows-2025, macos-14]
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          components: rustfmt, clippy
-      - uses: Swatinem/rust-cache@v2
-      - uses: actions/setup-python@v5
+          persist-credentials: false
+      - name: Install repository Rust toolchain
+        run: rustup toolchain install --no-self-update
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          # PRs restore the default branch cache without uploading their own.
+          save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: '3.12'
       - name: Install verified AI denoiser runtime
@@ -30,29 +47,55 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y build-essential clang libclang-dev cmake pkg-config libssl-dev libzstd-dev libasound2-dev libfontconfig1-dev libwayland-dev libxkbcommon-dev libxkbcommon-x11-dev libx11-xcb-dev libvulkan-dev mesa-vulkan-drivers
-      - name: Formatting
-        run: cargo fmt --all -- --check
-      - name: Compile every target
-        run: cargo check --locked --workspace --all-targets
-      - name: Lints
+          sudo apt-get install --no-install-recommends -y \
+            build-essential clang libclang-dev cmake pkg-config libssl-dev \
+            libzstd-dev libasound2-dev libfontconfig1-dev libwayland-dev \
+            libxkbcommon-dev libxkbcommon-x11-dev libx11-xcb-dev libvulkan-dev \
+            mesa-vulkan-drivers
+      - name: Compile and lint every target
         run: cargo clippy --locked --workspace --all-targets -- -D warnings
+      - name: Build application and renderer tools
+        run: cargo build --locked --workspace --bins
       - name: Core and application unit tests
         run: cargo test --locked -p forma-core -p forma
       - name: Validate WGSL and generate Vulkan, Metal, and DirectX shaders
+        if: runner.os != 'Linux'
         run: cargo test --locked -p forma-render --test shaders
       - name: Execute AI denoiser on CPU or available GPU
         run: cargo test --locked -p forma-render --test denoise_runtime -- --ignored --test-threads=1
-      - name: Execute shared renderer tests on Vulkan
+      - name: Select Mesa software Vulkan
         if: runner.os == 'Linux'
-        env:
-          FORMA_RENDERER: vulkan
-          XDG_RUNTIME_DIR: /tmp/forma-runtime
+        shell: bash
         run: |
-          mkdir -p "$XDG_RUNTIME_DIR"
-          chmod 700 "$XDG_RUNTIME_DIR"
-          cargo test --locked -p forma-render -- --test-threads=1
+          # Mesa's manifest name differs across distribution versions.
+          shopt -s nullglob
+          drivers=(/usr/share/vulkan/icd.d/lvp_icd*.json)
+          if (( ${#drivers[@]} != 1 )); then
+            echo "Expected exactly one Mesa lavapipe Vulkan driver" >&2
+            exit 1
+          fi
+          runtime="$RUNNER_TEMP/forma-runtime"
+          mkdir -p "$runtime"
+          chmod 700 "$runtime"
+          {
+            echo "VK_DRIVER_FILES=${drivers[0]}"
+            echo "XDG_RUNTIME_DIR=$runtime"
+            echo "FORMA_RENDERER=vulkan"
+          } >> "$GITHUB_ENV"
+      - name: Execute renderer and shader tests on Vulkan
+        if: runner.os == 'Linux'
+        run: cargo test --locked -p forma-render -- --test-threads=1
+      - name: Render all four viewport modes
+        if: runner.os == 'Linux'
+        run: cargo run --locked -p forma-render --bin render-smoke -- artifacts/render 4
+      - name: Upload renderer images
+        if: ${{ !cancelled() && runner.os == 'Linux' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: renderer-linux
+          path: artifacts/render/
+          if-no-files-found: warn
+          retention-days: 7
 
-# Metal/DX12 runtime parity requires machines exposing those GPU APIs. Hosted
-# runners still compile their complete native application and shader backends;
-# hardware execution is tracked separately in docs/PLATFORMS.md.
+# Hosted macOS/Windows runners compile and link the application and validate
+# shaders. Native Metal/DX12 runtime parity still requires GPU-equipped machines.

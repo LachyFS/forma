@@ -23,7 +23,9 @@ python3 -m http.server 4173 --directory site
 
 ## Run
 
-Install stable Rust and the platform build dependencies below, then run:
+Install Rust with [rustup](https://rust-lang.github.io/rustup/installation/index.html)
+and the platform build dependencies below. The repository's `rust-toolchain.toml`
+selects the compiler and lint tools used in CI. Then run:
 
 ```sh
 python3 scripts/setup-denoiser.py  # Python 3.12+; installs the verified AI denoiser
@@ -88,6 +90,11 @@ cargo run --locked --release -p forma
   migrate on open. Save replacement is atomic; edits support undo/redo.
 - Import OBJ polygon geometry, export transformed scene geometry to OBJ, and
   export the current render mode to PNG while continuing to edit.
+- Personalize the editor with five color themes: Forma Dark, Paper, Midnight,
+  Synthwave and Matcha. Open **Theme** in the title bar, **View → Color Theme…**,
+  or search **Preferences: Color Theme** in the command panel. Type to filter,
+  hover or use arrows to preview, then click or press Return to save your choice.
+  Escape or clicking outside cancels. The theme is remembered across launches.
 - Search commands with `⌘K`, type a name, then use arrows and Return to execute.
   Native menus and the command panel expose the same editor operations.
 
@@ -175,6 +182,7 @@ The in-app command panel opens with
 | Front / right / top | `1` / `3` / `7` |
 | Toggle projection / reset perspective | `5` / `0` |
 | Undo / redo | `⌘Z` / `⌘Shift+Z` |
+| Color theme picker | `⌘Shift+T` |
 | New / open / save / save as | `⌘N` / `⌘O` / `⌘S` / `⌘Shift+S` |
 
 An unconstrained numeric move uses world X. Rotation without an axis constraint
@@ -182,6 +190,12 @@ uses the viewing axis. Subdivision, imports, exports, primitives and material
 presets are also available through the visible panels and command panel.
 
 ## Verify
+
+Pull requests run formatting, workflow/script linting, website tests, a Rust
+dependency audit, and builds/tests on Linux, Windows, and macOS. Linux also
+executes the renderer through Mesa software Vulkan and saves smoke images as
+workflow artifacts. See [CI and local checks](docs/CI.md) for details, tool
+updates, and the status checks to require before merging.
 
 ```sh
 cargo fmt --all -- --check
