@@ -509,11 +509,19 @@ float3 add_grid(float3 color, Ray ray, Hit hit, float2 pixel, constant Uniforms 
     float wx = max(1e-6f, length(float2(px.x - p.x, py.x - p.x)));
     float wz = max(1e-6f, length(float2(px.z - p.z, py.z - p.z)));
     float footprint = max(wx, wz);
-    float spacing = pow(10.0f, floor(log10(max(0.001f, footprint * 35.0f))));
+    // Blend adjacent density levels instead of snapping per pixel: a hard
+    // decade switch makes perspective bands and flashes during orthographic
+    // zoom. Fade the finest lines before their spacing approaches a few pixels.
+    float level = log10(max(0.001f, footprint * 35.0f));
+    float spacing = pow(10.0f, floor(level));
+    float blend = smoothstep(0.0f, 1.0f, fract(level));
     float minor = max(grid_line(p.x, spacing, wx), grid_line(p.z, spacing, wz));
     float major = max(grid_line(p.x, spacing * 10.0f, wx), grid_line(p.z, spacing * 10.0f, wz));
+    float coarse = max(grid_line(p.x, spacing * 100.0f, wx), grid_line(p.z, spacing * 100.0f, wz));
     float fade = (1.0f / (1.0f + distance * 0.025f)) * smoothstep(0.015f, 0.12f, abs(ray.direction.y));
-    float opacity = (0.11f * minor + 0.13f * major) * fade;
+    // At blend=1 the major/coarse pair exactly matches the next level's
+    // minor/major pair, including their contrast at shared grid intersections.
+    float opacity = mix(0.11f * minor + 0.13f * major, 0.11f * major + 0.13f * coarse, blend) * fade;
     color = mix(color, float3(0.13f, 0.15f, 0.18f), opacity);
     float x_axis = 1.0f - smoothstep(wz * 0.5f, wz * 1.6f, abs(p.z));
     float z_axis = 1.0f - smoothstep(wx * 0.5f, wx * 1.6f, abs(p.x));
