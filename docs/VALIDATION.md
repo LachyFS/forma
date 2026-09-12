@@ -126,6 +126,24 @@ light transport remain Rendered features. Numerical tests cover
 the implemented estimators; they do not establish Cycles feature parity,
 reference-image parity, or performance at the maximum import limits.
 
+## Editor themes (Linux, September 2026)
+
+The theme change passes all **92 workspace tests**, formatting and strict Clippy
+across all targets. Four theme unit tests cover search/navigation, contrast,
+preference-file replacement and recovery, and platform configuration paths.
+
+The native smoke test passes on Linux/X11 with software Vulkan (llvmpipe). It
+checks theme shortcuts and command search, live preview, Escape and outside-click
+cancellation, empty search, commit/persistence, and all five presets. Scene data,
+selection, dirty state, undo/redo availability, render settings, samples, and the
+completed viewport image remain unchanged during appearance changes. Smoke
+preferences are isolated inside the output directory.
+
+Full-window X11 captures of the theme picker and light/dark presets were visually
+inspected, including all five choices at the 1000 × 650 minimum window size.
+Artifacts are in `artifacts/theme-smoke/`. Native theme interactions on macOS and
+Windows have not been run in this environment.
+
 ## Native editor
 
 `cargo test --locked --workspace` passes **71 tests**. The full workspace passes

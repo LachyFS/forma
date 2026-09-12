@@ -658,6 +658,175 @@ async fn check_shading_pie(
     Ok(())
 }
 
+async fn check_theme_workflow(
+    window: WindowHandle<Studio>,
+    output: &std::path::Path,
+    cx: &mut AsyncApp,
+) -> Result<()> {
+    use crate::theme::Theme;
+    let (scene, selected, dirty, undo, redo, samples, original, frame, settings) =
+        window.update(cx, |s, _, _| {
+            (
+                s.scene.clone(),
+                s.selected,
+                s.dirty,
+                s.history.can_undo(),
+                s.history.can_redo(),
+                s.samples,
+                s.theme,
+                s.frame_image.clone(),
+                s.settings.clone(),
+            )
+        })?;
+    let shortcut = platform_shortcut("cmd-shift-t", "ctrl-shift-t");
+    keys(window, &[shortcut, "down"], cx).await?;
+    prepare_capture(window, cx).await?;
+    window.update(cx, |s, w, _| {
+        capture_window(s, w, &output.join("theme-picker-all.png"))
+    })??;
+    window.update(cx, |s, _, _| -> Result<()> {
+        ensure!(
+            s.theme_picker
+                .as_ref()
+                .is_some_and(|picker| picker.preview() != original),
+            "arrow navigation did not preview a new theme"
+        );
+        ensure!(
+            s.theme == original && s.navigation_blocked(),
+            "browsing committed the theme or left viewport navigation enabled"
+        );
+        Ok(())
+    })??;
+    keys(window, &["escape"], cx).await?;
+    window.update(cx, |s, _, _| -> Result<()> {
+        ensure!(
+            s.theme_picker.is_none() && s.theme == original,
+            "Escape did not restore the saved theme"
+        );
+        Ok(())
+    })??;
+    // The regular command palette is another entry point, and search keystrokes
+    // (including transform/shading shortcuts) must stay inside the theme picker.
+    keys(
+        window,
+        &[
+            platform_shortcut("cmd-k", "ctrl-k"),
+            "t",
+            "h",
+            "e",
+            "m",
+            "e",
+            "enter",
+            "s",
+            "y",
+            "n",
+            "t",
+            "h",
+        ],
+        cx,
+    )
+    .await?;
+    prepare_capture(window, cx).await?;
+    window.update(cx, |s, w, _| -> Result<()> {
+        ensure!(
+            s.theme_picker.as_ref().and_then(|picker| picker.selected()) == Some(Theme::Synthwave),
+            "theme command/search did not select Synthwave"
+        );
+        capture_window(s, w, &output.join("theme-picker.png"))?;
+        Ok(())
+    })??;
+    keys(window, &["enter"], cx).await?;
+    window.update(cx, |s, _, _| -> Result<()> {
+        ensure!(
+            s.theme == Theme::Synthwave && s.theme_picker.is_none(),
+            "Return did not commit the theme"
+        );
+        ensure!(
+            Theme::load(s.theme_path.as_deref().unwrap())? == Theme::Synthwave,
+            "theme preference did not persist"
+        );
+        Ok(())
+    })??;
+    keys(window, &[shortcut, "z", "z", "z", "enter"], cx).await?;
+    window.update(cx, |s, _, _| -> Result<()> {
+        ensure!(
+            s.theme_picker
+                .as_ref()
+                .is_some_and(|picker| picker.selected().is_none())
+                && s.theme == Theme::Synthwave,
+            "empty search committed a theme"
+        );
+        Ok(())
+    })??;
+    keys(window, &["escape"], cx).await?;
+    for theme in Theme::ALL {
+        window.update(cx, |s, _, cx| s.apply_theme(theme, cx))?;
+        prepare_capture(window, cx).await?;
+        window.update(cx, |s, w, _| {
+            capture_window(s, w, &output.join(format!("theme-{}.png", theme.id())))
+        })??;
+    }
+    window.update(cx, |s, _, cx| -> Result<()> {
+        ensure!(
+            s.scene == scene
+                && s.selected == selected
+                && s.dirty == dirty
+                && s.history.can_undo() == undo
+                && s.history.can_redo() == redo,
+            "theme changes modified the document or undo history"
+        );
+        ensure!(
+            s.samples == samples && s.settings == settings,
+            "theme changes reset the viewport samples"
+        );
+        if let (Some(before), Some(after)) = (&frame, &s.frame_image) {
+            ensure!(
+                std::sync::Arc::ptr_eq(before, after),
+                "theme changes replaced the completed viewport frame"
+            );
+        }
+        s.apply_theme(original, cx);
+        Ok(())
+    })??;
+    let original_size = window.update(cx, |s, w, cx| {
+        let size = w.bounds().size;
+        w.resize(gpui::size(px(1000.), px(650.)));
+        s.execute(Command::ToggleTheme, w, cx);
+        size
+    })?;
+    prepare_capture(window, cx).await?;
+    window.update(cx, |s, w, _| {
+        capture_window(s, w, &output.join("theme-picker-minimum.png"))
+    })??;
+    keys(window, &["l", "i", "g", "h", "t", "down"], cx).await?;
+    window.update(cx, |s, w, cx| -> Result<()> {
+        ensure!(
+            s.theme_picker.as_ref().and_then(|picker| picker.selected()) == Some(Theme::Matcha),
+            "filtered arrow navigation did not select Matcha"
+        );
+        s.mouse_down(
+            &MouseDownEvent {
+                button: MouseButton::Left,
+                position: s.bounds.get().center(),
+                modifiers: Default::default(),
+                click_count: 1,
+                first_mouse: false,
+            },
+            w,
+            cx,
+        );
+        ensure!(
+            s.theme_picker.is_none() && s.theme == original && s.selected == selected,
+            "outside click did not cancel the theme preview without selecting an object"
+        );
+        Ok(())
+    })??;
+    window.update(cx, |_, w, _| w.resize(original_size))?;
+    settle(window, cx).await?;
+    println!("editor_themes=search_preview_cancel_commit_persistence_document_isolation_pass");
+    Ok(())
+}
+
 async fn run(window: WindowHandle<Studio>, output: PathBuf, cx: &mut AsyncApp) -> Result<()> {
     std::fs::create_dir_all(&output)?;
     settle(window, cx).await?;
@@ -671,6 +840,7 @@ async fn run(window: WindowHandle<Studio>, output: PathBuf, cx: &mut AsyncApp) -
             Err(error) => println!("workspace_capture=unavailable ({error:#})"),
         }
     })?;
+    check_theme_workflow(window, &output, cx).await?;
     check_preview_workflow(window, &output, cx).await?;
     let palette_key = platform_shortcut("cmd-k", "ctrl-k");
     keys(window, &[palette_key, palette_key], cx).await?;
