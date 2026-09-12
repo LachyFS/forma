@@ -67,6 +67,14 @@ impl Bounds {
     }
 }
 
+/// Split input for one triangle, indexing back into the unsorted triangle array.
+#[derive(Clone, Copy)]
+struct Item {
+    bounds: Bounds,
+    center: Vec3,
+    index: u32,
+}
+
 pub(crate) struct Geometry {
     pub triangles: Vec<Triangle>,
     pub nodes: Vec<Node>,
@@ -168,11 +176,28 @@ impl Geometry {
         Self::build(triangles)
     }
 
-    fn build(mut triangles: Vec<Triangle>) -> Self {
-        let mut nodes = Vec::with_capacity(triangles.len().max(1));
-        if !triangles.is_empty() {
-            build_node(&mut triangles, 0, &mut nodes, 0);
+    fn build(triangles: Vec<Triangle>) -> Self {
+        // Partition compact split inputs rather than 144-byte triangles, and
+        // read each triangle's bounds and centroid once instead of at every
+        // level and axis. Leaves address a contiguous range, so gathering the
+        // triangles in the partitioned order at the end is equivalent.
+        let mut items: Vec<Item> = triangles
+            .iter()
+            .enumerate()
+            .map(|(index, triangle)| Item {
+                bounds: triangle.bounds(),
+                center: triangle.center(),
+                index: index as u32,
+            })
+            .collect();
+        let mut nodes = Vec::with_capacity(items.len().max(1));
+        if !items.is_empty() {
+            build_node(&mut items, 0, &mut nodes, 0);
         }
+        let triangles: Vec<Triangle> = items
+            .iter()
+            .map(|item| triangles[item.index as usize])
+            .collect();
         let lights = triangles
             .iter()
             .enumerate()
@@ -189,29 +214,23 @@ impl Geometry {
 
 /// Binned SAH partitions reduce ray traversal cost without expensive full sorting.
 /// A depth cap keeps the shader's bounded traversal stack provably sufficient.
-fn build_node(
-    triangles: &mut [Triangle],
-    offset: usize,
-    nodes: &mut Vec<Node>,
-    depth: usize,
-) -> u32 {
-    let bounds = triangles
+fn build_node(items: &mut [Item], offset: usize, nodes: &mut Vec<Node>, depth: usize) -> u32 {
+    let bounds = items
         .iter()
-        .fold(Bounds::empty(), |bounds, tri| bounds.union(tri.bounds()));
+        .fold(Bounds::empty(), |bounds, item| bounds.union(item.bounds));
     let id = nodes.len() as u32;
     nodes.push(Node {
         min: vec4(bounds.min - Vec3::splat(1e-5)),
         max: vec4(bounds.max + Vec3::splat(1e-5)),
-        data: [offset as u32, triangles.len() as u32, 1, 0],
+        data: [offset as u32, items.len() as u32, 1, 0],
     });
-    if triangles.len() <= 4 || depth >= 48 {
+    if items.len() <= 4 || depth >= 48 {
         return id;
     }
-    let centroids = triangles.iter().fold(Bounds::empty(), |bounds, tri| {
-        let center = tri.center();
+    let centroids = items.iter().fold(Bounds::empty(), |bounds, item| {
         bounds.union(Bounds {
-            min: center,
-            max: center,
+            min: item.center,
+            max: item.center,
         })
     });
     const BINS: usize = 12;
@@ -221,24 +240,28 @@ fn build_node(
         if span <= 1e-7 {
             continue;
         }
+        let scale = BINS as f32 / span;
         let mut bins = [(Bounds::empty(), 0usize); BINS];
-        for tri in triangles.iter() {
-            let bin = (((tri.center()[axis] - centroids.min[axis]) / span * BINS as f32) as usize)
-                .min(BINS - 1);
-            bins[bin].0 = bins[bin].0.union(tri.bounds());
+        for item in items.iter() {
+            let bin = (((item.center[axis] - centroids.min[axis]) * scale) as usize).min(BINS - 1);
+            bins[bin].0 = bins[bin].0.union(item.bounds);
             bins[bin].1 += 1;
         }
+        // Accumulate each side once. Rescanning every bin per split candidate
+        // costs more than binning itself on the small nodes near the leaves,
+        // which is where most of a build's nodes are.
+        let mut suffix = [(Bounds::empty(), 0usize); BINS];
+        let mut right = (Bounds::empty(), 0usize);
+        for split in (1..BINS).rev() {
+            right.0 = right.0.union(bins[split].0);
+            right.1 += bins[split].1;
+            suffix[split] = right;
+        }
+        let mut left = (Bounds::empty(), 0usize);
         for split in 1..BINS {
-            let mut left = (Bounds::empty(), 0usize);
-            let mut right = left;
-            for bin in &bins[..split] {
-                left.0 = left.0.union(bin.0);
-                left.1 += bin.1;
-            }
-            for bin in &bins[split..] {
-                right.0 = right.0.union(bin.0);
-                right.1 += bin.1;
-            }
+            left.0 = left.0.union(bins[split - 1].0);
+            left.1 += bins[split - 1].1;
+            let right = suffix[split];
             if left.1 == 0 || right.1 == 0 {
                 continue;
             }
@@ -253,20 +276,20 @@ fn build_node(
         let split_at = centroids.min[axis]
             + (centroids.max[axis] - centroids.min[axis]) * split as f32 / BINS as f32;
         let mut left = 0;
-        for i in 0..triangles.len() {
-            if triangles[i].center()[axis] < split_at {
-                triangles.swap(left, i);
+        for i in 0..items.len() {
+            if items[i].center[axis] < split_at {
+                items.swap(left, i);
                 left += 1;
             }
         }
         left
     } else {
-        triangles.len() / 2
+        items.len() / 2
     };
-    if middle == 0 || middle == triangles.len() {
+    if middle == 0 || middle == items.len() {
         return id;
     }
-    let (left, right) = triangles.split_at_mut(middle);
+    let (left, right) = items.split_at_mut(middle);
     let left = build_node(left, offset, nodes, depth + 1);
     let right = build_node(right, offset + middle, nodes, depth + 1);
     nodes[id as usize].data = [left, right, 0, 0];
