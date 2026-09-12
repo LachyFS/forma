@@ -91,7 +91,7 @@ window and passes the following runtime checks:
 - Constrained numeric transforms, cancel, undo/redo, face extrusion, subdivision.
 - Object renaming, sRGB-to-linear color entry, exposure persistence and exact top view.
 - Project and OBJ round trips; duplicate, delete and undo.
-- Resize from the initial 1512-point window to 1120 × 760, retaining a 618 × 586 viewport.
+- Resize from the initial 1512-point window to 1120 × 760, retaining a 608 × 652 viewport.
 - Preview lighting layout at the 1000 × 650 minimum window size, with a scrolling popover.
 - Background saves use immutable snapshots and preserve newer unsaved edits.
 - Stale opens are rejected; background open/import/OBJ export complete successfully.

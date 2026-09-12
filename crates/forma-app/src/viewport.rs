@@ -140,8 +140,7 @@ impl Studio {
                     if tool != Tool::Select {
                         let length = camera.distance * 0.105;
                         if let Some(origin) = project(*center, matrix, bounds) {
-                            for (i, color) in [0xe77778, 0x83c799, 0x7b9ee8].into_iter().enumerate()
-                            {
+                            for (i, color) in crate::ui::AXIS.into_iter().enumerate() {
                                 let mut end = *center;
                                 end[i] += length;
                                 if let Some(end) = project(end, matrix, bounds) {
@@ -168,12 +167,9 @@ impl Studio {
                     }
                 }
                 // Compact world-space axis orientation indicator.
-                let origin = point(bounds.right() - px(48.), bounds.origin.y + px(54.));
-                for (vector, color) in [
-                    (Vec3::X, 0xe77778),
-                    (Vec3::Y, 0x83c799),
-                    (Vec3::Z, 0x7b9ee8),
-                ] {
+                let origin = point(bounds.right() - px(46.), bounds.origin.y + px(94.));
+                for (vector, color) in [Vec3::X, Vec3::Y, Vec3::Z].into_iter().zip(crate::ui::AXIS)
+                {
                     let screen = view.transform_vector3(vector);
                     let end = origin + point(px(screen.x * 23.), px(-screen.y * 23.));
                     line(window, &[origin, end], color, 2.);
@@ -199,7 +195,7 @@ impl Studio {
             .relative()
             .size_full()
             .overflow_hidden()
-            .bg(rgb(0x181c1f))
+            .bg(rgb(0x15181a))
             .on_mouse_down(MouseButton::Left, cx.listener(Self::mouse_down))
             .on_mouse_down(MouseButton::Right, cx.listener(Self::mouse_down))
             .on_mouse_down(MouseButton::Middle, cx.listener(Self::mouse_down))
@@ -231,20 +227,20 @@ impl Studio {
             .child(
                 div()
                     .absolute()
-                    .top(px(15.))
-                    .left(px(18.))
+                    .top(px(14.))
+                    .left(px(16.))
                     .when(
                         self.settings.mode == forma_render::RenderMode::MaterialPreview
                             && self.settings.preview.world_opacity > 0.,
-                        |d| d.px(px(9.)).py(px(7.)).rounded(px(5.)).bg(rgba(0x141719d9)),
+                        |d| d.px(px(9.)).py(px(7.)).rounded(px(6.)).bg(rgba(0x101315d9)),
                     )
                     .text_size(px(11.))
-                    .text_color(rgb(0x929b9e))
+                    .text_color(rgb(crate::ui::MUTED))
                     .child(view_label)
                     .child(
                         div()
                             .mt(px(4.))
-                            .text_color(rgb(0xc4cecc))
+                            .text_color(rgb(crate::ui::TEXT))
                             .child(selection_label),
                     ),
             );
@@ -256,8 +252,8 @@ impl Studio {
                     .flex()
                     .items_center()
                     .justify_center()
-                    .text_size(px(13.))
-                    .text_color(rgb(0x8aa09b))
+                    .text_size(px(12.))
+                    .text_color(rgb(crate::ui::MUTED))
                     .child("Preparing the Metal viewport…"),
             );
         }
@@ -273,14 +269,16 @@ impl Studio {
             viewport = viewport.child(
                 div()
                     .absolute()
-                    .bottom(px(40.))
-                    .left(px(18.))
-                    .px_3()
-                    .py_2()
-                    .rounded_md()
-                    .bg(rgb(0x263b36))
-                    .text_color(rgb(0xb2e7d8))
-                    .text_size(px(12.))
+                    .bottom(px(16.))
+                    .left(px(16.))
+                    .px(px(11.))
+                    .py(px(7.))
+                    .rounded(px(7.))
+                    .bg(rgb(crate::ui::ACTIVE))
+                    .border_1()
+                    .border_color(rgb(crate::ui::ACCENT_LINE))
+                    .text_color(rgb(crate::ui::ACCENT))
+                    .text_size(px(11.))
                     .child(text),
             );
         }
