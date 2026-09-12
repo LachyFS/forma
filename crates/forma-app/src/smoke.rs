@@ -663,6 +663,91 @@ async fn check_shading_pie(
     Ok(())
 }
 
+async fn check_denoise_workflow(
+    window: WindowHandle<Studio>,
+    output: &std::path::Path,
+    cx: &mut AsyncApp,
+) -> Result<()> {
+    window.update(cx, |s, _, cx| {
+        s.scene = Scene::default();
+        s.selected = s.scene.objects.first().map(|object| object.id);
+        s.settings.mode = RenderMode::Rendered;
+        s.settings.exposure = 0.0;
+        s.settings.max_samples = 16;
+        s.scene.render.max_samples = 16;
+        s.settings.denoise = Default::default();
+        s.invalidate(true, cx);
+    })?;
+    wait_for(window, cx, |s| {
+        s.denoised_generation.is_some() && s.frame.as_ref().is_some_and(|f| f.samples == 16)
+    })
+    .await?;
+    window.update(cx, |s, w, cx| -> Result<()> {
+        ensure!(
+            s.samples == 16 && s.frame.as_ref().unwrap().denoised,
+            "Viewport did not denoise its final sample"
+        );
+        capture_window(s, w, &output.join("ai-denoised.png"))?;
+        s.execute(Command::ToggleViewportDenoise, w, cx);
+        Ok(())
+    })??;
+    settle(window, cx).await?;
+    window.update(cx, |s, w, cx| -> Result<()> {
+        ensure!(
+            s.samples == 16 && !s.frame.as_ref().unwrap().denoised,
+            "Disabling denoising did not restore the capped raw film"
+        );
+        s.execute(Command::Undo, w, cx);
+        ensure!(
+            s.settings.denoise.viewport && s.scene.render.denoise.viewport,
+            "Denoising preferences did not follow undo"
+        );
+        s.execute(
+            Command::SetDenoiseQuality(forma_core::DenoiseQuality::High),
+            w,
+            cx,
+        );
+        Ok(())
+    })??;
+    wait_for(window, cx, |s| s.denoised_generation.is_some()).await?;
+    // Changes made while denoising may finish out of order; only the current
+    // request may replace the view. Resize also checks snapshot dimensions.
+    for _ in 0..8 {
+        window.update(cx, |s, _, cx| {
+            s.scene.camera.orbit(Vec2::new(0.04, 0.0));
+            s.invalidate(false, cx);
+            assert!(s.denoised_generation.is_none());
+        })?;
+        Timer::after(Duration::from_millis(20)).await;
+    }
+    wait_for(window, cx, |s| {
+        s.denoised_generation.is_some() && s.frame.as_ref().is_some_and(|f| f.samples == 16)
+    })
+    .await?;
+    let path = output.join("ai-denoised-export.png");
+    window.update(cx, |s, _, cx| s.export_image_to(path.clone(), cx))?;
+    wait_for(window, cx, |s| {
+        s.status.starts_with("Image saved") || s.status.starts_with("Image export failed")
+    })
+    .await?;
+    window.update(cx, |s, _, _| -> Result<()> {
+        ensure!(
+            s.status.starts_with("Image saved"),
+            "Denoised export failed: {}",
+            s.status
+        );
+        ensure!(
+            image::image_dimensions(&path)? == (s.settings.width, s.settings.height),
+            "Denoised export dimensions differ"
+        );
+        Ok(())
+    })??;
+    println!(
+        "ai_denoising=viewport,final_sample,toggle_raw_without_restart,undo,quality,navigation,export PASS"
+    );
+    Ok(())
+}
+
 async fn run(window: WindowHandle<Studio>, output: PathBuf, cx: &mut AsyncApp) -> Result<()> {
     std::fs::create_dir_all(&output)?;
     settle(window, cx).await?;
@@ -1083,6 +1168,9 @@ async fn run(window: WindowHandle<Studio>, output: PathBuf, cx: &mut AsyncApp) -
         "image export dimensions did not match the snapshot"
     );
     println!("background_image_export=PASS");
+    if std::env::var_os("FORMA_SMOKE_DENOISE").is_some() {
+        check_denoise_workflow(window, &output, cx).await?;
+    }
     window.update(cx, |s, _, _| s.dirty = false)?;
     std::fs::write(
         output.join("native-smoke.txt"),

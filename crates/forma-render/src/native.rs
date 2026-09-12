@@ -60,6 +60,9 @@ struct Film {
     height: u32,
     rgba: Texture,
     accumulation: Buffer,
+    albedo: Buffer,
+    normal: Buffer,
+    has_guides: bool,
     pool: CVPixelBufferPool,
 }
 
@@ -300,12 +303,17 @@ impl Renderer {
             }
             self.checked_revision = Some(revision);
         }
-        if !self
-            .film
-            .as_ref()
-            .is_some_and(|film| film.width == width && film.height == height)
-        {
-            self.film = Some(Film::new(&self.device, width, height)?);
+        if !self.film.as_ref().is_some_and(|film| {
+            film.width == width
+                && film.height == height
+                && film.has_guides == settings.mode.progressive()
+        }) {
+            self.film = Some(Film::new(
+                &self.device,
+                width,
+                height,
+                settings.mode.progressive(),
+            )?);
             self.accumulation_key = None;
             self.texture_cache.flush(0);
         }
@@ -419,6 +427,10 @@ impl Renderer {
             encoder.set_buffer(6, Some(&geometry.materials), 0);
             encoder.set_buffer(7, Some(&geometry.texture_pixels), 0);
             encoder.set_buffer(8, Some(&geometry.texture_levels), 0);
+            if settings.mode.progressive() {
+                encoder.set_buffer(9, Some(&film.albedo), 0);
+                encoder.set_buffer(10, Some(&film.normal), 0);
+            }
             encoder.set_texture(0, Some(&film.rgba));
             if let Some(key) = &environment_key {
                 if self.accelerated_preview {
@@ -468,19 +480,35 @@ impl Renderer {
 
     /// Explicit normalized scene-linear readback for numerical validation.
     pub fn read_linear_pixels(&self) -> Result<Vec<[f32; 4]>> {
+        let film = self
+            .film
+            .as_ref()
+            .filter(|_| self.frame.is_some())
+            .context("Render an image before reading the linear film")?;
+        self.read_float_buffer(&film.accumulation)
+    }
+
+    pub fn read_denoise_guides(&self) -> Result<crate::denoise::GuidePixels> {
+        let film = self
+            .film
+            .as_ref()
+            .filter(|f| f.has_guides && self.frame.is_some())
+            .context("Render a path-traced image before reading denoising guides")?;
+        Ok((
+            self.read_float_buffer(&film.albedo)?,
+            self.read_float_buffer(&film.normal)?,
+        ))
+    }
+
+    fn read_float_buffer(&self, source: &BufferRef) -> Result<Vec<[f32; 4]>> {
         objc::rc::autoreleasepool(|| {
-            let film = self
-                .film
-                .as_ref()
-                .filter(|_| self.frame.is_some())
-                .context("Render an image before reading the linear film")?;
-            let size = film.width as u64 * film.height as u64 * 16;
+            let size = source.length();
             let buffer = self
                 .device
                 .new_buffer(size, MTLResourceOptions::StorageModeShared);
             let command = self.queue.new_command_buffer();
             let encoder = command.new_blit_command_encoder();
-            encoder.copy_from_buffer(&film.accumulation, 0, &buffer, 0, size);
+            encoder.copy_from_buffer(source, 0, &buffer, 0, size);
             encoder.end_encoding();
             command.commit();
             command.wait_until_completed();
@@ -492,7 +520,7 @@ impl Renderer {
             let values = unsafe {
                 std::slice::from_raw_parts(
                     buffer.contents().cast::<[f32; 4]>(),
-                    (film.width * film.height) as usize,
+                    (size / 16) as usize,
                 )
             };
             Ok(values
@@ -628,7 +656,7 @@ impl GpuGeometry {
 }
 
 impl Film {
-    fn new(device: &DeviceRef, width: u32, height: u32) -> Result<Self> {
+    fn new(device: &DeviceRef, width: u32, height: u32, has_guides: bool) -> Result<Self> {
         let descriptor = TextureDescriptor::new();
         descriptor.set_texture_type(MTLTextureType::D2);
         descriptor.set_pixel_format(MTLPixelFormat::RGBA8Unorm);
@@ -641,6 +669,13 @@ impl Film {
             width as u64 * height as u64 * 16,
             MTLResourceOptions::StorageModePrivate,
         );
+        let guide_size = if has_guides {
+            width as u64 * height as u64 * 16
+        } else {
+            16
+        };
+        let albedo = device.new_buffer(guide_size, MTLResourceOptions::StorageModePrivate);
+        let normal = device.new_buffer(guide_size, MTLResourceOptions::StorageModePrivate);
         let empty = CFDictionary::<CFString, CFType>::from_CFType_pairs(&[]);
         let attributes = CFDictionary::from_CFType_pairs(&[
             (
@@ -671,6 +706,9 @@ impl Film {
             height,
             rgba,
             accumulation,
+            albedo,
+            normal,
+            has_guides,
             pool,
         })
     }

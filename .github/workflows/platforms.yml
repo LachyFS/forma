@@ -21,6 +21,11 @@ jobs:
         with:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install verified AI denoiser runtime
+        run: python scripts/setup-denoiser.py
       - name: Linux build dependencies
         if: runner.os == 'Linux'
         run: |
@@ -36,6 +41,8 @@ jobs:
         run: cargo test --locked -p forma-core -p forma
       - name: Validate WGSL and generate Vulkan, Metal, and DirectX shaders
         run: cargo test --locked -p forma-render --test shaders
+      - name: Execute AI denoiser on CPU or available GPU
+        run: cargo test --locked -p forma-render --test denoise_runtime -- --ignored --test-threads=1
       - name: Execute shared renderer tests on Vulkan
         if: runner.os == 'Linux'
         env:

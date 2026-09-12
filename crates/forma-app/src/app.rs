@@ -3,8 +3,8 @@ use crate::render_worker::{RenderWorker, Request};
 use crate::shading_pie::ShadingPie;
 use crate::{command_modifier, platform_shortcut};
 use forma_core::{
-    History, Material, MeshInstance, Object, Primitive, Scene, ShaderKind, TextureMapping,
-    TextureSlot,
+    DenoiseQuality, History, Material, MeshInstance, Object, Primitive, Scene, ShaderKind,
+    TextureMapping, TextureSlot,
 };
 use forma_render::{Backend, Frame, PreviewSettings, RenderMode, RenderSettings, StudioLight};
 use glam::{Vec2, Vec3};
@@ -37,6 +37,7 @@ pub enum Field {
     WorldStrength,
     Samples,
     Bounces,
+    DenoiseStart,
     PreviewRotation,
     PreviewStrength,
     PreviewOpacity,
@@ -71,6 +72,9 @@ pub enum Command {
     Extrude,
     Subdivide,
     ToggleGrid,
+    ToggleViewportDenoise,
+    ToggleRenderDenoise,
+    SetDenoiseQuality(DenoiseQuality),
     MaterialPreset(usize),
     SetShader(ShaderKind),
     SetTextureMapping(TextureMapping),
@@ -108,6 +112,8 @@ pub struct Studio {
     pub edit_mode: bool,
     pub settings: RenderSettings,
     pub samples: u32,
+    pub denoised_generation: Option<u64>,
+    pub denoise_error: Option<String>,
     pub render_ms: f64,
     pub device_name: String,
     pub status: String,
@@ -216,8 +222,11 @@ impl Studio {
                 show_grid: true,
                 selected,
                 preview: PreviewSettings::default(),
+                denoise: Default::default(),
             },
             samples: 0,
+            denoised_generation: None,
+            denoise_error: None,
             render_ms: 0.,
             device_name: "Starting GPU renderer…".into(),
             status: "Ready · Select an object to begin".into(),
@@ -324,6 +333,8 @@ impl Studio {
             self.needs_snapshot = true;
         }
         self.generation += 1;
+        self.denoised_generation = None;
+        self.denoise_error = None;
         self.settings.selected = self.selected;
         self.samples = 0;
         if !self.needs_render {
@@ -367,13 +378,36 @@ impl Studio {
                     self.status = error.clone();
                 }
                 self.render_ms = frame.elapsed_ms;
-                self.frame = Some(frame);
-                // Each completed frame has a unique image ID. Evict its predecessor
-                // from GPUI's GPU atlas as well as releasing its CPU pixels.
-                if let Some(previous) = std::mem::replace(&mut self.frame_image, image) {
-                    cx.drop_image(previous, None);
+                // Retain the clean image as the raw estimator keeps refining.
+                // Switching back to raw between denoising updates causes flicker.
+                if self.denoised_generation != Some(self.generation) {
+                    self.frame = Some(frame);
+                    if let Some(previous) = std::mem::replace(&mut self.frame_image, image) {
+                        cx.drop_image(previous, None);
+                    }
                 }
                 self.render_error = None;
+                changed = true;
+            }
+            if let Some((generation, frame, image)) = output.denoised.take()
+                && generation == self.generation
+                && self.settings.mode.progressive()
+                && self.settings.denoise.viewport
+            {
+                self.denoised_generation = Some(generation);
+                self.denoise_error = None;
+                self.samples = self.samples.max(frame.samples);
+                self.frame = Some(frame);
+                if let Some(previous) = self.frame_image.replace(image) {
+                    cx.drop_image(previous, None);
+                }
+                changed = true;
+            }
+            if let Some((generation, error)) = output.denoise_error.take()
+                && generation == self.generation
+                && self.settings.denoise.viewport
+            {
+                self.denoise_error = Some(error);
                 changed = true;
             }
             if let Some((generation, error)) = output.render_error.take()
@@ -676,6 +710,25 @@ impl Studio {
                         }
                     }
                 }
+            }
+            Command::ToggleViewportDenoise
+            | Command::ToggleRenderDenoise
+            | Command::SetDenoiseQuality(_) => {
+                self.history.checkpoint(&self.scene);
+                match command {
+                    Command::ToggleViewportDenoise => {
+                        self.settings.denoise.viewport = !self.settings.denoise.viewport
+                    }
+                    Command::ToggleRenderDenoise => {
+                        self.settings.denoise.render = !self.settings.denoise.render
+                    }
+                    Command::SetDenoiseQuality(quality) => self.settings.denoise.quality = quality,
+                    _ => unreachable!(),
+                }
+                self.scene.render.denoise = self.settings.denoise;
+                self.dirty = true;
+                self.status = "Denoising updated".into();
+                self.invalidate(false, cx);
             }
             Command::ToggleGrid => {
                 self.settings.show_grid = !self.settings.show_grid;
@@ -1187,6 +1240,7 @@ impl Studio {
             Field::PreviewBlur => Some(self.settings.preview.background_blur * 100.),
             Field::Samples => return self.settings.max_samples.to_string(),
             Field::Bounces => return self.settings.max_bounces.to_string(),
+            Field::DenoiseStart => return self.settings.denoise.start_sample.to_string(),
         };
         value
             .map(|v| format!("{v:.2}"))
@@ -1262,7 +1316,11 @@ impl Studio {
         }
         let geometry = !matches!(
             field,
-            Field::Exposure | Field::WorldStrength | Field::Samples | Field::Bounces
+            Field::Exposure
+                | Field::WorldStrength
+                | Field::Samples
+                | Field::Bounces
+                | Field::DenoiseStart
         );
         self.history.checkpoint(&self.scene);
         self.dirty = true;
@@ -1271,6 +1329,9 @@ impl Studio {
             Field::WorldStrength => self.scene.world.strength = value.clamp(0., 100.),
             Field::Samples => self.settings.max_samples = (value as u32).clamp(1, 4096),
             Field::Bounces => self.settings.max_bounces = (value as u32).clamp(1, 32),
+            Field::DenoiseStart => {
+                self.settings.denoise.start_sample = (value as u32).clamp(1, 4096)
+            }
             _ => {
                 if let Some(id) = self.selected {
                     match field {
@@ -1325,6 +1386,7 @@ impl Studio {
         self.scene.render.exposure = self.settings.exposure;
         self.scene.render.max_samples = self.settings.max_samples;
         self.scene.render.max_bounces = self.settings.max_bounces;
+        self.scene.render.denoise = self.settings.denoise;
         self.status = "Value updated".into();
         self.invalidate(geometry, cx);
     }
@@ -1333,6 +1395,7 @@ impl Studio {
         self.settings.exposure = self.scene.render.exposure;
         self.settings.max_samples = self.scene.render.max_samples;
         self.settings.max_bounces = self.scene.render.max_bounces;
+        self.settings.denoise = self.scene.render.denoise;
     }
 
     pub(crate) fn open_shading_pie(&mut self, pointer: Vec2, cx: &mut Context<Self>) {
@@ -1724,6 +1787,16 @@ pub(crate) fn palette_commands(query: &str) -> Vec<(&'static str, &'static str, 
         ("Right view", "3", Command::ViewRight),
         ("Top view", "7", Command::ViewTop),
         ("Toggle grid", "", Command::ToggleGrid),
+        (
+            "Toggle viewport AI denoising",
+            "",
+            Command::ToggleViewportDenoise,
+        ),
+        (
+            "Toggle render export AI denoising",
+            "",
+            Command::ToggleRenderDenoise,
+        ),
         ("Keyboard shortcuts", "?", Command::ToggleHelp),
         (
             "Material preview lighting",
