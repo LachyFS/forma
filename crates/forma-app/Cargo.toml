@@ -1,0 +1,21 @@
+[package]
+name = "forma"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+default-run = "forma"
+
+[dependencies]
+forma-core = { path = "../forma-core" }
+forma-render = { path = "../forma-render" }
+anyhow.workspace = true
+glam.workspace = true
+image.workspace = true
+gpui = { version = "0.2.2", features = ["runtime_shaders"] }
+smallvec = "1"
+async-channel = "2.5"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+core-graphics = "0.24"
+raw-window-handle = "0.6"
+objc2 = "0.6"
