@@ -28,6 +28,7 @@ and the platform build dependencies below. The repository's `rust-toolchain.toml
 selects the compiler and lint tools used in CI. Then run:
 
 ```sh
+python3 scripts/setup-denoiser.py  # Python 3.12+; installs the verified AI denoiser
 cargo run --locked -p forma
 ```
 
@@ -82,7 +83,8 @@ cargo run --locked --release -p forma
 - Choose PBR, Glass or Custom surface shaders, select PNG/JPEG image textures,
   and edit Metal/WGSL surface code with compile diagnostics. Adjust roughness, IOR, metallic response, emission,
   world strength and exposure. Enter arbitrary sRGB base colors and rename objects.
-  Set the progressive sample and bounce limits.
+  Set the progressive sample and bounce limits, with AI denoising for the
+  viewport and PNG renders. See [denoising controls and setup](docs/DENOISING.md).
 - Save `.forma` projects with a versioned object graph, reusable mesh/material
   data, transforms, camera, world and render preferences. Version-1 projects
   migrate on open. Save replacement is atomic; edits support undo/redo.
@@ -146,10 +148,11 @@ this path includes a readback and UI texture upload. PNG exports retain full RGB
 chroma on every backend.
 
 This is an initial surface renderer, with no claim of Blender or Cycles
-feature parity. Volumes, subsurface scattering, denoising and adaptive sampling
+feature parity. Volumes, subsurface scattering and adaptive sampling
 are not implemented. Image textures use generated box, sphere or planar coordinates;
 there is no UV editor. See [surface shaders and textures](docs/MATERIALS.md) for
-custom code, image controls, glass behavior and limits. HDR environment
+custom code, image controls, glass behavior and limits. Rendered mode uses
+Open Image Denoise for the viewport and PNG exports. HDR environment
 imports currently support Radiance `.hdr` files for Material Preview. Animation,
 sculpting, modifiers beyond destructive subdivision, UV editing and a full
 vertex/edge modelling toolkit are outside the current application. See the

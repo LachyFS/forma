@@ -28,6 +28,10 @@ struct Basis { tangent: vec3<f32>, bitangent: vec3<f32> }
 @group(0) @binding(2) var<storage, read> nodes: array<BvhNode>;
 @group(0) @binding(3) var<storage, read> lights: array<u32>;
 @group(0) @binding(4) var<storage, read_write> accumulation: array<vec4<f32>>;
+// Pack both guides into one binding to stay within the portable limit of eight
+// storage buffers alongside geometry, materials, image textures and beauty.
+struct DenoiseGuide { albedo: vec4<f32>, normal: vec4<f32> }
+@group(0) @binding(9) var<storage, read_write> denoise_guides: array<DenoiseGuide>;
 @group(0) @binding(5) var output: texture_storage_2d<rgba8unorm, write>;
 
 const PI_F: f32 = 3.14159265358979323846;
@@ -610,7 +614,23 @@ fn render_main(@builtin(global_invocation_id) global_id: vec3<u32>) {
     let pixel = vec2<f32>(gid) + jitter;
     let ray = camera_ray(pixel); let primary = trace(ray, FAR, false);
     var color: vec3<f32>;
-    if progressive { color = path_trace(ray, primary, &rng); }
+    if progressive {
+        // Use the beauty ray's jitter, hit and weight for antialiased OIDN guides.
+        var albedo = vec4(1.0); // environment has no surface normal
+        var normal = vec4(0.0, 0.0, 0.0, 1.0);
+        if primary.triangle != NO_HIT {
+            let surface = evaluate_surface(ray, primary);
+            albedo = vec4(select(clamp(surface.color, vec3(0.0), vec3(1.0)), vec3(1.0), surface.glass), 1.0);
+            normal = vec4(surface.normal, 1.0);
+        }
+        if u.image.z != 0u {
+            albedo += denoise_guides[index].albedo;
+            normal += denoise_guides[index].normal;
+        }
+        denoise_guides[index].albedo = albedo;
+        denoise_guides[index].normal = normal;
+        color = path_trace(ray, primary, &rng);
+    }
     else if u.image.w == 0u { color = wireframe_shading(ray, pixel, primary); }
     else if primary.triangle != NO_HIT { color = solid_shading(surface_at(ray, primary), ray); }
     else { color = viewport_background(ray); }

@@ -279,6 +279,8 @@ pub struct RenderPreferences {
     pub exposure: f32,
     pub max_samples: u32,
     pub max_bounces: u32,
+    #[serde(default)]
+    pub denoise: DenoiseSettings,
 }
 
 impl Default for RenderPreferences {
@@ -287,6 +289,47 @@ impl Default for RenderPreferences {
             exposure: 0.0,
             max_samples: 128,
             max_bounces: 8,
+            denoise: DenoiseSettings::default(),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DenoiseQuality {
+    Fast,
+    #[default]
+    Balanced,
+    High,
+}
+
+impl DenoiseQuality {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Fast => "Fast",
+            Self::Balanced => "Balanced",
+            Self::High => "High",
+        }
+    }
+}
+
+/// Denoising changes the displayed image, never the Monte Carlo estimator.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct DenoiseSettings {
+    pub viewport: bool,
+    pub render: bool,
+    pub start_sample: u32,
+    pub quality: DenoiseQuality,
+}
+
+impl Default for DenoiseSettings {
+    fn default() -> Self {
+        Self {
+            viewport: true,
+            render: true,
+            start_sample: 8,
+            quality: DenoiseQuality::Balanced,
         }
     }
 }
@@ -1391,7 +1434,8 @@ impl Scene {
             render.exposure.is_finite()
                 && (-10.0..=10.0).contains(&render.exposure)
                 && (1..=4096).contains(&render.max_samples)
-                && (1..=32).contains(&render.max_bounces),
+                && (1..=32).contains(&render.max_bounces)
+                && (1..=4096).contains(&render.denoise.start_sample),
             "Invalid render preferences"
         );
         Ok(())

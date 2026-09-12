@@ -3,7 +3,7 @@ use std::{fmt, path::Path, str::FromStr, sync::Arc};
 use anyhow::{Context, Result, bail};
 use forma_core::{Scene, ShaderLanguage};
 
-use crate::RenderSettings;
+use crate::{DenoiseInput, DenoiseQuality, Denoiser, RenderMode, RenderSettings};
 
 /// Renderer selection. `Auto` preserves native Metal on macOS and selects wgpu
 /// DirectX 12 on Windows or wgpu Vulkan on Linux. Explicit choices never fall
@@ -112,9 +112,34 @@ pub struct Frame {
     pub samples: u32,
     pub elapsed_ms: f64,
     pub shader_error: Option<String>,
+    pub denoised: bool,
+    pub denoise_device: Option<String>,
 }
 
 impl Frame {
+    pub(crate) fn from_denoised(
+        input: &DenoiseInput,
+        rgba: Vec<u8>,
+        device: String,
+        elapsed_ms: f64,
+    ) -> Self {
+        Self {
+            storage: FrameStorage::Rgba(crate::portable::Frame {
+                width: input.width,
+                height: input.height,
+                rgba: rgba.into(),
+                samples: input.samples,
+                elapsed_ms,
+                shader_error: input.shader_error.clone(),
+            }),
+            samples: input.samples,
+            elapsed_ms,
+            shader_error: input.shader_error.clone(),
+            denoised: true,
+            denoise_device: Some(device),
+        }
+    }
+
     pub fn width(&self) -> u32 {
         match &self.storage {
             #[cfg(target_os = "macos")]
@@ -172,6 +197,9 @@ enum Implementation {
 /// for every backend.
 pub struct Renderer {
     implementation: Implementation,
+    last_frame: Option<Frame>,
+    last_mode: RenderMode,
+    exposure: f32,
 }
 
 impl Renderer {
@@ -206,7 +234,12 @@ impl Renderer {
                 std::env::consts::OS
             ),
         };
-        Ok(Self { implementation })
+        Ok(Self {
+            implementation,
+            last_frame: None,
+            last_mode: RenderMode::Solid,
+            exposure: 0.0,
+        })
     }
 
     pub fn backend(&self) -> Backend {
@@ -249,12 +282,18 @@ impl Renderer {
                 (frame.samples, frame.elapsed_ms, frame.shader_error.clone())
             }
         };
-        Ok(Frame {
+        let frame = Frame {
             storage,
             samples,
             elapsed_ms,
             shader_error,
-        })
+            denoised: false,
+            denoise_device: None,
+        };
+        self.last_frame = Some(frame.clone());
+        self.last_mode = settings.mode;
+        self.exposure = settings.exposure;
+        Ok(frame)
     }
 
     pub fn export_png(&mut self, path: &Path) -> Result<()> {
@@ -263,6 +302,60 @@ impl Renderer {
             Implementation::Native(renderer) => renderer.export_png(path),
             Implementation::Portable(renderer) => renderer.export_png(path),
         }
+    }
+
+    /// Snapshot all three linear passes without changing accumulation or display.
+    pub fn read_denoise_input(&self) -> Result<DenoiseInput> {
+        anyhow::ensure!(
+            self.last_mode == RenderMode::Rendered,
+            "Denoising requires a path-traced image"
+        );
+        let frame = self
+            .last_frame
+            .as_ref()
+            .context("Render before denoising")?;
+        let color = self.read_linear_pixels()?;
+        let (mut albedo, mut normal) = match &self.implementation {
+            #[cfg(target_os = "macos")]
+            Implementation::Native(renderer) => renderer.read_denoise_guides()?,
+            Implementation::Portable(renderer) => renderer.read_denoise_guides()?,
+        };
+        // Floating-point sums can drift a few ulps beyond the guide ranges.
+        for pixel in &mut albedo {
+            for value in &mut pixel[..3] {
+                *value = value.clamp(0.0, 1.0);
+            }
+        }
+        for pixel in &mut normal {
+            for value in &mut pixel[..3] {
+                *value = value.clamp(-1.0, 1.0);
+            }
+        }
+        Ok(DenoiseInput {
+            width: frame.width(),
+            height: frame.height(),
+            samples: frame.samples,
+            shader_error: frame.shader_error.clone(),
+            color,
+            albedo,
+            normal,
+        })
+    }
+
+    /// Final-quality HDR denoising with accurate guide prefiltering. Failure is
+    /// explicit: a requested denoised export is never silently saved as raw.
+    pub fn export_denoised_png(&self, path: &Path, denoiser: &mut Denoiser) -> Result<()> {
+        let input = self.read_denoise_input()?;
+        let frame = denoiser.denoise_frame(&input, DenoiseQuality::High, true, self.exposure)?;
+        image::save_buffer_with_format(
+            path,
+            frame.rgba().unwrap(),
+            frame.width(),
+            frame.height(),
+            image::ColorType::Rgba8,
+            image::ImageFormat::Png,
+        )
+        .with_context(|| format!("Could not export {}", path.display()))
     }
 
     /// Explicit numerical readback of the untonemapped, normalized linear film.

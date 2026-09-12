@@ -70,6 +70,11 @@ scale changes trigger resizing directly. There is no periodic polling delay or
 idle render timer. The event loop does not wait for GPU completion and can present
 the most recently completed surface while a newer request is rendering.
 
+A separate denoising worker owns a persistent OIDN device and a bounded latest-snapshot
+mailbox. Generation guards reject stale clean frames; completion wakes GPUI even
+when the path tracer has reached its sample cap. Denoised display uses immutable
+RGBA images on all platforms.
+
 The worker owns its `Renderer` and renders one sample per call. Static modes stop
 after one frame, including Material Preview; Rendered continues to the sample cap and
 then sleep until another request arrives. PNG export uses a separate renderer
@@ -111,6 +116,8 @@ flowchart LR
     Environment[Cached HDR diffuse + GGX roughness slices + BRDF] --> Preview
     Trace --> Film[Linear float accumulation]
     Film --> Display[Exposure + tone curve + sRGB film]
+    Film --> Denoise[OIDN HDR snapshot + albedo + normal]
+    Denoise --> Clean[Immutable denoised RGBA display]
     Preview --> Display
     Display --> NV12[Metal RGBA to NV12 conversion]
     NV12 --> Surface[IOSurface-backed CVPixelBuffer]
@@ -118,6 +125,7 @@ flowchart LR
     Display --> Readback[wgpu: immutable RGBA readback]
     Readback --> Upload[Worker BGRA image + GPUI texture upload]
     Upload --> GPUI
+    Clean --> Upload
     Display --> Export[Explicit RGB readback for PNG]
 ```
 
@@ -212,8 +220,10 @@ validation still run on the UI thread and can pause on large meshes. Generation
 and document-identity guards reject stale loads and preserve edits made during
 an asynchronous save. Material Preview produces deterministic IBL shading in one
 frame; its reflections use the environment and contact shading approximates
-occlusion. Rendered has no denoiser or adaptive sampling and retains Monte Carlo
-noise until enough samples accumulate.
+occlusion. Rendered has optional Open Image Denoise reconstruction for the viewport
+and exports; its original Monte Carlo film continues accumulating independently.
+Adaptive sampling is not implemented. See [AI denoising](DENOISING.md) for the
+three-pass HDR pipeline, asynchronous scheduling and runtime distribution.
 
 The [validation record](VALIDATION.md) documents the tests and local measurements
 actually executed. Future performance work can replace GPU traversal or history

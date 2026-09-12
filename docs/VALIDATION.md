@@ -1,5 +1,59 @@
 # Implementation validation
 
+## Denoising merge validation (2026-09-12)
+
+Validated denoising together with the current material shaders, compact panels,
+themes, CI configuration and website on the pinned Rust 1.98.1 toolchain:
+
+- All **113 workspace tests** passed. New renderer coverage checks guides from
+  textures, custom shader colors/normals and glass, and preserves shader diagnostics.
+- The real OIDN runtime test passed separately on the selected NVIDIA GPU.
+- Strict workspace Clippy and renderer Clippy for Apple ARM64 and Windows x64
+  passed, as did formatting, actionlint, ShellCheck and all **8 website tests**.
+  Cross-compilation does not establish native execution on macOS or Windows.
+- The full GPUI smoke passed on X11 with llvmpipe Vulkan and
+  `FORMA_SMOKE_DENOISE=1`, including themes, material shaders, navigation,
+  final-sample denoising, raw/denoised switching, undo and concurrent PNG export.
+  The report and images are in `artifacts/app-denoise-merged/`; the full-window
+  capture was inspected with the denoising controls in the compact render card.
+
+## AI denoising (2026-09-12)
+
+- `cargo test --locked --workspace -- --test-threads=1`: **93 passed**; the
+  runtime-dependent OIDN test is ignored by default and was executed separately.
+- `cargo test --locked -p forma-render --test denoise_runtime -- --ignored`:
+  **passed on the automatically selected NVIDIA GPU and with
+  `OIDN_DEFAULT_DEVICE=cpu`**. Covers all three quality modes, accurate guide
+  prefiltering, HDR edge/noise behavior, cached buffers, resize, alpha, unchanged
+  source data and exactly black films. The black-film case caught neural
+  reconstruction bias and now takes an exact zero-energy fast path.
+- Workspace clippy with `--all-targets -- -D warnings`, formatting, and diff checks:
+  passed. Renderer clippy with the same options passed for
+  `aarch64-apple-darwin` and `x86_64-pc-windows-msvc`; native execution on those
+  platforms remains unverified.
+- `denoise-smoke artifacts/denoise 8` rendered the default scene at 512 × 384
+  on RADV Vulkan, then used OIDN 2.4.1 on its selected NVIDIA GPU. Against a
+  256-sample reference, linear RGB MSE fell from **0.00091826 to 0.00032393**
+  (**64.7% reduction**). The Balanced denoise call, including first filter setup,
+  took **6.4 ms** on this run. These observations are scene/device-specific.
+  Raw, viewport-denoised, High-quality export and reference PNGs were inspected.
+- The complete real GPUI smoke passed on X11 with llvmpipe Vulkan and
+  `FORMA_SMOKE_DENOISE=1`. It additionally checked the final denoised viewport,
+  restoring raw samples at the cap without retracing, undo, quality changes,
+  navigation during inference and a separate denoised PNG export. A full X11
+  capture of this app's window verified the inspector layout at 1120 × 760.
+- `scripts/bundle-linux.sh debug`: passed with the verified OIDN runtime and
+  notices included. Loading the bundled library by its relocated path passed.
+  An explicitly missing `FORMA_OIDN_LIBRARY` returned an actionable error
+  without loading a different runtime. macOS/Windows package scripts were
+  updated but not executed on this Linux host.
+
+This worktree's host lacked the XKB X11 runtime/development libraries needed to
+link the existing GPUI app. Ubuntu packages were extracted under
+`target/native-libs`, with local linker/runtime search paths used for the app
+checks; no system packages were changed. Source setup and the design are in
+[AI denoising](DENOISING.md).
+
 ## CI checks (2026-09-12)
 
 Validated the CI configuration locally on Linux with the repository's pinned
