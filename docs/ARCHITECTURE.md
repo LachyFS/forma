@@ -81,6 +81,21 @@ then sleep until another request arrives. PNG export uses a separate renderer
 and immutable scene snapshot, so export does not replace the interactive film.
 Export still shares the physical GPU and can reduce viewport throughput.
 
+## Editor appearance
+
+The app's `theme` module defines semantic chrome colors and five built-in presets.
+The theme picker previews a candidate without changing the saved choice. Escape,
+clicking outside, or opening another editor command discards the preview; click or
+Return commits it. Theme changes notify GPUI without invalidating the renderer or
+mutating the scene, dirty state, or undo history. Axis identities and material
+swatches retain their scene meaning across themes.
+
+The selected stable theme ID is saved atomically to `forma/color-theme` beneath
+macOS's `~/Library/Application Support`, Windows's `%APPDATA%`, or Linux's
+`$XDG_CONFIG_HOME` (falling back to `~/.config`). Missing or unknown IDs use Forma
+Dark. I/O failures retain the usable session theme and report through the status
+bar. Native smoke tests use a preference file inside their output directory.
+
 ## GPU pipeline and surface ownership
 
 A public `Renderer` selects native Metal on macOS by default, or wgpu using
