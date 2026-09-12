@@ -67,7 +67,9 @@ cross-distribution packages. They do not install, sign, notarize or publish.
 
 The CI workflow compiles and lints all targets on Linux, Windows and macOS, runs
 core/application unit tests, and validates WGSL plus SPIR-V, MSL and HLSL source
-generation. Linux also executes the shared renderer suite through Mesa Vulkan.
+generation. Linux also executes the shared renderer suite through Mesa software
+Vulkan and uploads four-mode smoke images. See [CI checks](CI.md) for triggers,
+toolchain updates, and required status checks.
 Native acceleration comparisons and native-versus-wgpu Metal parity run only
 on macOS with an available GPU.
 
