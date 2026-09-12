@@ -1,11 +1,12 @@
 mod app;
+mod code_editor;
 mod render_worker;
 mod shading_pie;
 mod smoke;
-mod ui;
-mod viewport;
 #[cfg(target_os = "macos")]
 mod trackpad;
+mod ui;
+mod viewport;
 
 use app::{Command, Studio};
 use gpui::{

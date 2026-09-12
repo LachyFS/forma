@@ -42,7 +42,8 @@ cargo run --locked --release -p forma
   numerical input and viewport handles. Edit exact values in the inspector.
 - Extrude a selected face by 0.30 units, then transform it. Apply Catmull–Clark
   subdivision to the selected mesh.
-- Choose material presets and adjust roughness, metallic response, emission,
+- Choose PBR, Glass or Custom surface shaders, select PNG/JPEG image textures,
+  and edit Metal surface code with compile diagnostics. Adjust roughness, IOR, metallic response, emission,
   world strength and exposure. Enter arbitrary sRGB base colors and rename objects.
   Set the progressive sample and bounce limits.
 - Save `.forma` projects with a versioned object graph, reusable mesh/material
@@ -93,16 +94,18 @@ These preview controls are session settings and do not change the document or un
 
 ![Material Preview lighting](docs/images/material-preview-lighting.png)
 
-Rendered mode traces full light paths. The renderer implements opaque Lambert
-diffuse and GGX reflection, direct emitter/environment sampling, multiple
+Rendered mode traces full light paths. The renderer implements Lambert
+diffuse, GGX reflection and rough dielectric glass transmission, direct emitter/environment sampling, multiple
 importance sampling, Russian roulette, linear accumulation, exposure and an
 ACES-style display curve. Display stays on the GPU through IOSurface-backed
 CoreVideo NV12 buffers consumed by GPUI; CPU pixel readback occurs for explicit
 PNG export and numerical tests.
 
-This is an initial opaque-surface renderer, with no claim of Blender or Cycles
-feature parity. Transmission/refraction, volumes, subsurface scattering, material
-textures, denoising and adaptive sampling are not implemented. HDR environment
+This is an initial surface renderer, with no claim of Blender or Cycles
+feature parity. Volumes, subsurface scattering, denoising and adaptive sampling
+are not implemented. Image textures use generated box, sphere or planar coordinates;
+there is no UV editor. See [surface shaders and textures](docs/MATERIALS.md) for
+custom code, image controls, glass behavior and limits. HDR environment
 imports currently support Radiance `.hdr` files for Material Preview. Animation,
 sculpting, modifiers beyond destructive subdivision, UV editing and a full
 vertex/edge modelling toolkit are outside the current application. See the

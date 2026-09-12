@@ -1,4 +1,4 @@
-// Deterministic opaque PBR look development. All object lighting comes from the
+// Deterministic PBR and glass look development. All object lighting comes from the
 // cached environment; scene emitters remain visible but do not illuminate peers.
 // Diffuse E/pi, GGX-prefiltered reflection and the Smith GGX split-sum LUT remain
 // scene-linear until the shared display transform at the end of the pixel.
@@ -89,7 +89,7 @@ float3 preview_pbr(Surface s, Ray ray, float ao, constant Uniforms &u,
                    texture2d_array<float, access::sample> specular,
                    texture2d<float, access::sample> brdf) {
     float nv = max(0.0001f, dot(s.normal, -ray.direction));
-    float3 f0 = mix(float3(0.04f), s.color, s.metallic);
+    float3 f0 = mix(float3(dielectric_f0(s.ior)), s.color, s.metallic);
     float2 response = brdf.sample(preview_lut_sampler, float2(nv, s.roughness)).xy;
     float3 irradiance, reflection;
     if (u.preview_lighting.w > 0.5f) {
@@ -116,10 +116,56 @@ float3 preview_pbr(Surface s, Ray ray, float ao, constant Uniforms &u,
     return max((diffuse_energy + specular_energy) * ao + s.emission, 0.0f);
 }
 
+float3 preview_reflection(float3 direction, float roughness, constant Uniforms &u,
+                          texture2d_array<float, access::sample> specular) {
+    if (u.preview_lighting.w > 0.5f) return max(u.world.xyz, 0.0f) * max(u.world.w, 0.0f);
+    float layer = roughness * float(specular.get_array_size() - 1u);
+    uint lo = uint(floor(layer)), hi = min(lo + 1u, specular.get_array_size() - 1u);
+    float2 uv = preview_uv(preview_direction(direction, u));
+    return mix(specular.sample(preview_env_sampler, uv, lo, level(0.0f)).xyz,
+               specular.sample(preview_env_sampler, uv, hi, level(0.0f)).xyz, fract(layer)) * u.preview_lighting.z;
+}
+float3 preview_surface(Ray ray, Hit hit, float ao, device const Triangle *triangles,
+                       device const BvhNode *nodes, constant Uniforms &u, MATERIAL_ARGS,
+                       texture2d<float, access::sample> environment,
+                       texture2d<float, access::sample> diffuse,
+                       texture2d_array<float, access::sample> specular,
+                       texture2d<float, access::sample> brdf PREVIEW_ACCEL_PARAM) {
+    float3 color(0), throughput(1);
+    float blur = u.preview_display.y;
+    // Follow glass interfaces deterministically. Reflections use the studio
+    // environment; transmitted rays can reveal other scene objects.
+    for (uint depth = 0u; depth < 8u; ++depth) {
+        if (hit.triangle == NO_HIT) {
+            float3 background = mix(viewport_background(ray), preview_world(ray.direction, blur, u, environment), u.preview_display.x);
+            return color + throughput * background;
+        }
+        Surface s = evaluate_surface(ray, hit, triangles, u, MATERIAL_PASS);
+        if (!s.glass) return color + throughput * preview_pbr(s, ray, depth == 0u ? ao : 1.0f, u, diffuse, specular, brdf);
+        float eta = s.front_face ? s.ior : 1.0f / s.ior;
+        float F = dielectric_fresnel(dot(s.normal, -ray.direction), eta);
+        float3 transmitted = refract(ray.direction, s.normal, 1.0f / eta);
+        color += throughput * s.emission;
+        if (dot(transmitted, transmitted) < 1e-8f) {
+            ray = { offset_origin(s.position, s.geometric_normal, reflect(ray.direction, s.normal)), reflect(ray.direction, s.normal) };
+        } else {
+            color += throughput * F * preview_reflection(reflect(ray.direction, s.normal), s.roughness, u, specular);
+            throughput *= (1.0f - F) * s.color;
+            ray = { offset_origin(s.position, s.geometric_normal, transmitted), transmitted };
+        }
+        blur = max(blur, s.roughness);
+        hit = preview_trace(ray, INFINITY, triangles, nodes, u PREVIEW_ACCEL_ARG);
+    }
+    return color + throughput * preview_reflection(ray.direction, blur, u, specular);
+}
+
 kernel void preview_main(device const Triangle *triangles [[buffer(0)]],
                           device const BvhNode *nodes [[buffer(1)]],
                           constant Uniforms &u [[buffer(2)]],
                           device float4 *accumulation [[buffer(3)]],
+                          device const GpuMaterial *materials [[buffer(6)]],
+                          device const float4 *texture_pixels [[buffer(7)]],
+                          device const uint4 *texture_levels [[buffer(8)]],
 #if FORMA_PREVIEW_ACCELERATED
                           raytracing::primitive_acceleration_structure acceleration [[buffer(5)]],
 #endif
@@ -153,7 +199,7 @@ kernel void preview_main(device const Triangle *triangles [[buffer(0)]],
             }
         } else {
             bool same_object = center_hit.triangle != NO_HIT && triangles[hit.triangle].params.z == triangles[center_hit.triangle].params.z;
-            sample = preview_pbr(surface_at(ray, hit, triangles), ray, same_object ? ao : 1.0f, u, diffuse, specular, brdf);
+            sample = preview_surface(ray, hit, same_object ? ao : 1.0f, triangles, nodes, u, MATERIAL_PASS, environment, diffuse, specular, brdf PREVIEW_ACCEL_ARG);
         }
         color += add_grid(sample, ray, hit, p, u) * 0.25f;
     }
