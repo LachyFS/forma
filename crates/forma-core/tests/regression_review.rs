@@ -2,13 +2,7 @@
 use forma_core::*;
 
 fn empty_scene() -> Scene {
-    Scene {
-        objects: Vec::new(),
-        camera: Camera::default(),
-        world: World::default(),
-        render: RenderPreferences::default(),
-        next_id: 1,
-    }
+    Scene::empty()
 }
 
 #[test]
@@ -82,14 +76,15 @@ fn obj_import_at_object_limit_is_atomic() {
     let mut scene = empty_scene();
     scene.add(Primitive::Plane);
     let prototype = scene.objects[0].clone();
-    scene.objects = (1..=10_000)
-        .map(|id| Object {
-            id,
-            name: format!("Plane {id}"),
-            ..prototype.clone()
+    scene.objects = (4..10_004)
+        .map(|id| {
+            let mut object = prototype.clone();
+            object.id = id;
+            object.name = format!("Plane {id}");
+            object
         })
         .collect();
-    scene.next_id = 10_001;
+    scene.next_id = 10_004;
     scene.validate().unwrap();
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("additional.obj");

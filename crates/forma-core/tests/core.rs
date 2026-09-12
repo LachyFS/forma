@@ -2,13 +2,7 @@ use forma_core::*;
 use std::{collections::BTreeMap, fs};
 
 fn empty_scene() -> Scene {
-    Scene {
-        objects: Vec::new(),
-        camera: Camera::default(),
-        world: World::default(),
-        render: RenderPreferences::default(),
-        next_id: 1,
-    }
+    Scene::empty()
 }
 
 fn volume(mesh: &Mesh) -> f32 {
@@ -299,10 +293,11 @@ fn scene_round_trip_is_versioned_atomic_and_validated() {
     let bytes = fs::read(&path).unwrap();
     assert_eq!(Scene::load(&path).unwrap(), scene);
     let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-    assert_eq!(json["version"], 1);
+    assert_eq!(json["version"], 2);
     assert_eq!(json["format"], "forma");
     let mut invalid = scene.clone();
-    invalid.objects[0].material.roughness = f32::NAN;
+    let id = invalid.objects[0].id;
+    invalid.object_material_mut(id).unwrap().roughness = f32::NAN;
     assert!(invalid.save(&path).is_err());
     assert_eq!(fs::read(&path).unwrap(), bytes);
     assert_eq!(fs::read_dir(directory.path()).unwrap().count(), 1);
@@ -320,9 +315,10 @@ fn scene_round_trip_is_versioned_atomic_and_validated() {
 #[test]
 fn scene_validation_rejects_duplicate_ids_invalid_camera_and_singular_transform() {
     let mut scene = Scene::default();
+    let original_id = scene.objects[1].id;
     scene.objects[1].id = scene.objects[0].id;
     assert!(scene.validate().is_err());
-    scene.objects[1].id = 2;
+    scene.objects[1].id = original_id;
     scene.camera.pitch = std::f32::consts::PI;
     assert!(scene.validate().is_err());
     scene.camera = Camera::default();
@@ -337,7 +333,7 @@ fn obj_import_accepts_uv_normals_negative_indices_comments_and_continuations() {
     fs::write(&path, "# a quad\nv 0 0 0\nv 2 0 0\nv 2 2 0\nv 0 2 0\nvt 0 0\nvt 1 0\nvt 1 1\nvt 0 1\nvn 0 0 1\ng Surface\ns 1\nf -4/1/1 -3/2/1 \\\n -2/3/1 -1/4/1 # comment\n").unwrap();
     let mut scene = empty_scene();
     let id = scene.import_obj(&path).unwrap();
-    let mesh = &scene.object(id).unwrap().mesh;
+    let mesh = scene.object_mesh(id).unwrap();
     assert_eq!(mesh.faces, vec![vec![0, 1, 2, 3]]);
     assert_eq!(mesh.face_normal(0), Vec3::Z);
     scene.validate().unwrap();
@@ -373,7 +369,7 @@ fn obj_export_bakes_transform_and_preserves_mirrored_winding() {
     scene.export_obj(&path).unwrap();
     let mut imported = empty_scene();
     let id = imported.import_obj(&path).unwrap();
-    let mesh = &imported.object(id).unwrap().mesh;
+    let mesh = imported.object_mesh(id).unwrap();
     assert_closed(mesh);
     assert!((volume(mesh) - 16.0).abs() < 1e-5);
     assert!((imported.bounds(id).unwrap().0.x - 4.0).abs() < 1e-5);
@@ -501,16 +497,213 @@ fn render_preferences_round_trip_and_follow_undo_redo() {
 fn version_one_scene_without_render_preferences_loads_defaults() {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("Legacy.forma");
-    empty_scene().save(&path).unwrap();
-    let mut document: serde_json::Value =
-        serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
-    assert_eq!(document["version"], 1);
-    document["scene"].as_object_mut().unwrap().remove("render");
+    let source = Scene::default();
+    let objects: Vec<_> = source
+        .objects
+        .iter()
+        .map(|object| {
+            serde_json::json!({
+                "id": object.id,
+                "name": object.name,
+                "mesh": source.object_mesh(object.id).unwrap(),
+                "transform": object.transform,
+                "material": source.object_material(object.id).unwrap(),
+                "visible": object.visible,
+            })
+        })
+        .collect();
+    let document = serde_json::json!({
+        "format": "forma",
+        "version": 1,
+        "scene": {
+            "objects": objects,
+            "camera": source.camera,
+            "world": source.world,
+            "next_id": source.next_id,
+        }
+    });
     fs::write(&path, serde_json::to_vec(&document).unwrap()).unwrap();
+    let migrated = Scene::load(&path).unwrap();
+    assert_eq!(migrated.render, RenderPreferences::default());
+    assert_eq!(migrated.objects.len(), source.objects.len());
     assert_eq!(
-        Scene::load(&path).unwrap().render,
-        RenderPreferences::default()
+        migrated.object_mesh(migrated.objects[0].id).unwrap(),
+        source.object_mesh(source.objects[0].id).unwrap()
     );
+}
+
+#[test]
+fn linked_instances_share_data_and_can_be_made_single_user() {
+    let mut scene = empty_scene();
+    let original = scene.add(Primitive::Cube);
+    let linked = scene.duplicate_linked(original).unwrap();
+    assert_eq!(
+        scene.object(original).unwrap().mesh_id(),
+        scene.object(linked).unwrap().mesh_id()
+    );
+    assert_eq!(
+        scene.mesh_users(scene.object(original).unwrap().mesh_id().unwrap()),
+        2
+    );
+
+    scene.object_mesh_mut(original).unwrap().positions[0].x = -2.0;
+    assert_eq!(scene.object_mesh(linked).unwrap().positions[0].x, -2.0);
+
+    let private_mesh = scene.make_mesh_single_user(linked).unwrap();
+    assert_ne!(
+        scene.object(original).unwrap().mesh_id(),
+        Some(private_mesh)
+    );
+    scene.object_mesh_mut(linked).unwrap().positions[0].x = -3.0;
+    assert_eq!(scene.object_mesh(original).unwrap().positions[0].x, -2.0);
+
+    let material = scene.object_material(original).unwrap().clone();
+    let shared_material = scene.create_material_data("Shared", material).unwrap();
+    for id in [original, linked] {
+        scene.assign_material(id, 0, shared_material).unwrap();
+    }
+    assert_eq!(scene.material_users(shared_material), 2);
+    let private_material = scene.make_material_single_user(linked, 0).unwrap();
+    assert_ne!(private_material, shared_material);
+    scene.object_material_mut(linked).unwrap().metallic = 1.0;
+    assert_ne!(
+        scene.object_material(original).unwrap().metallic,
+        scene.object_material(linked).unwrap().metallic
+    );
+    scene.validate().unwrap();
+}
+
+#[test]
+fn hierarchy_composes_world_transforms_and_rejects_cycles() {
+    let mut scene = empty_scene();
+    let parent = scene.add_empty("Parent").unwrap();
+    let child = scene.add(Primitive::Cube);
+    scene.object_mut(parent).unwrap().transform.translation.x = 5.0;
+    scene.object_mut(child).unwrap().transform.translation.x = 2.0;
+    scene.set_parent(child, Some(parent), false).unwrap();
+    assert_eq!(
+        scene
+            .world_transform(child)
+            .unwrap()
+            .transform_point3(Vec3::ZERO),
+        Vec3::new(7.0, 0.0, 0.0)
+    );
+    assert!((scene.bounds(child).unwrap().0.x - 7.0).abs() < 1.0e-5);
+    assert!(scene.set_parent(parent, Some(child), false).is_err());
+
+    let world = scene.world_transform(child).unwrap();
+    scene.set_parent(child, None, true).unwrap();
+    assert!(
+        (scene.world_transform(child).unwrap() - world)
+            .to_cols_array()
+            .into_iter()
+            .all(|value| value.abs() < 1.0e-5)
+    );
+    scene.object_mut(parent).unwrap().transform.rotation.y = 0.7;
+    scene.object_mut(parent).unwrap().transform.scale = Vec3::new(2.0, 0.5, 3.0);
+    let world = scene.world_transform(child).unwrap();
+    scene.set_parent(child, Some(parent), true).unwrap();
+    assert!(
+        (scene.world_transform(child).unwrap() - world)
+            .to_cols_array()
+            .into_iter()
+            .all(|value| value.abs() < 1.0e-4)
+    );
+    scene.set_parent(child, None, true).unwrap();
+    assert!(
+        (scene.world_transform(child).unwrap() - world)
+            .to_cols_array()
+            .into_iter()
+            .all(|value| value.abs() < 1.0e-4)
+    );
+    scene.validate().unwrap();
+}
+
+#[test]
+fn collections_control_visibility_and_objects_support_multiple_membership() {
+    let mut scene = empty_scene();
+    let object = scene.add(Primitive::Cube);
+    let collection = scene.add_collection("Furniture", None).unwrap();
+    let child_collection = scene.add_collection("Chairs", Some(collection)).unwrap();
+    assert!(
+        scene
+            .set_collection_parent(collection, child_collection)
+            .is_err()
+    );
+    scene.link_object(object, collection).unwrap();
+    scene.unlink_object(object, scene.root_collection).unwrap();
+    assert_eq!(scene.object(object).unwrap().collections, vec![collection]);
+    assert!(scene.is_effectively_visible(object));
+    scene
+        .collections
+        .iter_mut()
+        .find(|entry| entry.id == collection)
+        .unwrap()
+        .visible = false;
+    assert!(!scene.is_effectively_visible(object));
+    assert!(
+        scene
+            .pick(Ray {
+                origin: Vec3::new(0.0, 0.0, 5.0),
+                direction: Vec3::NEG_Z,
+            })
+            .is_none()
+    );
+    scene.remove_collection(collection).unwrap();
+    assert_eq!(
+        scene.collection(child_collection).unwrap().parent,
+        Some(scene.root_collection)
+    );
+    assert!(
+        scene
+            .object(object)
+            .unwrap()
+            .collections
+            .contains(&scene.root_collection)
+    );
+    scene.validate().unwrap();
+}
+
+#[test]
+fn independent_data_blocks_compose_with_new_object_types() {
+    let mut scene = empty_scene();
+    let mesh = scene
+        .create_mesh_data("Reusable cube", Mesh::primitive(Primitive::Cube))
+        .unwrap();
+    let material = scene
+        .create_material_data("Reusable material", Material::default())
+        .unwrap();
+    let first = scene
+        .instantiate_mesh("First", mesh, vec![material])
+        .unwrap();
+    let second = scene
+        .instantiate_mesh("Second", mesh, vec![material])
+        .unwrap();
+    let empty = scene.add_empty("Control").unwrap();
+    let light = scene.add_light("Key", Light::default()).unwrap();
+    let camera = scene.add_camera("Camera", CameraData::default()).unwrap();
+    let custom = scene
+        .add_object(
+            "Plugin object",
+            ObjectData::Custom {
+                kind: "com.example.volume".into(),
+                properties: [("density".into(), serde_json::json!(0.5))]
+                    .into_iter()
+                    .collect(),
+            },
+        )
+        .unwrap();
+
+    assert_eq!(scene.mesh_users(mesh), 2);
+    assert_eq!(scene.material_users(material), 2);
+    assert_eq!(scene.mesh_instances().count(), 2);
+    assert_eq!(scene.object(first).unwrap().kind(), "mesh");
+    assert_eq!(scene.object(second).unwrap().kind(), "mesh");
+    assert_eq!(scene.object(empty).unwrap().kind(), "empty");
+    assert_eq!(scene.object(light).unwrap().kind(), "light");
+    assert_eq!(scene.object(camera).unwrap().kind(), "camera");
+    assert_eq!(scene.object(custom).unwrap().kind(), "com.example.volume");
+    scene.validate().unwrap();
 }
 
 #[test]

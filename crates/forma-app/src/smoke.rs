@@ -799,14 +799,14 @@ async fn run(window: WindowHandle<Studio>, output: PathBuf, cx: &mut AsyncApp) -
     keys(window, &["e"], cx).await?;
     window.update(cx, |s, w, cx| -> Result<()> {
         ensure!(
-            s.scene.object(id).unwrap().mesh.faces.len() == 10,
+            s.scene.object_mesh(id).unwrap().faces.len() == 10,
             "face extrusion did not add four side faces"
         );
         s.scene.validate()?;
         s.execute(Command::Undo, w, cx);
         s.execute(Command::Subdivide, w, cx);
         ensure!(
-            s.scene.object(id).unwrap().mesh.faces.len() == 24,
+            s.scene.object_mesh(id).unwrap().faces.len() == 24,
             "subdivision did not create 24 faces"
         );
         s.begin_field(Field::Exposure, w, cx);

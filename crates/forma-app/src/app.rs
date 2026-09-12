@@ -1,6 +1,6 @@
 use crate::render_worker::{RenderWorker, Request};
 use crate::shading_pie::ShadingPie;
-use forma_core::{History, Material, Object, Primitive, Scene};
+use forma_core::{History, Material, MeshInstance, Object, Primitive, Scene};
 use forma_render::{Frame, PreviewSettings, RenderMode, RenderSettings, StudioLight};
 use glam::{Vec2, Vec3};
 use gpui::{prelude::*, *};
@@ -225,8 +225,8 @@ impl Studio {
         studio
     }
 
-    pub fn selected_object(&self) -> Option<&Object> {
-        self.selected.and_then(|id| self.scene.object(id))
+    pub fn selected_object(&self) -> Option<MeshInstance<'_>> {
+        self.selected.and_then(|id| self.scene.mesh_instance(id))
     }
 
     pub(crate) fn should_close(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
@@ -573,9 +573,8 @@ impl Studio {
                     let before = self.scene.clone();
                     let result = self
                         .scene
-                        .object_mut(id)
+                        .object_mesh_mut(id)
                         .unwrap()
-                        .mesh
                         .extrude_face(face, 0.3);
                     match result {
                         Ok(()) => {
@@ -592,11 +591,11 @@ impl Studio {
             }
             Command::Subdivide => {
                 if let Some(id) = self.selected {
-                    if self.scene.object(id).unwrap().mesh.faces.len() > 100_000 {
+                    if self.scene.object_mesh(id).unwrap().faces.len() > 100_000 {
                         self.status = "Subdivision limit reached (100k input faces)".into();
                     } else {
                         let before = self.scene.clone();
-                        match self.scene.object_mut(id).unwrap().mesh.subdivide_checked() {
+                        match self.scene.object_mesh_mut(id).unwrap().subdivide_checked() {
                             Ok(()) => {
                                 self.history.checkpoint(&before);
                                 self.selected_face = None;
@@ -623,7 +622,7 @@ impl Studio {
                         4 => (Vec3::new(0.9, 0.83, 0.66), 0., 0.5, Vec3::new(8., 7.4, 6.)),
                         _ => (Vec3::new(0.045, 0.42, 0.32), 0.45, 0.24, Vec3::ZERO),
                     };
-                    self.scene.object_mut(id).unwrap().material = Material {
+                    *self.scene.object_material_mut(id).unwrap() = Material {
                         base_color: color,
                         metallic,
                         roughness,
@@ -1170,25 +1169,35 @@ impl Studio {
             Field::Samples => self.settings.max_samples = (value as u32).clamp(1, 4096),
             Field::Bounces => self.settings.max_bounces = (value as u32).clamp(1, 32),
             _ => {
-                if let Some(object) = self.selected.and_then(|id| self.scene.object_mut(id)) {
+                if let Some(id) = self.selected {
                     match field {
                         Field::Color(axis) => {
-                            object.material.base_color[axis] = srgb_to_linear(value.clamp(0., 1.))
+                            self.scene.object_material_mut(id).unwrap().base_color[axis] =
+                                srgb_to_linear(value.clamp(0., 1.))
+                        }
+                        Field::Roughness => {
+                            self.scene.object_material_mut(id).unwrap().roughness =
+                                value.clamp(0.02, 1.)
+                        }
+                        Field::Metallic => {
+                            self.scene.object_material_mut(id).unwrap().metallic =
+                                value.clamp(0., 1.)
+                        }
+                        Field::Emission => {
+                            self.scene.object_material_mut(id).unwrap().emission =
+                                Vec3::splat(value.clamp(0., 1000.))
                         }
                         Field::Translation(axis) => {
-                            object.transform.translation[axis] = value.clamp(-100_000., 100_000.)
+                            self.scene.object_mut(id).unwrap().transform.translation[axis] =
+                                value.clamp(-100_000., 100_000.)
                         }
                         Field::Rotation(axis) => {
-                            object.transform.rotation[axis] =
+                            self.scene.object_mut(id).unwrap().transform.rotation[axis] =
                                 value.to_radians().rem_euclid(std::f32::consts::TAU)
                         }
                         Field::Scale(axis) => {
-                            object.transform.scale[axis] = value.clamp(0.001, 1000.)
-                        }
-                        Field::Roughness => object.material.roughness = value.clamp(0.02, 1.),
-                        Field::Metallic => object.material.metallic = value.clamp(0., 1.),
-                        Field::Emission => {
-                            object.material.emission = Vec3::splat(value.clamp(0., 1000.))
+                            self.scene.object_mut(id).unwrap().transform.scale[axis] =
+                                value.clamp(0.001, 1000.)
                         }
                         _ => {}
                     }

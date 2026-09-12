@@ -73,8 +73,7 @@ impl Studio {
                 .map(|face| {
                     face.iter()
                         .map(|index| {
-                            o.transform
-                                .matrix()
+                            o.world_transform
                                 .transform_point3(o.mesh.positions[*index as usize])
                         })
                         .collect::<Vec<_>>()
@@ -94,7 +93,10 @@ impl Studio {
                         hit.object_id == o.id && Some(hit.face) == self.selected_face
                     })
             });
-            (o.transform.translation, selected_face)
+            (
+                o.world_transform.transform_point3(Vec3::ZERO),
+                selected_face,
+            )
         });
         let frame = self.frame.clone();
         let view = self.scene.camera.view_matrix();
@@ -411,7 +413,10 @@ impl Studio {
         modal: bool,
         cx: &mut Context<Self>,
     ) {
-        let Some(original) = self.selected_object().cloned() else {
+        let Some(original) = self
+            .selected_object()
+            .map(|instance| instance.object.clone())
+        else {
             self.status = "Select an object first".into();
             cx.notify();
             return;
@@ -489,16 +494,21 @@ impl Studio {
             })
             .unwrap_or(inverse_view.z_axis.truncate());
         if self.edit_mode {
-            if let Some(face) = self.selected_face.and_then(|f| original.mesh.faces.get(f)) {
-                let matrix = original.transform.matrix();
+            let original_mesh = drag.before.object_mesh(original.id);
+            if let Some(face) = self
+                .selected_face
+                .and_then(|face| original_mesh?.faces.get(face))
+            {
+                let mesh = original_mesh.unwrap();
+                let matrix = drag.before.world_transform(original.id).unwrap();
                 let inverse = matrix.inverse();
                 let center = face
                     .iter()
-                    .map(|i| matrix.transform_point3(original.mesh.positions[*i as usize]))
+                    .map(|i| matrix.transform_point3(mesh.positions[*i as usize]))
                     .sum::<Vec3>()
                     / face.len() as f32;
                 for index in face {
-                    let p = matrix.transform_point3(original.mesh.positions[*index as usize]);
+                    let p = matrix.transform_point3(mesh.positions[*index as usize]);
                     let transformed = match drag.tool {
                         Tool::Move => p + translation,
                         Tool::Rotate => {
@@ -514,9 +524,8 @@ impl Studio {
                         }
                         Tool::Select => p,
                     };
-                    if let Some(object) = self.scene.object_mut(original.id) {
-                        object.mesh.positions[*index as usize] =
-                            inverse.transform_point3(transformed);
+                    if let Some(mesh) = self.scene.object_mesh_mut(original.id) {
+                        mesh.positions[*index as usize] = inverse.transform_point3(transformed);
                     }
                 }
             }
@@ -560,16 +569,12 @@ impl Studio {
             return;
         };
         if cancel {
-            if let Some(object) = self.scene.object_mut(drag.original.id) {
-                *object = drag.original;
-            }
+            self.scene = drag.before;
             self.status = "Transform cancelled".into();
             self.invalidate(true, cx);
         } else if drag.changed {
             if let Err(error) = self.scene.validate() {
-                if let Some(object) = self.scene.object_mut(drag.original.id) {
-                    *object = drag.original;
-                }
+                self.scene = drag.before;
                 self.status = format!("Transform cancelled: {error}");
                 self.invalidate(true, cx);
             } else {

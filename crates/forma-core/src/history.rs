@@ -66,19 +66,26 @@ impl History {
 }
 
 fn scene_bytes(scene: &Scene) -> usize {
-    scene
+    let objects = scene
         .objects
         .iter()
-        .map(|object| {
-            std::mem::size_of_val(object)
-                + object.name.len()
-                + object.mesh.positions.len() * std::mem::size_of::<glam::Vec3>()
-                + object
+        .map(|object| std::mem::size_of_val(object) + object.name.len())
+        .sum::<usize>();
+    let meshes = scene
+        .meshes
+        .iter()
+        .map(|data| {
+            std::mem::size_of_val(data)
+                + data.name.len()
+                + data.mesh.positions.len() * std::mem::size_of::<glam::Vec3>()
+                + data
                     .mesh
                     .faces
                     .iter()
                     .map(|face| face.len() * 4 + 24)
                     .sum::<usize>()
         })
-        .sum()
+        .sum::<usize>();
+    let materials = scene.materials.len() * std::mem::size_of::<crate::MaterialData>();
+    objects + meshes + materials
 }

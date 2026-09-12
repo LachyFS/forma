@@ -714,29 +714,46 @@ fn upload<T: Pod>(device: &DeviceRef, values: &[T]) -> Buffer {
 
 fn geometry_hash(scene: &Scene) -> u64 {
     let mut hasher = DefaultHasher::new();
+    scene.collections.len().hash(&mut hasher);
+    for collection in &scene.collections {
+        collection.id.hash(&mut hasher);
+        collection.parent.hash(&mut hasher);
+        collection.visible.hash(&mut hasher);
+    }
     scene.objects.len().hash(&mut hasher);
     for object in &scene.objects {
         object.id.hash(&mut hasher);
         object.visible.hash(&mut hasher);
-        if !object.visible {
+        object.parent.hash(&mut hasher);
+        object.collections.hash(&mut hasher);
+        if !scene.is_effectively_visible(object.id) {
             continue;
         }
-        for p in &object.mesh.positions {
+        let Some(instance) = scene.mesh_instance(object.id) else {
+            continue;
+        };
+        for p in &instance.mesh.positions {
             for n in p.to_array() {
                 n.to_bits().hash(&mut hasher);
             }
         }
-        object.mesh.faces.hash(&mut hasher);
-        for n in object.transform.matrix().to_cols_array() {
+        instance.mesh.faces.hash(&mut hasher);
+        for n in instance.world_transform.to_cols_array() {
             n.to_bits().hash(&mut hasher);
         }
         for n in object
-            .material
-            .base_color
-            .to_array()
-            .into_iter()
-            .chain(object.material.emission.to_array())
-            .chain([object.material.roughness, object.material.metallic])
+            .data
+            .material_ids()
+            .iter()
+            .filter_map(|id| scene.material(*id))
+            .flat_map(|data| {
+                data.material
+                    .base_color
+                    .to_array()
+                    .into_iter()
+                    .chain(data.material.emission.to_array())
+                    .chain([data.material.roughness, data.material.metallic])
+            })
         {
             n.to_bits().hash(&mut hasher);
         }
@@ -789,8 +806,9 @@ mod tests {
         let id = scene.add(Primitive::Plane);
         let plane = scene.object_mut(id).unwrap();
         plane.transform.scale = Vec3::splat(100.0);
-        plane.material.base_color = Vec3::splat(0.5);
-        plane.material.roughness = 1.0;
+        let material = scene.object_material_mut(id).unwrap();
+        material.base_color = Vec3::splat(0.5);
+        material.roughness = 1.0;
         scene.camera.target = Vec3::ZERO;
         scene.camera.distance = 2.0;
         scene.camera.pitch = 1.3;
@@ -851,7 +869,7 @@ mod tests {
             },
             ..Default::default()
         };
-        let material = &mut scene.object_mut(id).unwrap().material;
+        let material = scene.object_material_mut(id).unwrap();
         material.base_color = Vec3::splat(0.5);
         material.roughness = 1.0;
         renderer.render(&scene, &settings, 1).unwrap();
@@ -860,7 +878,7 @@ mod tests {
             (0.48..0.53).contains(&diffuse.x),
             "Diffuse furnace energy: {diffuse:?}"
         );
-        let material = &mut scene.object_mut(id).unwrap().material;
+        let material = scene.object_material_mut(id).unwrap();
         material.base_color = Vec3::new(0.7, 0.4, 0.2);
         material.roughness = 0.025;
         material.metallic = 1.0;
@@ -874,7 +892,7 @@ mod tests {
         renderer.render(&scene, &settings, 2).unwrap();
         assert!((mean_linear(&renderer) - mirror * 2.0).abs().max_element() < 0.002);
         scene.world.strength = 0.0;
-        scene.object_mut(id).unwrap().material.emission = Vec3::new(3.0, 1.5, 0.5);
+        scene.object_material_mut(id).unwrap().emission = Vec3::new(3.0, 1.5, 0.5);
         renderer.render(&scene, &settings, 3).unwrap();
         assert!(
             (mean_linear(&renderer) - Vec3::new(3.0, 1.5, 0.5))
@@ -902,7 +920,7 @@ mod tests {
             .unwrap();
         settings.preview.hdri_path = Some(path.clone());
         settings.preview.strength = 1.0;
-        scene.object_mut(id).unwrap().material.emission = Vec3::ZERO;
+        scene.object_material_mut(id).unwrap().emission = Vec3::ZERO;
         renderer.render(&scene, &settings, 4).unwrap();
         let baked = mean_linear(&renderer);
         assert!(

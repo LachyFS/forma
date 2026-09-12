@@ -2027,43 +2027,69 @@ fn shading_overlay(s: &Studio, cx: &mut Context<Studio>) -> AnyElement {
                                 px(radius * scale * angle.sin()),
                             )
                     };
-                    for choice in CHOICES {
-                        let mode = choice.mode;
+
+                    let paint_ring_segment =
+                        |start: f32, end: f32, color: u32, window: &mut Window| {
+                            let mut ring = PathBuilder::fill();
+                            ring.move_to(at(60., start));
+                            for i in 1..=32 {
+                                ring.line_to(at(60., start + (end - start) * i as f32 / 32.));
+                            }
+                            for i in (0..=32).rev() {
+                                ring.line_to(at(38., start + (end - start) * i as f32 / 32.));
+                            }
+                            ring.close();
+                            if let Ok(path) = ring.build() {
+                                window.paint_path(path, rgb(color));
+                            }
+                        };
+
+                    // Paint one uninterrupted annulus first. Selection is then
+                    // layered over it, so no background can show between modes.
+                    paint_ring_segment(0., std::f32::consts::TAU, PANEL, window);
+
+                    let selected = hovered.unwrap_or(current);
+                    if let Some(choice) = CHOICES.into_iter().find(|choice| choice.mode == selected)
+                    {
                         let angle = choice.offset.y.atan2(choice.offset.x);
-                        let a = angle - 0.70;
-                        let b = angle + 0.70;
-                        let mut wedge = PathBuilder::fill();
-                        wedge.move_to(at(38., a));
-                        for i in 0..=24 {
-                            wedge.line_to(at(60., a + (b - a) * i as f32 / 24.));
+                        let start = angle - std::f32::consts::FRAC_PI_4;
+                        let end = angle + std::f32::consts::FRAC_PI_4;
+                        paint_ring_segment(
+                            start,
+                            end,
+                            if hovered.is_some() {
+                                ACTIVE_HOVER
+                            } else {
+                                ACTIVE
+                            },
+                            window,
+                        );
+
+                        // The selected quarter has one continuous accent edge,
+                        // rather than a detached arc floating inside the ring.
+                        let mut accent = PathBuilder::stroke(px(2. * scale));
+                        accent.move_to(at(60., start));
+                        for i in 1..=32 {
+                            accent.line_to(at(60., start + (end - start) * i as f32 / 32.));
                         }
-                        for i in (0..=24).rev() {
-                            wedge.line_to(at(38., a + (b - a) * i as f32 / 24.));
+                        if let Ok(path) = accent.build() {
+                            window.paint_path(path, rgb(ACCENT));
                         }
-                        wedge.close();
-                        if let Ok(path) = wedge.build() {
-                            window.paint_path(
-                                path,
-                                rgb(if hovered == Some(mode) { ACTIVE } else { PANEL }),
-                            );
-                        }
-                        if hovered == Some(mode) || current == mode {
-                            let mut arc = PathBuilder::stroke(px(2. * scale));
-                            let radius = if hovered == Some(mode) { 60. } else { 38. };
-                            arc.move_to(at(radius, a));
-                            for i in 1..=24 {
-                                arc.line_to(at(radius, a + (b - a) * i as f32 / 24.));
-                            }
-                            if let Ok(path) = arc.build() {
-                                window.paint_path(
-                                    path,
-                                    rgb(if hovered == Some(mode) {
-                                        ACCENT
-                                    } else {
-                                        ACCENT_LINE
-                                    }),
-                                );
-                            }
+                    }
+
+                    // Hairline boundaries preserve the four directional targets
+                    // without breaking the ring into separate pieces.
+                    for angle in [
+                        std::f32::consts::FRAC_PI_4,
+                        3. * std::f32::consts::FRAC_PI_4,
+                        5. * std::f32::consts::FRAC_PI_4,
+                        7. * std::f32::consts::FRAC_PI_4,
+                    ] {
+                        let mut divider = PathBuilder::stroke(px(scale.max(0.75)));
+                        divider.move_to(at(38., angle));
+                        divider.line_to(at(60., angle));
+                        if let Ok(path) = divider.build() {
+                            window.paint_path(path, rgb(LINE));
                         }
                     }
                 },
@@ -2102,11 +2128,11 @@ fn shading_overlay(s: &Studio, cx: &mut Context<Studio>) -> AnyElement {
         .children(CHOICES.into_iter().map(|choice| {
             let mode = choice.mode;
             let number = choice.key;
-            let (glyph, detail) = match mode {
-                RenderMode::Wireframe => (Icon::Wire, "Polygon edges"),
-                RenderMode::Solid => (Icon::Solid, "Studio clay"),
-                RenderMode::MaterialPreview => (Icon::Material, "Studio lighting"),
-                RenderMode::Rendered => (Icon::Render, "Scene lighting"),
+            let glyph = match mode {
+                RenderMode::Wireframe => Icon::Wire,
+                RenderMode::Solid => Icon::Solid,
+                RenderMode::MaterialPreview => Icon::Material,
+                RenderMode::Rendered => Icon::Render,
             };
             let origin = center + (choice.offset - CARD_HALF_SIZE) * scale;
             let active = current == mode;
@@ -2138,22 +2164,12 @@ fn shading_overlay(s: &Studio, cx: &mut Context<Studio>) -> AnyElement {
                     18. * scale,
                 ))
                 .child(
-                    col()
+                    div()
                         .flex_1()
-                        .gap(px(3. * scale))
-                        .child(
-                            div()
-                                .text_size(px(11. * scale))
-                                .font_weight(FontWeight::MEDIUM)
-                                .text_color(rgb(if highlighted { 0xe4f4ee } else { TEXT }))
-                                .child(mode.label()),
-                        )
-                        .child(
-                            div()
-                                .text_size(px(9. * scale))
-                                .text_color(rgb(if active { ACCENT } else { FAINT }))
-                                .child(if active { "Current mode" } else { detail }),
-                        ),
+                        .text_size(px(11. * scale))
+                        .font_weight(FontWeight::MEDIUM)
+                        .text_color(rgb(if highlighted { 0xe4f4ee } else { TEXT }))
+                        .child(mode.label()),
                 )
                 .child(
                     div()
@@ -2169,35 +2185,6 @@ fn shading_overlay(s: &Studio, cx: &mut Context<Studio>) -> AnyElement {
                     }),
                 )
         }))
-        .child(
-            row()
-                .absolute()
-                .left(px(center.x - 150. * scale))
-                .top(px(center.y + 145. * scale))
-                .w(px(300. * scale))
-                .h(px(32. * scale))
-                .rounded(px(8. * scale))
-                .bg(rgb(PANEL))
-                .border_1()
-                .border_color(rgb(EDGE))
-                .shadow_md()
-                .items_center()
-                .justify_center()
-                .gap(px(8. * scale))
-                .text_size(px(10. * scale))
-                .text_color(rgb(TEXT))
-                .child(if pie.trigger_held {
-                    "Hold Z, move & release"
-                } else {
-                    "Choose viewport shading"
-                })
-                .child(
-                    div()
-                        .text_size(px(9. * scale))
-                        .text_color(rgb(FAINT))
-                        .child("4 / 6 / 2 / 8 · Esc"),
-                ),
-        )
         .into_any_element()
 }
 

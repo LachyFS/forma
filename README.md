@@ -45,8 +45,9 @@ cargo run --locked --release -p forma
 - Choose material presets and adjust roughness, metallic response, emission,
   world strength and exposure. Enter arbitrary sRGB base colors and rename objects.
   Set the progressive sample and bounce limits.
-- Save `.forma` projects with geometry, transforms, materials, camera, world and
-  render preferences. Save replacement is atomic; edits support undo/redo.
+- Save `.forma` projects with a versioned object graph, reusable mesh/material
+  data, transforms, camera, world and render preferences. Version-1 projects
+  migrate on open. Save replacement is atomic; edits support undo/redo.
 - Import OBJ polygon geometry, export transformed scene geometry to OBJ, and
   export the current render mode to PNG while continuing to edit.
 - Search commands with `⌘K`, type a name, then use arrows and Return to execute.

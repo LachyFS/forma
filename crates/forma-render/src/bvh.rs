@@ -91,15 +91,16 @@ fn edge_key(a: u32, b: u32) -> (u32, u32) {
 impl Geometry {
     pub fn from_scene(scene: &Scene) -> Self {
         let mut triangles = Vec::new();
-        for (object_index, object) in scene
-            .objects
-            .iter()
-            .enumerate()
-            .filter(|(_, object)| object.visible)
-        {
-            let transform = object.transform.matrix();
+        for (object_index, object) in scene.objects.iter().enumerate() {
+            if !scene.is_effectively_visible(object.id) {
+                continue;
+            }
+            let Some(instance) = scene.mesh_instance(object.id) else {
+                continue;
+            };
+            let transform = instance.world_transform;
             let normal_transform = transform.inverse().transpose();
-            let mesh = &object.mesh;
+            let mesh = instance.mesh;
             let indices = mesh.triangles();
             let positions: Vec<_> = mesh
                 .positions
@@ -162,11 +163,11 @@ impl Geometry {
                     n0: vec4(normals[0]),
                     n1: vec4(normals[1]),
                     n2: vec4(normals[2]),
-                    base_color: vec4(object.material.base_color.clamp(Vec3::ZERO, Vec3::ONE)),
-                    emission: vec4(object.material.emission.max(Vec3::ZERO)),
+                    base_color: vec4(instance.material.base_color.clamp(Vec3::ZERO, Vec3::ONE)),
+                    emission: vec4(instance.material.emission.max(Vec3::ZERO)),
                     params: [
-                        object.material.metallic.clamp(0.0, 1.0),
-                        object.material.roughness.clamp(0.02, 1.0),
+                        instance.material.metallic.clamp(0.0, 1.0),
+                        instance.material.roughness.clamp(0.02, 1.0),
                         (object_index + 1) as f32,
                         edge_bits as f32,
                     ],

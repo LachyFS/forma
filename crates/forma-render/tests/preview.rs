@@ -46,8 +46,8 @@ fn sphere_scene() -> Scene {
     scene.camera.yaw = 0.0;
     scene.camera.pitch = 0.0;
     scene.camera.distance = 4.5;
-    scene.add(Primitive::Sphere);
-    scene.objects[0].material.base_color = Vec3::splat(0.55);
+    let sphere = scene.add(Primitive::Sphere);
+    scene.object_material_mut(sphere).unwrap().base_color = Vec3::splat(0.55);
     scene
 }
 
@@ -121,7 +121,8 @@ fn preview_updates_base_color_metallic_roughness_and_geometry() {
     let settings = settings();
     let neutral = render(&mut renderer, &scene, &settings, 1);
 
-    scene.objects[0].material.base_color = Vec3::new(0.8, 0.02, 0.01);
+    let id = scene.objects[0].id;
+    scene.object_material_mut(id).unwrap().base_color = Vec3::new(0.8, 0.02, 0.01);
     let red = render(&mut renderer, &scene, &settings, 2);
     assert_ne!(neutral, red);
     assert!(
@@ -129,18 +130,18 @@ fn preview_updates_base_color_metallic_roughness_and_geometry() {
         "A red base color must tint the visible material"
     );
 
-    scene.objects[0].material.base_color = Vec3::splat(0.55);
-    scene.objects[0].material.metallic = 1.0;
+    scene.object_material_mut(id).unwrap().base_color = Vec3::splat(0.55);
+    scene.object_material_mut(id).unwrap().metallic = 1.0;
     let metal = render(&mut renderer, &scene, &settings, 3);
     assert_ne!(neutral, metal, "Metallic changes the material response");
-    scene.objects[0].material.roughness = 0.95;
+    scene.object_material_mut(id).unwrap().roughness = 0.95;
     let rough = render(&mut renderer, &scene, &settings, 4);
     assert_ne!(metal, rough, "Roughness changes reflected lighting");
 
     scene.objects[0].transform.translation.x = 0.6;
     let moved = render(&mut renderer, &scene, &settings, 5);
     assert_ne!(rough, moved, "Transforms update cached preview geometry");
-    for position in &mut scene.objects[0].mesh.positions {
+    for position in &mut scene.object_mesh_mut(id).unwrap().positions {
         position.y *= 0.55;
     }
     assert_ne!(
@@ -160,14 +161,15 @@ fn preview_shows_emission_without_scene_light_bounces() {
     scene.object_mut(light).unwrap().transform.translation = Vec3::new(0.0, 3.0, 0.0);
     let unlit = render(&mut renderer, &scene, &settings, 1);
 
-    scene.object_mut(light).unwrap().material.emission = Vec3::splat(80.0);
+    scene.object_material_mut(light).unwrap().emission = Vec3::splat(80.0);
     assert_eq!(
         unlit,
         render(&mut renderer, &scene, &settings, 2),
         "An off-camera scene emitter must not replace the preview's studio lighting"
     );
 
-    scene.objects[0].material.emission = Vec3::new(5.0, 0.1, 0.0);
+    let id = scene.objects[0].id;
+    scene.object_material_mut(id).unwrap().emission = Vec3::new(5.0, 0.1, 0.0);
     let glowing = render(&mut renderer, &scene, &settings, 3);
     assert!(
         channel_sum(&glowing, 0) > channel_sum(&unlit, 0),
@@ -179,8 +181,9 @@ fn preview_shows_emission_without_scene_light_bounces() {
 fn studio_presets_rotation_and_strength_change_material_lighting() {
     let mut renderer = Renderer::new().unwrap();
     let mut scene = sphere_scene();
-    scene.objects[0].material.metallic = 1.0;
-    scene.objects[0].material.roughness = 0.16;
+    let id = scene.objects[0].id;
+    scene.object_material_mut(id).unwrap().metallic = 1.0;
+    scene.object_material_mut(id).unwrap().roughness = 0.16;
     let mut settings = settings();
     let studio = render(&mut renderer, &scene, &settings, 1);
     settings.preview.rotation = std::f32::consts::FRAC_PI_2;
@@ -232,12 +235,13 @@ fn scene_world_option_uses_project_radiance_and_keeps_visible_emission() {
     let dark = render(&mut renderer, &scene, &settings, 1);
     assert!(dark.as_raw().iter().all(|value| *value == 0));
 
-    scene.objects[0].material.emission = Vec3::new(2.0, 0.0, 0.0);
+    let id = scene.objects[0].id;
+    scene.object_material_mut(id).unwrap().emission = Vec3::new(2.0, 0.0, 0.0);
     let glowing = render(&mut renderer, &scene, &settings, 2);
     assert!(channel_sum(&glowing, 0) > 0);
     assert_eq!(glowing.get_pixel(0, 0).0, [0, 0, 0]);
 
-    scene.objects[0].material.emission = Vec3::ZERO;
+    scene.object_material_mut(id).unwrap().emission = Vec3::ZERO;
     scene.world.color = Vec3::ONE;
     scene.world.strength = 2.0;
     let bright = render(&mut renderer, &scene, &settings, 3);

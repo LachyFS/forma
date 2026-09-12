@@ -2,7 +2,7 @@ use forma_render::RenderMode;
 use glam::Vec2;
 
 const HALF_EXTENT: Vec2 = Vec2::new(234.0, 192.0);
-pub(crate) const CARD_HALF_SIZE: Vec2 = Vec2::new(84.0, 26.0);
+pub(crate) const CARD_HALF_SIZE: Vec2 = Vec2::new(84.0, 21.0);
 const DEAD_ZONE: f32 = 30.0;
 
 #[derive(Clone, Copy)]

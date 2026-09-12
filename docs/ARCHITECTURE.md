@@ -17,11 +17,32 @@ edges remain distinguishable from triangulation diagonals. Primitive winding is
 outward. Subdivision uses Catmull–Clark interior and open-boundary rules; extrusion
 replaces its source cap and connects the boundary with side faces.
 
-Object transforms are translation, XYZ Euler rotation in radians and scale.
-The camera supports perspective and orthographic projection with Metal's 0–1
-depth range. Its analytic yaw/pitch basis remains defined at exact top/bottom
-views. Picking transforms rays into each object's local coordinates while
-preserving world-space hit distances under nonuniform scaling.
+The scene model separates **objects** from reusable **data blocks**. An object
+owns identity, name, local transform, parent, visibility, selectability,
+collection links and a typed payload. Mesh payloads reference named mesh and
+material data by stable IDs, so multiple objects can instance the same data.
+Normal duplication makes independent mesh/material copies; linked duplication
+shares them, and either link can later be made single-user. Mesh instances are
+the resolved boundary used by render, picking, OBJ and editor code, keeping
+those consumers independent of storage layout and non-mesh object types.
+
+Object payloads currently model mesh, empty, light and camera objects, plus a
+namespaced custom type with JSON properties for forward-compatible extensions.
+Collections form a visibility hierarchy, objects may belong to multiple
+collections, and object parent chains compose local transforms into world
+transforms. A parent-inverse matrix preserves an object's exact world transform
+when it is parented under rotated, nonuniformly scaled geometry. Parent and
+collection cycles, dangling references and global ID collisions are rejected by
+validation. Data blocks may intentionally outlive their users and can be removed
+explicitly with orphan purging, matching the useful parts of Blender's
+object/data distinction.
+
+Transforms are translation, XYZ Euler rotation in radians and scale. The
+viewport camera supports perspective and orthographic projection with Metal's
+0–1 depth range. Its analytic yaw/pitch basis remains defined at exact
+top/bottom views. Picking transforms rays into each object's local coordinates
+while preserving world-space hit distances under hierarchy and nonuniform
+scaling.
 
 Materials contain linear RGB base color and emission, metallic weight and
 roughness. The renderer computes smooth corner normals with a 45-degree crease
@@ -108,10 +129,11 @@ Detailed BSDF, estimator, BVH and display behavior lives in the
 ## Documents and undo
 
 The `.forma` format is versioned JSON with `format`, `version` and `scene` fields.
-Version 1 stores geometry, transforms, materials, visibility, camera, world and
-render exposure/sample/bounce preferences. Older version-1 files without render
-preferences receive defaults. Selection, active tool, viewport shading mode and
-preview environment controls are session state.
+Version 2 stores the object graph, reusable mesh/material data blocks,
+collections, typed object payloads, camera, world and render preferences.
+Version-1 files are migrated on load into independent mesh/material data blocks;
+older files without render preferences receive defaults. Selection, active
+tool, viewport shading mode and preview environment controls are session state.
 
 Load checks finite values, camera/material ranges, unique IDs, polygon indices,
 triangulability and aggregate geometry limits before replacing the current scene.
@@ -120,10 +142,11 @@ then renames it atomically. A failed write leaves the previous document intact.
 The app asks before discarding a dirty document on new/open/close.
 
 History stores up to 64 whole-scene checkpoints and trims older snapshots using
-an estimated 256 MiB geometry budget. At least one transaction is retained even
-if its single scene exceeds that budget. A new edit clears the redo branch.
-This is a straightforward initial transaction model; large-scene editing would
-benefit from operation-level history and shared immutable mesh storage.
+an estimated 256 MiB geometry budget. Shared mesh data is counted once per scene
+rather than once per object instance. At least one transaction is retained even
+if its single scene exceeds that budget. A new edit clears the redo branch. This
+is a straightforward initial transaction model; large-scene editing would
+benefit from operation-level history and copy-on-write data blocks.
 
 OBJ is a geometry interchange path, not a project format. Import handles polygon
 faces, positive/negative indices, common `v/vt/vn` syntax and line continuations;

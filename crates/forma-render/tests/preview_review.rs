@@ -51,9 +51,10 @@ fn fully_rough_metal_retains_directional_environment_lighting() {
     let object = scene.object_mut(plane).unwrap();
     object.transform.scale = Vec3::splat(100.0);
     object.transform.rotation.x = PI * 0.5;
-    object.material.base_color = Vec3::splat(0.8);
-    object.material.metallic = 1.0;
-    object.material.roughness = 1.0;
+    let material = scene.object_material_mut(plane).unwrap();
+    material.base_color = Vec3::splat(0.8);
+    material.metallic = 1.0;
+    material.roughness = 1.0;
     scene.camera.target = Vec3::ZERO;
     scene.camera.yaw = 0.0;
     scene.camera.pitch = 0.0;

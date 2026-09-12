@@ -152,8 +152,8 @@ pub(crate) fn write(scene: &Scene, path: &Path) -> Result<()> {
     scene.validate().context("Cannot export invalid scene")?;
     let mut output = String::from("# Forma — world-space polygon geometry, right handed +Y up\n");
     let mut offset = 1_u32;
-    for object in &scene.objects {
-        let name: String = object
+    for instance in scene.mesh_instances() {
+        let name: String = instance
             .name
             .chars()
             .map(|ch| {
@@ -165,13 +165,13 @@ pub(crate) fn write(scene: &Scene, path: &Path) -> Result<()> {
             })
             .collect();
         writeln!(output, "\no {name}")?;
-        let matrix = object.transform.matrix();
-        for &point in &object.mesh.positions {
+        let matrix = instance.world_transform;
+        for &point in &instance.mesh.positions {
             let p = matrix.transform_point3(point);
             writeln!(output, "v {} {} {}", p.x, p.y, p.z)?;
         }
         let mirrored = matrix.determinant() < 0.0;
-        for face in &object.mesh.faces {
+        for face in &instance.mesh.faces {
             output.push('f');
             // Baking a reflection reverses the geometric winding. Preserve
             // outward faces in the exported mesh by reversing polygon order.
@@ -186,7 +186,7 @@ pub(crate) fn write(scene: &Scene, path: &Path) -> Result<()> {
             }
             output.push('\n');
         }
-        offset += object.mesh.positions.len() as u32;
+        offset += instance.mesh.positions.len() as u32;
         ensure!(
             output.len() as u64 <= MAX_FILE_BYTES,
             "Export exceeds the 256 MiB limit"
