@@ -3,7 +3,7 @@ use crate::app::{Command, Field, Studio, Tool};
 use crate::platform_shortcut;
 use crate::shading_pie::{CARD_HALF_SIZE, CHOICES};
 use crate::theme::{Colors, Theme};
-use forma_core::{Primitive, ShaderKind, TextureMapping, TextureSlot};
+use forma_core::{DenoiseQuality, Primitive, ShaderKind, TextureMapping, TextureSlot};
 use forma_render::{RenderMode, StudioLight};
 use gpui::{prelude::*, *};
 
@@ -131,6 +131,9 @@ fn command_hint(command: Command) -> &'static str {
         Command::Extrude => "Extrude selected face · E",
         Command::Subdivide => "Subdivide selected mesh",
         Command::ToggleGrid => "Toggle ground grid",
+        Command::ToggleViewportDenoise => "AI denoising for the Rendered viewport",
+        Command::ToggleRenderDenoise => "High quality AI denoising for PNG renders",
+        Command::SetDenoiseQuality(_) => "Viewport denoising quality · exports always use High",
         Command::MaterialPreset(_) => "Apply surface preset",
         Command::SetShader(_) => "Choose a surface shader",
         Command::SetTextureMapping(_) => "Choose generated image coordinates",
@@ -1333,33 +1336,34 @@ fn render_settings(t: Colors, s: &Studio, cx: &mut Context<Studio>) -> AnyElemen
             },
         )
         .when(progressive, |d| {
-            d.child(
-                row()
-                    .mt(px(6.))
-                    .justify_between()
-                    .child(caption(t, "Samples"))
-                    .child(caption(
-                        t,
-                        format!("{} / {}", s.samples, s.settings.max_samples),
-                    )),
-            )
-            .child(
-                div()
-                    .h(px(3.))
-                    .mt(px(4.))
-                    .rounded_full()
-                    .bg(rgb(t.well))
-                    .child(
-                        div()
-                            .h_full()
-                            .rounded_full()
-                            .w(relative(
-                                (s.samples as f32 / s.settings.max_samples.max(1) as f32)
-                                    .clamp(0., 1.),
-                            ))
-                            .bg(rgb(t.accent)),
-                    ),
-            )
+            d.child(denoise_settings(t, s, cx))
+                .child(
+                    row()
+                        .mt(px(6.))
+                        .justify_between()
+                        .child(caption(t, "Samples"))
+                        .child(caption(
+                            t,
+                            format!("{} / {}", s.samples, s.settings.max_samples),
+                        )),
+                )
+                .child(
+                    div()
+                        .h(px(3.))
+                        .mt(px(4.))
+                        .rounded_full()
+                        .bg(rgb(t.well))
+                        .child(
+                            div()
+                                .h_full()
+                                .rounded_full()
+                                .w(relative(
+                                    (s.samples as f32 / s.settings.max_samples.max(1) as f32)
+                                        .clamp(0., 1.),
+                                ))
+                                .bg(rgb(t.accent)),
+                        ),
+                )
         });
     panel_card(
         t,
@@ -1379,6 +1383,124 @@ fn render_settings(t: Colors, s: &Studio, cx: &mut Context<Studio>) -> AnyElemen
         cx,
     )
     .into_any_element()
+}
+
+fn denoise_settings(t: Colors, s: &Studio, cx: &mut Context<Studio>) -> AnyElement {
+    let settings = s.settings.denoise;
+    let clean = s.denoised_generation.is_some() && s.samples > 0;
+    let status = if !settings.viewport {
+        "Original samples".to_string()
+    } else if s.denoise_error.is_some() {
+        "Unavailable · showing original samples".to_string()
+    } else if clean {
+        let frame = s.frame.as_ref().unwrap();
+        format!(
+            "Denoised · {} samples · {}",
+            frame.samples,
+            frame.denoise_device.as_deref().unwrap_or("Auto")
+        )
+    } else if s.samples < settings.start_sample.min(s.settings.max_samples) {
+        format!(
+            "Starts at sample {}",
+            settings.start_sample.min(s.settings.max_samples)
+        )
+    } else {
+        "Denoising…".to_string()
+    };
+    col()
+        .mt(px(8.))
+        .pt(px(8.))
+        .border_t_1()
+        .border_color(rgb(t.line))
+        .child(section(t, "AI DENOISING"))
+        .child(preview_toggle(
+            t,
+            "viewport-denoise",
+            "Viewport",
+            "Clean up progressive renders",
+            settings.viewport,
+            Command::ToggleViewportDenoise,
+            cx,
+        ))
+        .when(settings.viewport, |d| {
+            d.child(property(
+                t,
+                s,
+                "denoise-start",
+                "Start sample",
+                Field::DenoiseStart,
+                cx,
+            ))
+            .child(
+                row()
+                    .h(px(23.))
+                    .justify_between()
+                    .child(div().text_color(rgb(t.muted)).child("Quality"))
+                    .child(
+                        row().gap(px(2.)).children(
+                            [
+                                DenoiseQuality::Fast,
+                                DenoiseQuality::Balanced,
+                                DenoiseQuality::High,
+                            ]
+                            .into_iter()
+                            .map(|quality| {
+                                action(
+                                    t,
+                                    format!("denoise-quality-{}", quality as usize),
+                                    Command::SetDenoiseQuality(quality),
+                                    cx,
+                                )
+                                .px(px(7.))
+                                .h(px(23.))
+                                .rounded(px(4.))
+                                .text_size(px(10.))
+                                .bg(rgb(if settings.quality == quality {
+                                    t.active
+                                } else {
+                                    t.well
+                                }))
+                                .text_color(rgb(if settings.quality == quality {
+                                    t.accent
+                                } else {
+                                    t.muted
+                                }))
+                                .child(quality.label())
+                            }),
+                        ),
+                    ),
+            )
+        })
+        .child(preview_toggle(
+            t,
+            "export-denoise",
+            "Render export",
+            "High quality · accurate prefilter",
+            settings.render,
+            Command::ToggleRenderDenoise,
+            cx,
+        ))
+        .child(
+            div()
+                .mt(px(5.))
+                .text_size(px(10.))
+                .text_color(rgb(if s.denoise_error.is_some() {
+                    t.alert
+                } else if clean {
+                    t.accent
+                } else {
+                    t.muted
+                }))
+                .child(status),
+        )
+        .child(
+            div()
+                .mt(px(4.))
+                .text_size(px(9.))
+                .text_color(rgb(t.faint))
+                .child("Open Image Denoise · Albedo + Normal"),
+        )
+        .into_any_element()
 }
 
 fn geometry_sources(t: Colors, cx: &mut Context<Studio>) -> Div {
@@ -1407,6 +1529,9 @@ fn geometry_sources(t: Colors, cx: &mut Context<Studio>) -> Div {
 fn inspector(t: Colors, s: &Studio, cx: &mut Context<Studio>) -> AnyElement {
     let object = s.selected_object();
     let mut contents = col().flex_shrink_0().p(px(5.)).gap(px(4.));
+    if s.settings.mode.progressive() {
+        contents = contents.child(render_settings(t, s, cx));
+    }
     if let Some(object) = object {
         let base = object.material.base_color;
         let transform = col()
@@ -1659,7 +1784,7 @@ fn inspector(t: Colors, s: &Studio, cx: &mut Context<Studio>) -> AnyElement {
                     .child("Select an object in the viewport or Collection to edit its properties.")),
         );
     }
-    if s.settings.mode == RenderMode::MaterialPreview || s.settings.mode.progressive() {
+    if s.settings.mode == RenderMode::MaterialPreview {
         contents = contents.child(render_settings(t, s, cx));
     }
     let sources = geometry_sources(t, cx);
