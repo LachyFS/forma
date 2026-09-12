@@ -75,6 +75,7 @@ trap cleanup EXIT
 
 mkdir -p -- "$staging/Contents/MacOS" "$staging/Contents/Resources"
 install -m 755 "$executable" "$staging/Contents/MacOS/forma"
+python3 scripts/setup-denoiser.py --output-dir "$staging/Contents/MacOS/oidn"
 install -m 644 "$icon" "$staging/Contents/Resources/Forma.icns"
 cat > "$staging/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>

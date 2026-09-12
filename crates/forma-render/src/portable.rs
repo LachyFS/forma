@@ -42,6 +42,8 @@ struct Film {
     rgba: wgpu::Texture,
     view: wgpu::TextureView,
     accumulation: wgpu::Buffer,
+    guides: wgpu::Buffer,
+    has_guides: bool,
     readback: wgpu::Buffer,
     stride: u32,
 }
@@ -125,6 +127,7 @@ impl Renderer {
                         buffer_layout(6, wgpu::BufferBindingType::Storage { read_only: true }),
                         buffer_layout(7, wgpu::BufferBindingType::Storage { read_only: true }),
                         buffer_layout(8, wgpu::BufferBindingType::Storage { read_only: true }),
+                        buffer_layout(9, wgpu::BufferBindingType::Storage { read_only: false }),
                     ],
                 });
                 let preview_resources = PreviewResources::new(&device)?;
@@ -262,6 +265,13 @@ impl Renderer {
             "Render film",
         )?;
 
+        if settings.mode.progressive() {
+            check_storage_size(
+                &self.device,
+                u64::from(width) * u64::from(height) * 32,
+                "Denoising guides",
+            )?;
+        }
         // Decode/bake before modifying the exportable film. Rejected HDRIs
         // leave both the last published frame and its linear values intact.
         let environment_key = if settings.mode == RenderMode::MaterialPreview {
@@ -340,13 +350,18 @@ impl Renderer {
             }
             self.checked_revision = Some(revision);
         }
-        if !self
-            .film
-            .as_ref()
-            .is_some_and(|film| film.width == width && film.height == height)
-        {
+        if !self.film.as_ref().is_some_and(|film| {
+            film.width == width
+                && film.height == height
+                && film.has_guides == settings.mode.progressive()
+        }) {
             self.film = Some(checked_gpu(&self.device, "Allocate render film", || {
-                Ok(Film::new(&self.device, width, height))
+                Ok(Film::new(
+                    &self.device,
+                    width,
+                    height,
+                    settings.mode.progressive(),
+                ))
             })?);
             self.accumulation_key = None;
         }
@@ -430,6 +445,10 @@ impl Renderer {
                     wgpu::BindGroupEntry {
                         binding: 8,
                         resource: geometry.texture_levels.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 9,
+                        resource: film.guides.as_entire_binding(),
                     },
                 ],
             });
@@ -524,17 +543,37 @@ impl Renderer {
             .as_ref()
             .filter(|_| self.frame.is_some())
             .context("Render an image before reading pixels")?;
+        self.read_float_buffer(&film.accumulation)
+    }
+
+    pub fn read_denoise_guides(&self) -> Result<crate::denoise::GuidePixels> {
+        let film = self
+            .film
+            .as_ref()
+            .filter(|f| f.has_guides && self.frame.is_some())
+            .context("Render a path-traced image before reading denoising guides")?;
+        let values = self.read_float_buffer(&film.guides)?;
+        let (albedo, normal) = values
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|pair| (pair[0], pair[1]))
+            .unzip();
+        Ok((albedo, normal))
+    }
+
+    fn read_float_buffer(&self, source: &wgpu::Buffer) -> Result<Vec<[f32; 4]>> {
         checked_gpu(&self.device, "Read scene-linear film", || {
             let readback = self.device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("Forma scene-linear readback"),
-                size: u64::from(film.width) * u64::from(film.height) * 16,
+                size: source.size(),
                 usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
                 mapped_at_creation: false,
             });
             let mut encoder = self
                 .device
                 .create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
-            encoder.copy_buffer_to_buffer(&film.accumulation, 0, &readback, 0, readback.size());
+            encoder.copy_buffer_to_buffer(source, 0, &readback, 0, readback.size());
             self.queue.submit([encoder.finish()]);
             let bytes = read_buffer(&self.device, &readback)?;
             // Read POD values without assuming Vec<u8> has float alignment.
@@ -553,7 +592,7 @@ impl Renderer {
 }
 
 impl Film {
-    fn new(device: &wgpu::Device, width: u32, height: u32) -> Self {
+    fn new(device: &wgpu::Device, width: u32, height: u32, has_guides: bool) -> Self {
         let rgba = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("Forma RGBA film"),
             size: wgpu::Extent3d {
@@ -575,6 +614,19 @@ impl Film {
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
             mapped_at_creation: false,
         });
+        let guide = |label| {
+            device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some(label),
+                size: if has_guides {
+                    u64::from(width) * u64::from(height) * 32
+                } else {
+                    32
+                },
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+                mapped_at_creation: false,
+            })
+        };
+        let guides = guide("Forma denoising albedo and normals");
         let stride = (width * 4).div_ceil(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT)
             * wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
         let readback = device.create_buffer(&wgpu::BufferDescriptor {
@@ -589,6 +641,8 @@ impl Film {
             rgba,
             view,
             accumulation,
+            guides,
+            has_guides,
             readback,
             stride,
         }

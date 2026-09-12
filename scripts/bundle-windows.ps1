@@ -17,6 +17,8 @@ try {
     }
     New-Item -ItemType Directory -Force -Path $bundle | Out-Null
     Copy-Item (Join-Path $output "forma.exe") $bundle
+    & python scripts/setup-denoiser.py --output-dir (Join-Path $bundle "oidn")
+    if ($LASTEXITCODE -ne 0) { throw "OIDN runtime packaging failed" }
     Copy-Item (Join-Path $repository "README.md") $bundle
     Compress-Archive -Path $bundle -DestinationPath "$bundle.zip" -Force
     Write-Output "Bundle: $bundle.zip"
