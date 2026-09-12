@@ -453,10 +453,9 @@ impl Studio {
             } else {
                 let delta = position - self.last_mouse;
                 if pan {
-                    self.scene.camera.pan_in_viewport(
-                        delta,
-                        f32::from(self.bounds.get().size.height),
-                    );
+                    self.scene
+                        .camera
+                        .pan_in_viewport(delta, f32::from(self.bounds.get().size.height));
                 } else {
                     self.scene.camera.orbit(delta);
                 }

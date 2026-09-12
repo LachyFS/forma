@@ -17,6 +17,9 @@ pub(crate) struct Triangle {
     pub base_color: [f32; 4],
     pub emission: [f32; 4],
     pub params: [f32; 4],
+    pub generated0: [f32; 4],
+    pub generated1: [f32; 4],
+    pub generated2: [f32; 4],
 }
 
 impl Triangle {
@@ -101,6 +104,23 @@ impl Geometry {
             let transform = instance.world_transform;
             let normal_transform = transform.inverse().transpose();
             let mesh = instance.mesh;
+            let min = mesh
+                .positions
+                .iter()
+                .copied()
+                .fold(Vec3::splat(f32::INFINITY), Vec3::min);
+            let max = mesh
+                .positions
+                .iter()
+                .copied()
+                .fold(Vec3::splat(f32::NEG_INFINITY), Vec3::max);
+            let span = (max - min).max(Vec3::splat(1e-6));
+            let generated: Vec<_> = mesh.positions.iter().map(|p| (*p - min) / span).collect();
+            let material_index = scene
+                .materials
+                .iter()
+                .position(|m| Some(&m.id) == object.data.material_ids().first())
+                .unwrap_or(0);
             let indices = mesh.triangles();
             let positions: Vec<_> = mesh
                 .positions
@@ -157,6 +177,11 @@ impl Geometry {
                     }
                 }
                 triangles.push(Triangle {
+                    generated0: generated[face[0] as usize]
+                        .extend(material_index as f32)
+                        .to_array(),
+                    generated1: vec4(generated[face[1] as usize]),
+                    generated2: vec4(generated[face[2] as usize]),
                     v0: vec4(positions[face[0] as usize]),
                     v1: vec4(positions[face[1] as usize]),
                     v2: vec4(positions[face[2] as usize]),
@@ -164,7 +189,14 @@ impl Geometry {
                     n1: vec4(normals[1]),
                     n2: vec4(normals[2]),
                     base_color: vec4(instance.material.base_color.clamp(Vec3::ZERO, Vec3::ONE)),
-                    emission: vec4(instance.material.emission.max(Vec3::ZERO)),
+                    emission: instance
+                        .material
+                        .emission
+                        .max(Vec3::ZERO)
+                        .extend(f32::from(
+                            instance.material.shader == forma_core::ShaderKind::Custom,
+                        ))
+                        .to_array(),
                     params: [
                         instance.material.metallic.clamp(0.0, 1.0),
                         instance.material.roughness.clamp(0.02, 1.0),
@@ -178,7 +210,7 @@ impl Geometry {
     }
 
     fn build(triangles: Vec<Triangle>) -> Self {
-        // Partition compact split inputs rather than 144-byte triangles, and
+        // Partition compact split inputs rather than 192-byte triangles, and
         // read each triangle's bounds and centroid once instead of at every
         // level and axis. Leaves address a contiguous range, so gathering the
         // triangles in the partitioned order at the end is equivalent.
@@ -202,7 +234,9 @@ impl Geometry {
         let lights = triangles
             .iter()
             .enumerate()
-            .filter(|(_, tri)| Vec3::from_slice(&tri.emission).max_element() > 0.0)
+            .filter(|(_, tri)| {
+                Vec3::from_slice(&tri.emission).max_element() > 0.0 || tri.emission[3] > 0.0
+            })
             .map(|(i, _)| i as u32)
             .collect();
         Self {
@@ -304,7 +338,7 @@ mod tests {
 
     #[test]
     fn gpu_layout_has_no_implicit_padding() {
-        assert_eq!(std::mem::size_of::<Triangle>(), 9 * 16);
+        assert_eq!(std::mem::size_of::<Triangle>(), 12 * 16);
         assert_eq!(std::mem::size_of::<Node>(), 3 * 16);
     }
 

@@ -34,6 +34,7 @@ use metal::*;
 use crate::{
     RenderMode, RenderSettings,
     bvh::Geometry,
+    material::{MaterialResources, custom_sources, shader_source},
     preview::{EnvironmentKey, PreviewResources},
 };
 
@@ -42,6 +43,7 @@ pub struct Frame {
     pub surface: CVPixelBuffer,
     pub samples: u32,
     pub elapsed_ms: f64,
+    pub shader_error: Option<String>,
 }
 
 // SAFETY: A published pixel buffer is immutable, GPU writes have completed, and
@@ -79,6 +81,9 @@ struct GpuGeometry {
     triangles: Buffer,
     nodes: Buffer,
     lights: Buffer,
+    materials: Buffer,
+    texture_pixels: Buffer,
+    texture_levels: Buffer,
     counts: [u32; 3],
     preview_acceleration: Option<AccelerationStructure>,
 }
@@ -90,6 +95,9 @@ pub struct Renderer {
     queue: CommandQueue,
     render_pipeline: ComputePipelineState,
     preview_pipeline: ComputePipelineState,
+    custom_pipelines: Option<(ComputePipelineState, ComputePipelineState)>,
+    compiled_codes: Vec<String>,
+    shader_error: Option<String>,
     accelerated_preview: bool,
     preview_resources: PreviewResources,
     convert_pipeline: ComputePipelineState,
@@ -103,6 +111,40 @@ pub struct Renderer {
     frame: Option<Frame>,
 }
 
+/// Compile the exact preview/render entry points before committing an editor
+/// draft. Call on a background executor; errors retain Metal's line diagnostics.
+pub fn validate_custom_shaders(scene: &Scene) -> Result<()> {
+    scene.validate()?;
+    objc::rc::autoreleasepool(|| {
+        let device = Device::system_default().context("No Metal GPU is available")?;
+        let codes = custom_sources(scene);
+        compile_surface_pipelines(&device, &codes, device.supports_raytracing())?;
+        Ok(())
+    })
+}
+
+fn compile_surface_pipelines(
+    device: &DeviceRef,
+    codes: &[&str],
+    accelerated: bool,
+) -> Result<(ComputePipelineState, ComputePipelineState)> {
+    let source = shader_source(codes, accelerated);
+    let options = CompileOptions::new();
+    options.set_fast_math_enabled(false);
+    let library = device
+        .new_library_with_source(&source, &options)
+        .map_err(|e| anyhow!("{e}"))?;
+    let pipeline = |name| -> Result<ComputePipelineState> {
+        let function = library
+            .get_function(name, None)
+            .map_err(|e| anyhow!("{e}"))?;
+        device
+            .new_compute_pipeline_state_with_function(&function)
+            .map_err(|e| anyhow!("{e}"))
+    };
+    Ok((pipeline("render_main")?, pipeline("preview_main")?))
+}
+
 impl Renderer {
     pub fn new() -> Result<Self> {
         Self::with_preview_acceleration(true)
@@ -112,14 +154,7 @@ impl Renderer {
         objc::rc::autoreleasepool(|| {
             let device = Device::system_default().context("No Metal GPU is available")?;
             let accelerated_preview = enable && device.supports_raytracing();
-            let source = format!(
-                "#define FORMA_PREVIEW_ACCELERATED {}\n{}\n{}\n{}\n{}",
-                u32::from(accelerated_preview),
-                include_str!("shader.metal"),
-                include_str!("ibl.metal"),
-                include_str!("preview.metal"),
-                include_str!("conversion.metal")
-            );
+            let source = shader_source(&[], accelerated_preview);
             let options = CompileOptions::new();
             // Preserve finite/NaN and reciprocal semantics in ray intersection.
             options.set_fast_math_enabled(false);
@@ -155,6 +190,9 @@ impl Renderer {
                 queue,
                 render_pipeline,
                 preview_pipeline,
+                custom_pipelines: None,
+                compiled_codes: Vec::new(),
+                shader_error: None,
                 accelerated_preview,
                 preview_resources,
                 convert_pipeline,
@@ -233,13 +271,34 @@ impl Renderer {
         let height = (settings.height + 1) & !1;
         if self.checked_revision != Some(revision) {
             scene.validate().context("Cannot render invalid scene")?;
+            let codes = custom_sources(scene);
+            if codes != self.compiled_codes {
+                // Commit both pipelines together. A bad shader loaded from disk
+                // uses the built-in PBR fallback and reports its compiler log.
+                match compile_surface_pipelines(&self.device, &codes, self.accelerated_preview) {
+                    Ok(pipelines) => {
+                        self.custom_pipelines = Some(pipelines);
+                        self.shader_error = None;
+                    }
+                    Err(error) => {
+                        self.custom_pipelines = None;
+                        self.shader_error =
+                            Some(format!("Custom shader: {error:#} · Using PBR fallback"));
+                    }
+                }
+                self.compiled_codes = codes.into_iter().map(str::to_owned).collect();
+            }
             let hash = geometry_hash(scene);
             if self.geometry_hash != Some(hash) {
                 let geometry = Geometry::from_scene(scene);
+                let materials = MaterialResources::from_scene(scene);
                 self.geometry = Some(GpuGeometry {
                     triangles: upload(&self.device, &geometry.triangles),
                     nodes: upload(&self.device, &geometry.nodes),
                     lights: upload(&self.device, &geometry.lights),
+                    materials: upload(&self.device, &materials.materials),
+                    texture_pixels: upload(&self.device, &materials.pixels),
+                    texture_levels: upload(&self.device, &materials.levels),
                     counts: [
                         geometry.triangles.len() as u32,
                         geometry.nodes.len() as u32,
@@ -343,9 +402,19 @@ impl Renderer {
         {
             let encoder = command.new_compute_command_encoder();
             let pipeline = if settings.mode == RenderMode::MaterialPreview {
-                &self.preview_pipeline
+                self.custom_pipelines
+                    .as_ref()
+                    .map(|p| &p.1)
+                    .unwrap_or(&self.preview_pipeline)
             } else {
-                &self.render_pipeline
+                if settings.mode == RenderMode::Rendered {
+                    self.custom_pipelines
+                        .as_ref()
+                        .map(|p| &p.0)
+                        .unwrap_or(&self.render_pipeline)
+                } else {
+                    &self.render_pipeline
+                }
             };
             encoder.set_compute_pipeline_state(pipeline);
             encoder.set_buffer(0, Some(&geometry.triangles), 0);
@@ -357,6 +426,9 @@ impl Renderer {
             );
             encoder.set_buffer(3, Some(&film.accumulation), 0);
             encoder.set_buffer(4, Some(&geometry.lights), 0);
+            encoder.set_buffer(6, Some(&geometry.materials), 0);
+            encoder.set_buffer(7, Some(&geometry.texture_pixels), 0);
+            encoder.set_buffer(8, Some(&geometry.texture_levels), 0);
             encoder.set_texture(0, Some(&film.rgba));
             if let Some(key) = &environment_key {
                 if self.accelerated_preview {
@@ -395,6 +467,7 @@ impl Renderer {
         drop((y, uv));
         self.samples += 1;
         let frame = Frame {
+            shader_error: self.shader_error.clone(),
             surface,
             samples: self.samples,
             elapsed_ms: started.elapsed().as_secs_f64() * 1000.0,
@@ -480,11 +553,12 @@ impl GpuGeometry {
         let count = self.counts[0];
         // A valid binding is required even when the shader skips an empty scene.
         let dummy = (count == 0).then(|| upload(device, &[[0.0f32; 4]; 3]));
+        let stride = (std::mem::size_of::<crate::bvh::Triangle>() / 16) as u32;
         let indices: Vec<u32> = if count == 0 {
             vec![0, 1, 2]
         } else {
             (0..count)
-                .flat_map(|i| [i * 9, i * 9 + 1, i * 9 + 2])
+                .flat_map(|i| [i * stride, i * stride + 1, i * stride + 2])
                 .collect()
         };
         let indices = upload(device, &indices);
@@ -720,10 +794,29 @@ fn geometry_hash(scene: &Scene) -> u64 {
         collection.parent.hash(&mut hasher);
         collection.visible.hash(&mut hasher);
     }
+    for data in &scene.materials {
+        let m = &data.material;
+        data.id.hash(&mut hasher);
+        m.shader.hash(&mut hasher);
+        m.mapping.hash(&mut hasher);
+        m.custom_code.hash(&mut hasher);
+        m.textures.hash(&mut hasher);
+        for v in [
+            m.ior,
+            m.normal_strength,
+            m.texture_scale.x,
+            m.texture_scale.y,
+            m.texture_offset.x,
+            m.texture_offset.y,
+        ] {
+            v.to_bits().hash(&mut hasher);
+        }
+    }
     scene.objects.len().hash(&mut hasher);
     for object in &scene.objects {
         object.id.hash(&mut hasher);
         object.visible.hash(&mut hasher);
+        object.data.material_ids().hash(&mut hasher);
         object.parent.hash(&mut hasher);
         object.collections.hash(&mut hasher);
         if !scene.is_effectively_visible(object.id) {

@@ -4,13 +4,15 @@
 //! NV12 pixel buffer, which GPUI consumes directly. CPU readback is explicit export.
 
 mod bvh;
+mod material;
+pub use material::load_texture;
 #[cfg(target_os = "macos")]
 mod native;
 #[cfg(target_os = "macos")]
 mod preview;
 
 #[cfg(target_os = "macos")]
-pub use native::{Frame, Renderer};
+pub use native::{Frame, Renderer, validate_custom_shaders};
 #[cfg(target_os = "macos")]
 pub use preview::validate_hdri;
 

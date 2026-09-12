@@ -1,9 +1,9 @@
 #include <metal_stdlib>
 using namespace metal;
 
-// Opaque, two-sided metallic/roughness surfaces: energy-partitioned Lambert +
+// Metallic/roughness surfaces: energy-partitioned Lambert +
 // single-scattering GGX with Schlick Fresnel (dielectric IOR 1.5). Emission is
-// two-sided radiance. There is no transmission, volume scattering or denoiser.
+// two-sided radiance. Glass uses a rough dielectric reflection/transmission BSDF.
 // Rendering uses next-event estimation for area emitters AND the environment,
 // with a power-heuristic MIS weight on their complementary BSDF paths. The
 // deterministic Material Preview pipeline is implemented in preview.metal.
@@ -12,6 +12,7 @@ struct Triangle {
     float4 n0, n1, n2;
     float4 base_color, emission;
     float4 params; // metallic, roughness, object ID, original-edge mask
+    float4 generated0, generated1, generated2; // object coordinates; material index in generated0.w
 };
 struct BvhNode {
     float4 minimum, maximum;
@@ -35,7 +36,8 @@ struct Hit {
 };
 struct Surface {
     float3 position, normal, geometric_normal, color, emission;
-    float metallic, roughness;
+    float metallic, roughness, ior;
+    bool front_face, glass;
 };
 struct BsdfSample { float3 direction, value; float pdf; };
 constant float PI_F = 3.14159265358979323846f;
@@ -163,10 +165,12 @@ Surface surface_at(Ray ray, Hit hit, device const Triangle *triangles) {
     float3 weights(1.0f - hit.bary.x - hit.bary.y, hit.bary.x, hit.bary.y);
     float3 geometric = safe_normalize(cross(tri.v1.xyz - tri.v0.xyz, tri.v2.xyz - tri.v0.xyz), float3(0, 1, 0));
     float3 normal = safe_normalize(weights.x * tri.n0.xyz + weights.y * tri.n1.xyz + weights.z * tri.n2.xyz, geometric);
-    if (dot(normal, geometric) < 0.0f) normal = -normal;
+    if (dot(normal, geometric) < 0.0f) geometric = -geometric;
+    bool front_face = dot(geometric, ray.direction) < 0.0f;
     if (dot(geometric, ray.direction) > 0.0f) { geometric = -geometric; normal = -normal; }
     if (dot(normal, -ray.direction) < 1e-4f) normal = geometric;
     Surface result;
+    result.front_face = front_face; result.glass = false; result.ior = 1.5f;
     result.position = ray.origin + ray.direction * hit.distance;
     result.normal = normal; result.geometric_normal = geometric;
     result.color = clamp(tri.base_color.xyz, 0.0f, 1.0f);
@@ -175,6 +179,9 @@ Surface surface_at(Ray ray, Hit hit, device const Triangle *triangles) {
     result.roughness = clamp(tri.params.y, 0.025f, 1.0f);
     return result;
 }
+// FORMA_MATERIAL_SYSTEM
+
+float dielectric_f0(float ior) { float r = (ior - 1.0f) / (ior + 1.0f); return r * r; }
 float3 fresnel(float cos_theta, float3 f0) {
     float x = clamp(1.0f - cos_theta, 0.0f, 1.0f);
     float x2 = x * x;
@@ -189,13 +196,51 @@ float ggx_G1(float n_dot_v, float alpha) {
     float a2 = alpha * alpha;
     return (2.0f * n_dot_v) / max(1e-12f, n_dot_v + sqrt(a2 + (1.0f - a2) * n_dot_v * n_dot_v));
 }
+// Exact dielectric Fresnel, including total internal reflection. eta is the
+// destination/source IOR ratio. The normal always faces the incident ray.
+float dielectric_fresnel(float cosine, float eta) {
+    float c = clamp(abs(cosine), 0.0f, 1.0f);
+    float sin2_t = (1.0f - c * c) / (eta * eta);
+    if (sin2_t >= 1.0f) return 1.0f;
+    float ct = sqrt(max(0.0f, 1.0f - sin2_t));
+    float rs = (c - eta * ct) / max(1e-12f, c + eta * ct);
+    float rp = (eta * c - ct) / max(1e-12f, eta * c + ct);
+    return 0.5f * (rs * rs + rp * rp);
+}
+// GGX rough dielectric with matching visible-normal sampling/PDF and the
+// radiance-mode eta correction; see PBRT 4e, Dielectric BSDF.
+float3 evaluate_glass(Surface s, float3 wo, float3 wi, thread float &pdf) {
+    pdf = 0.0f;
+    float nv = dot(s.normal, wo), nl = dot(s.normal, wi);
+    if (nv <= 0.0f || abs(nl) < 1e-7f || nl * dot(s.geometric_normal, wi) <= 0.0f) return float3(0);
+    bool reflection = nl > 0.0f;
+    float eta = s.front_face ? s.ior : 1.0f / s.ior;
+    float3 h = safe_normalize(wo + wi * (reflection ? 1.0f : eta), s.normal);
+    if (dot(h, s.normal) < 0.0f) h = -h;
+    float vh = dot(wo, h), lh = dot(wi, h);
+    if (vh <= 0.0f || lh * nl <= 0.0f) return float3(0);
+    float alpha = s.roughness * s.roughness;
+    float D = ggx_D(max(0.0f, dot(s.normal, h)), alpha);
+    float Gv = ggx_G1(nv, alpha), Gl = ggx_G1(abs(nl), alpha);
+    float F = dielectric_fresnel(vh, eta);
+    float half_pdf = D * Gv * vh / nv;
+    if (reflection) {
+        pdf = half_pdf * F / (4.0f * vh);
+        return float3(F * D * Gv * Gl / max(1e-12f, 4.0f * nv * nl));
+    }
+    float d = lh + vh / eta, denom = max(1e-16f, d * d);
+    pdf = half_pdf * (1.0f - F) * abs(lh) / denom;
+    return s.color * ((1.0f - F) * D * Gv * Gl * abs(lh * vh / (nl * nv)) / (denom * eta * eta));
+}
+
 float specular_probability(Surface s, float3 wo) {
-    float3 f0 = mix(float3(0.04f), s.color, s.metallic);
+    float3 f0 = mix(float3(dielectric_f0(s.ior)), s.color, s.metallic);
     float reflectance = luminance(fresnel(max(0.0f, dot(s.normal, wo)), f0));
     float diffuse = luminance(s.color) * (1.0f - s.metallic);
     return s.metallic > 0.999f ? 1.0f : clamp(reflectance / max(1e-6f, reflectance + diffuse), 0.1f, 0.95f);
 }
 float3 evaluate_bsdf(Surface s, float3 wo, float3 wi, thread float &pdf) {
+    if (s.glass) return evaluate_glass(s, wo, wi, pdf);
     pdf = 0.0f;
     float nv = dot(s.normal, wo), nl = dot(s.normal, wi);
     if (nv <= 0.0f || nl <= 0.0f || dot(s.geometric_normal, wi) <= 0.0f) return float3(0);
@@ -203,7 +248,7 @@ float3 evaluate_bsdf(Surface s, float3 wo, float3 wi, thread float &pdf) {
     float nh = max(0.0f, dot(s.normal, h)), vh = max(0.0f, dot(wo, h));
     float alpha = s.roughness * s.roughness;
     float D = ggx_D(nh, alpha), Gv = ggx_G1(nv, alpha), Gl = ggx_G1(nl, alpha);
-    float3 F = fresnel(vh, mix(float3(0.04f), s.color, s.metallic));
+    float3 F = fresnel(vh, mix(float3(dielectric_f0(s.ior)), s.color, s.metallic));
     float3 specular = F * (D * Gv * Gl / max(1e-12f, 4.0f * nv * nl));
     float3 diffuse = (1.0f - F) * (1.0f - s.metallic) * s.color * INV_PI_F;
     float p_spec = specular_probability(s, wo);
@@ -232,6 +277,15 @@ BsdfSample sample_bsdf(Surface s, float3 wo, thread uint &rng) {
     BsdfSample sample;
     float choose = random_float(rng);
     float2 uv = random_pair(rng);
+    if (s.glass) {
+        float3 reflected = sample_visible_ggx(wo, s.normal, s.roughness * s.roughness, uv);
+        float3 h = safe_normalize(wo + reflected, s.normal);
+        float eta = s.front_face ? s.ior : 1.0f / s.ior;
+        float F = dielectric_fresnel(dot(wo, h), eta);
+        sample.direction = choose < F ? reflected : refract(-wo, h, 1.0f / eta);
+        sample.value = evaluate_glass(s, wo, sample.direction, sample.pdf);
+        return sample;
+    }
     sample.direction = choose < specular_probability(s, wo)
         ? sample_visible_ggx(wo, s.normal, s.roughness * s.roughness, uv)
         : cosine_sample(uv, s.normal);
@@ -265,7 +319,7 @@ float area_light_pdf(device const Triangle &light, float3 from, float3 to, uint 
 }
 float3 direct_lighting(Surface s, float3 wo, device const Triangle *triangles,
                        device const BvhNode *nodes, device const uint *lights,
-                       constant Uniforms &u, thread uint &rng) {
+                       constant Uniforms &u, thread uint &rng, MATERIAL_ARGS) {
     float3 result(0);
     if (u.scene.z > 0u) {
         uint light_index = lights[min(u.scene.z - 1u, uint(random_float(rng) * float(u.scene.z)))];
@@ -284,9 +338,12 @@ float3 direct_lighting(Surface s, float3 wo, device const Triangle *triangles,
                     float3 shadow_delta = target - origin;
                     float distance = length(shadow_delta);
                     Ray shadow = { origin, shadow_delta / distance };
-                    if (trace(shadow, distance * (1.0f - 1e-5f), triangles, nodes, u, true).triangle == NO_HIT)
-                        result += max(light.emission.xyz, 0.0f) * f * max(0.0f, dot(s.normal, wi))
+                    if (trace(shadow, distance * (1.0f - 1e-5f), triangles, nodes, u, true).triangle == NO_HIT) {
+                        Hit light_hit = { distance, float2(r * (1.0f - uv.y), r * uv.y), light_index };
+                        float3 emission = evaluate_surface(shadow, light_hit, triangles, u, MATERIAL_PASS).emission;
+                        result += emission * f * abs(dot(s.normal, wi))
                             * (power_heuristic(light_pdf, bsdf_pdf) / light_pdf);
+                    }
                 }
             }
         }
@@ -300,13 +357,13 @@ float3 direct_lighting(Surface s, float3 wo, device const Triangle *triangles,
     if (light_pdf > 0.0f && bsdf_pdf > 0.0f) {
         Ray shadow = { offset_origin(s.position, s.geometric_normal, wi), wi };
         if (trace(shadow, INFINITY, triangles, nodes, u, true).triangle == NO_HIT)
-            result += environment(wi, u) * f * max(0.0f, dot(s.normal, wi))
+            result += environment(wi, u) * f * abs(dot(s.normal, wi))
                 * (power_heuristic(light_pdf, bsdf_pdf) / light_pdf);
     }
     return result;
 }
 float3 path_trace(Ray ray, Hit primary, device const Triangle *triangles, device const BvhNode *nodes,
-                  device const uint *lights, constant Uniforms &u, thread uint &rng) {
+                  device const uint *lights, constant Uniforms &u, thread uint &rng, MATERIAL_ARGS) {
     float3 radiance(0), throughput(1), previous_position(0), previous_normal(0);
     float previous_pdf = 0.0f;
     uint max_bounces = clamp(u.scene.w, 1u, 32u);
@@ -317,7 +374,7 @@ float3 path_trace(Ray ray, Hit primary, device const Triangle *triangles, device
             radiance += throughput * environment(ray.direction, u) * weight;
             break;
         }
-        Surface s = surface_at(ray, hit, triangles);
+        Surface s = evaluate_surface(ray, hit, triangles, u, MATERIAL_PASS);
         if (max_component(s.emission) > 0.0f) {
             float light_pdf = bounce == 0u ? 0.0f : area_light_pdf(triangles[hit.triangle], previous_position, s.position, u.scene.z);
             float weight = bounce == 0u ? 1.0f : power_heuristic(previous_pdf, light_pdf);
@@ -328,10 +385,10 @@ float3 path_trace(Ray ray, Hit primary, device const Triangle *triangles, device
         // weight 1 instead of a MIS weight whose counterpart was truncated.
         // A one-step terminal continuation below preserves the same estimator
         // and lets max_bounces bound scattering events rather than emission.
-        radiance += throughput * direct_lighting(s, wo, triangles, nodes, lights, u, rng);
+        radiance += throughput * direct_lighting(s, wo, triangles, nodes, lights, u, rng, MATERIAL_PASS);
         BsdfSample next = sample_bsdf(s, wo, rng);
         if (!(next.pdf > 1e-12f) || max_component(next.value) <= 0.0f) break;
-        throughput *= next.value * (max(0.0f, dot(s.normal, next.direction)) / next.pdf);
+        throughput *= next.value * (abs(dot(s.normal, next.direction)) / next.pdf);
         if (!all(isfinite(throughput)) || max_component(throughput) <= 0.0f) break;
         previous_position = s.position; previous_normal = s.normal; previous_pdf = next.pdf;
         ray = { offset_origin(s.position, s.geometric_normal, next.direction), next.direction };
@@ -341,7 +398,7 @@ float3 path_trace(Ray ray, Hit primary, device const Triangle *triangles, device
                 radiance += throughput * environment(ray.direction, u)
                     * power_heuristic(previous_pdf, environment_pdf(ray.direction, previous_normal, u));
             } else {
-                Surface emitter = surface_at(ray, terminal, triangles);
+                Surface emitter = evaluate_surface(ray, terminal, triangles, u, MATERIAL_PASS);
                 float light_pdf = area_light_pdf(triangles[terminal.triangle], previous_position, emitter.position, u.scene.z);
                 radiance += throughput * emitter.emission * power_heuristic(previous_pdf, light_pdf);
             }
@@ -510,6 +567,9 @@ kernel void render_main(device const Triangle *triangles [[buffer(0)]],
                         constant Uniforms &u [[buffer(2)]],
                         device float4 *accumulation [[buffer(3)]],
                         device const uint *lights [[buffer(4)]],
+                        device const GpuMaterial *materials [[buffer(6)]],
+                        device const float4 *texture_pixels [[buffer(7)]],
+                        device const uint4 *texture_levels [[buffer(8)]],
                         texture2d<float, access::write> output [[texture(0)]],
                         uint2 gid [[thread_position_in_grid]]) {
     if (gid.x >= u.image.x || gid.y >= u.image.y) return;
@@ -521,7 +581,7 @@ kernel void render_main(device const Triangle *triangles [[buffer(0)]],
     Hit primary = trace(ray, INFINITY, triangles, nodes, u);
     float3 color;
     if (progressive) {
-        color = path_trace(ray, primary, triangles, nodes, lights, u, rng);
+        color = path_trace(ray, primary, triangles, nodes, lights, u, rng, MATERIAL_PASS);
     } else if (u.image.w == 0u) {
         color = wireframe_shading(ray, pixel, primary, triangles, nodes, u);
     } else if (primary.triangle != NO_HIT) {

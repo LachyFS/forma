@@ -1,6 +1,10 @@
+use crate::code_editor::{CodeEditor, EditorEvent};
 use crate::render_worker::{RenderWorker, Request};
 use crate::shading_pie::ShadingPie;
-use forma_core::{History, Material, MeshInstance, Object, Primitive, Scene};
+use forma_core::{
+    History, Material, MeshInstance, Object, Primitive, Scene, ShaderKind, TextureMapping,
+    TextureSlot,
+};
 use forma_render::{Frame, PreviewSettings, RenderMode, RenderSettings, StudioLight};
 use glam::{Vec2, Vec3};
 use gpui::{prelude::*, *};
@@ -22,6 +26,10 @@ pub enum Field {
     Rotation(usize),
     Scale(usize),
     Roughness,
+    Ior,
+    NormalStrength,
+    TextureScale(usize),
+    TextureOffset(usize),
     Metallic,
     Emission,
     Exposure,
@@ -63,6 +71,13 @@ pub enum Command {
     Subdivide,
     ToggleGrid,
     MaterialPreset(usize),
+    SetShader(ShaderKind),
+    SetTextureMapping(TextureMapping),
+    LoadTexture(TextureSlot),
+    ClearTexture(TextureSlot),
+    EditShader,
+    ApplyShader,
+    CloseShader,
     TogglePalette,
     ToggleHelp,
     TogglePreviewSettings,
@@ -103,6 +118,13 @@ pub struct Studio {
     pub help_open: bool,
     pub preview_open: bool,
     pub preview_loading: bool,
+    pub shader_editor: Option<Entity<CodeEditor>>,
+    pub shader_message: Option<String>,
+    pub shader_compiling: bool,
+    pub texture_loading: bool,
+    shader_target: Option<u64>,
+    shader_request_id: u64,
+    texture_request_id: u64,
     pub(crate) shading_pie: Option<ShadingPie>,
     pub active_field: Option<(Field, String)>,
     pub tool: Tool,
@@ -197,6 +219,13 @@ impl Studio {
             help_open: false,
             preview_open: false,
             preview_loading: false,
+            shader_editor: None,
+            shader_message: None,
+            shader_compiling: false,
+            texture_loading: false,
+            shader_target: None,
+            shader_request_id: 0,
+            texture_request_id: 0,
             shading_pie: None,
             active_field: None,
             tool: Tool::Select,
@@ -321,6 +350,9 @@ impl Studio {
                 } else {
                     0
                 };
+                if let Some(error) = &frame.shader_error {
+                    self.status = error.clone();
+                }
                 self.render_ms = frame.elapsed_ms;
                 self.frame = Some(frame);
                 self.render_error = None;
@@ -379,6 +411,15 @@ impl Studio {
     }
 
     pub fn execute(&mut self, command: Command, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(editor) = &self.shader_editor {
+            if matches!(command, Command::Undo | Command::Redo) {
+                editor.update(cx, |editor, cx| editor.undo(command == Command::Redo, cx));
+                return;
+            }
+            if !matches!(command, Command::ApplyShader | Command::CloseShader) {
+                return;
+            }
+        }
         window.focus(&self.focus);
         self.shading_pie = None;
         if !matches!(
@@ -618,25 +659,55 @@ impl Studio {
                 self.settings.show_grid = !self.settings.show_grid;
                 self.invalidate(false, cx);
             }
-            Command::MaterialPreset(preset) => {
-                if let Some(id) = self.selected {
-                    self.history.checkpoint(&self.scene);
-                    let (color, metallic, roughness, emission) = match preset {
-                        1 => (Vec3::new(0.73, 0.76, 0.73), 0., 0.28, Vec3::ZERO),
-                        2 => (Vec3::new(0.76, 0.32, 0.13), 1., 0.23, Vec3::ZERO),
-                        3 => (Vec3::splat(0.055), 0.72, 0.3, Vec3::ZERO),
-                        4 => (Vec3::new(0.9, 0.83, 0.66), 0., 0.5, Vec3::new(8., 7.4, 6.)),
-                        _ => (Vec3::new(0.045, 0.42, 0.32), 0.45, 0.24, Vec3::ZERO),
-                    };
-                    *self.scene.object_material_mut(id).unwrap() = Material {
-                        base_color: color,
-                        metallic,
-                        roughness,
-                        emission,
-                    };
-                    self.dirty = true;
-                    self.invalidate(true, cx);
+            Command::SetShader(ShaderKind::Custom) | Command::EditShader => {
+                self.open_shader_editor(window, cx)
+            }
+            Command::SetShader(kind) => {
+                self.edit_material(cx, |m| {
+                    if kind == ShaderKind::Glass && m.shader != kind {
+                        m.base_color = Vec3::ONE;
+                        m.roughness = 0.06;
+                        m.metallic = 0.0;
+                        m.emission = Vec3::ZERO;
+                    }
+                    m.shader = kind;
+                });
+            }
+            Command::SetTextureMapping(mapping) => self.edit_material(cx, |m| m.mapping = mapping),
+            Command::LoadTexture(slot) => self.choose_texture(slot, cx),
+            Command::ClearTexture(slot) => {
+                self.texture_request_id += 1;
+                self.texture_loading = false;
+                self.edit_material(cx, |m| m.textures[slot as usize] = None);
+            }
+            Command::ApplyShader => {
+                self.apply_shader(cx);
+                if let Some(editor) = &self.shader_editor {
+                    window.focus(&editor.read(cx).focus);
                 }
+            }
+            Command::CloseShader => {
+                self.shader_request_id += 1;
+                self.shader_editor = None;
+                self.shader_target = None;
+                self.shader_compiling = false;
+                self.shader_message = None;
+            }
+            Command::MaterialPreset(preset) => {
+                let (color, metallic, roughness, emission) = match preset {
+                    1 => (Vec3::new(0.73, 0.76, 0.73), 0., 0.28, Vec3::ZERO),
+                    2 => (Vec3::new(0.76, 0.32, 0.13), 1., 0.23, Vec3::ZERO),
+                    3 => (Vec3::splat(0.055), 0.72, 0.3, Vec3::ZERO),
+                    4 => (Vec3::new(0.9, 0.83, 0.66), 0., 0.5, Vec3::new(8., 7.4, 6.)),
+                    _ => (Vec3::new(0.045, 0.42, 0.32), 0.45, 0.24, Vec3::ZERO),
+                };
+                self.edit_material(cx, |m| {
+                    m.shader = ShaderKind::Pbr;
+                    m.base_color = color;
+                    m.metallic = metallic;
+                    m.roughness = roughness;
+                    m.emission = emission;
+                });
             }
             Command::TogglePalette => {
                 self.palette_open = !self.palette_open;
@@ -1080,6 +1151,10 @@ impl Studio {
             Field::Rotation(axis) => object.map(|o| o.transform.rotation[axis].to_degrees()),
             Field::Scale(axis) => object.map(|o| o.transform.scale[axis]),
             Field::Roughness => object.map(|o| o.material.roughness),
+            Field::Ior => object.map(|o| o.material.ior),
+            Field::NormalStrength => object.map(|o| o.material.normal_strength),
+            Field::TextureScale(axis) => object.map(|o| o.material.texture_scale[axis]),
+            Field::TextureOffset(axis) => object.map(|o| o.material.texture_offset[axis]),
             Field::Metallic => object.map(|o| o.material.metallic),
             Field::Emission => object.map(|o| o.material.emission.max_element()),
             Field::Exposure => Some(self.settings.exposure),
@@ -1185,6 +1260,21 @@ impl Studio {
                             self.scene.object_material_mut(id).unwrap().roughness =
                                 value.clamp(0.02, 1.)
                         }
+                        Field::Ior => {
+                            self.scene.object_material_mut(id).unwrap().ior = value.clamp(1.01, 3.0)
+                        }
+                        Field::NormalStrength => {
+                            self.scene.object_material_mut(id).unwrap().normal_strength =
+                                value.clamp(0.0, 4.0)
+                        }
+                        Field::TextureScale(axis) => {
+                            self.scene.object_material_mut(id).unwrap().texture_scale[axis] =
+                                value.clamp(0.001, 1000.0)
+                        }
+                        Field::TextureOffset(axis) => {
+                            self.scene.object_material_mut(id).unwrap().texture_offset[axis] =
+                                value.clamp(-1000.0, 1000.0)
+                        }
                         Field::Metallic => {
                             self.scene.object_material_mut(id).unwrap().metallic =
                                 value.clamp(0., 1.)
@@ -1283,6 +1373,9 @@ impl Studio {
                 }
             }
             cx.stop_propagation();
+            return;
+        }
+        if self.shader_editor.is_some() {
             return;
         }
         if self.help_open {
@@ -1563,6 +1656,17 @@ pub(crate) fn palette_commands(query: &str) -> Vec<(&'static str, &'static str, 
             "Z, 4",
             Command::SetMode(RenderMode::Wireframe),
         ),
+        (
+            "PBR surface shader",
+            "",
+            Command::SetShader(ShaderKind::Pbr),
+        ),
+        (
+            "Glass surface shader",
+            "",
+            Command::SetShader(ShaderKind::Glass),
+        ),
+        ("Custom surface shader", "", Command::EditShader),
         ("Solid viewport", "X", Command::SetMode(RenderMode::Solid)),
         (
             "Material preview",
@@ -1593,4 +1697,228 @@ pub(crate) fn palette_commands(query: &str) -> Vec<(&'static str, &'static str, 
             .all(|word| label.to_lowercase().contains(word))
     })
     .collect()
+}
+
+impl Studio {
+    fn selected_material_id(&self) -> Option<u64> {
+        self.scene
+            .object(self.selected?)?
+            .data
+            .material_ids()
+            .first()
+            .copied()
+    }
+    fn edit_material(&mut self, cx: &mut Context<Self>, edit: impl FnOnce(&mut Material)) {
+        let Some(id) = self.selected_material_id() else {
+            return;
+        };
+        let mut material = self.scene.material(id).unwrap().material.clone();
+        edit(&mut material);
+        if let Err(error) = material.validate() {
+            self.status = error.to_string();
+            return;
+        }
+        if self.scene.material(id).unwrap().material == material {
+            return;
+        }
+        self.history.checkpoint(&self.scene);
+        self.scene.material_mut(id).unwrap().material = material;
+        self.dirty = true;
+        self.status = "Material updated".into();
+        self.invalidate(true, cx);
+    }
+    fn open_shader_editor(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(id) = self.selected_material_id() else {
+            return;
+        };
+        let code = self
+            .scene
+            .material(id)
+            .unwrap()
+            .material
+            .custom_code
+            .clone();
+        let editor = cx.new(|cx| CodeEditor::new(code, cx));
+        cx.subscribe_in(&editor, window, |s, _, event, w, cx| {
+            s.execute(
+                match event {
+                    EditorEvent::Apply => Command::ApplyShader,
+                    EditorEvent::Cancel => Command::CloseShader,
+                },
+                w,
+                cx,
+            );
+        })
+        .detach();
+        window.focus(&editor.read(cx).focus);
+        self.shader_editor = Some(editor);
+        self.shader_target = Some(id);
+        self.shader_message = self
+            .frame
+            .as_ref()
+            .and_then(|frame| frame.shader_error.clone());
+        self.shader_compiling = false;
+        self.shader_request_id += 1;
+        self.preview_open = false;
+        cx.notify();
+    }
+    fn apply_shader(&mut self, cx: &mut Context<Self>) {
+        if self.shader_compiling {
+            return;
+        }
+        let (Some(editor), Some(id)) = (&self.shader_editor, self.shader_target) else {
+            return;
+        };
+        let code = editor.read(cx).text.clone();
+        let Some(data) = self.scene.material(id) else {
+            return;
+        };
+        let original = data.material.clone();
+        let mut scene = self.scene.clone();
+        let material = &mut scene.material_mut(id).unwrap().material;
+        material.custom_code = code.clone();
+        material.shader = ShaderKind::Custom;
+        if let Err(error) = scene.validate() {
+            self.shader_message = Some(format!("{error:#}"));
+            cx.notify();
+            return;
+        }
+        self.shader_compiling = true;
+        self.shader_message = Some("Compiling Preview and Rendered shaders…".into());
+        self.shader_request_id += 1;
+        let request = self.shader_request_id;
+        let epoch = self.project_epoch;
+        let compile = cx
+            .background_executor()
+            .spawn(async move { forma_render::validate_custom_shaders(&scene) });
+        cx.spawn(async move |this, cx| {
+            let result = compile.await;
+            let _ = this.update(cx, |s, cx| {
+                if s.shader_request_id != request || s.project_epoch != epoch {
+                    return;
+                }
+                s.shader_compiling = false;
+                if s.shader_editor
+                    .as_ref()
+                    .is_none_or(|editor| editor.read(cx).text != code)
+                {
+                    s.shader_message = Some(
+                        "Code changed during compilation. Apply again to compile this draft."
+                            .into(),
+                    );
+                    cx.notify();
+                    return;
+                }
+                if s.scene
+                    .material(id)
+                    .is_none_or(|data| data.material != original)
+                {
+                    s.shader_message =
+                        Some("The material changed during compilation. Apply again.".into());
+                    cx.notify();
+                    return;
+                }
+                match result {
+                    Ok(()) => {
+                        if original.shader != ShaderKind::Custom || original.custom_code != code {
+                            s.history.checkpoint(&s.scene);
+                            let material = &mut s.scene.material_mut(id).unwrap().material;
+                            material.custom_code = code;
+                            material.shader = ShaderKind::Custom;
+                            s.dirty = true;
+                            s.invalidate(true, cx);
+                        }
+                        s.shader_message =
+                            Some("Compiled and applied · Save the project to keep changes".into());
+                        s.status = "Custom shader applied".into();
+                    }
+                    Err(error) => {
+                        s.shader_message = Some(format!(
+                            "Compilation failed — current material retained.\n{error:#}"
+                        ))
+                    }
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+        cx.notify();
+    }
+    fn choose_texture(&mut self, slot: TextureSlot, cx: &mut Context<Self>) {
+        if self.texture_loading {
+            return;
+        }
+        let Some(id) = self.selected_material_id() else {
+            return;
+        };
+        self.texture_request_id += 1;
+        let request = self.texture_request_id;
+        let epoch = self.project_epoch;
+        let original = self.scene.material(id).unwrap().material.textures[slot as usize].clone();
+        self.texture_loading = true;
+        let receiver = cx.prompt_for_paths(PathPromptOptions {
+            files: true,
+            directories: false,
+            multiple: false,
+            prompt: Some(format!("{} texture · PNG or JPEG", slot.label()).into()),
+        });
+        cx.spawn(async move |this, cx| {
+            let result = match receiver.await {
+                Ok(Ok(Some(paths))) => {
+                    if let Some(path) = paths.into_iter().next() {
+                        Some(
+                            cx.background_executor()
+                                .spawn(async move { forma_render::load_texture(&path) })
+                                .await,
+                        )
+                    } else {
+                        None
+                    }
+                }
+                Ok(Err(error)) => Some(Err(error)),
+                _ => None,
+            };
+            let _ = this.update(cx, |s, cx| {
+                if s.texture_request_id != request {
+                    return;
+                }
+                s.texture_loading = false;
+                if s.project_epoch != epoch {
+                    cx.notify();
+                    return;
+                }
+                let Some(data) = s.scene.material(id) else {
+                    cx.notify();
+                    return;
+                };
+                if data.material.textures[slot as usize] != original {
+                    cx.notify();
+                    return;
+                }
+                match result {
+                    Some(Ok(image)) => {
+                        let name = image.name.clone();
+                        let mut candidate = s.scene.clone();
+                        candidate.material_mut(id).unwrap().material.textures[slot as usize] =
+                            Some(Arc::new(image));
+                        match candidate.validate() {
+                            Ok(()) => {
+                                s.history.checkpoint(&s.scene);
+                                s.scene = candidate;
+                                s.dirty = true;
+                                s.status = format!("{} texture · {name}", slot.label());
+                                s.invalidate(true, cx);
+                            }
+                            Err(error) => s.status = format!("Texture: {error:#}"),
+                        }
+                    }
+                    Some(Err(error)) => s.status = format!("Texture: {error:#}"),
+                    None => {}
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+        cx.notify();
+    }
 }

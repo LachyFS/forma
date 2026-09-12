@@ -3,6 +3,33 @@
 Validated on macOS with an Apple M4 Pro. This records executed checks, rather
 than asserting equivalence to Blender or Cycles.
 
+## Surface shader change (September 2026)
+
+This change was developed in a Linux workspace. The following checks executed:
+
+- `cargo test --locked -p forma-core`: 41 tests passed, including shader/image
+  persistence, version-2 migration, validation and undo/redo.
+- `cargo test --locked -p forma-render --lib`: eight CPU tests passed, including
+  linear/data texture interpretation, mip filtering, source dispatch and layouts.
+- `cargo check --locked -p forma-render --all-targets --target aarch64-apple-darwin`:
+  renderer Rust code and its Mac GPU test targets type-checked.
+- Core Clippy passed with warnings denied. Renderer Clippy passed for the Mac
+  target with `chunks_exact_to_as_chunks` allowed for existing test code; this
+  lint is newer than the project's originally verified Rust toolchain.
+- The app's current UI and interaction code compiled in an isolated Linux GPUI
+  harness, with Metal display/compilation replaced by explicit unavailable errors.
+  Live GPUI input checks passed for typing, selections, multiline edits, delete,
+  tab, local undo/redo, apply-error recovery, closing and draft/document isolation.
+  The inspector and code modal were visually inspected in that harness.
+
+The full Mac app cross-build stopped in `ring` because this Linux host lacks the
+Apple C toolchain. **Metal source compilation, rendered shader output and the new
+native Mac shader smoke workflow have not run here.** The new GPU integration
+regressions cover texture/PBR/glass/custom output, invalid-source PBR fallback,
+compiler diagnostics, recovery, the default template and nonfinite shader output.
+They must run on a Mac with Metal. The earlier Mac validation below describes
+pre-existing functionality; it is not evidence for the new shader paths.
+
 ## Geometry and documents
 
 `cargo test -p forma-core` passed 30 tests covering primitive winding, closed topology,

@@ -1,7 +1,7 @@
 //! Native workspace chrome. Rendering and interaction state live in `Studio`.
 use crate::app::{Command, Field, Studio, Tool};
 use crate::shading_pie::{CARD_HALF_SIZE, CHOICES};
-use forma_core::Primitive;
+use forma_core::{Primitive, ShaderKind, TextureMapping, TextureSlot};
 use forma_render::{RenderMode, StudioLight};
 use gpui::{prelude::*, *};
 
@@ -97,6 +97,13 @@ fn command_hint(command: Command) -> &'static str {
         Command::Subdivide => "Subdivide selected mesh",
         Command::ToggleGrid => "Toggle ground grid",
         Command::MaterialPreset(_) => "Apply surface preset",
+        Command::SetShader(_) => "Choose a surface shader",
+        Command::SetTextureMapping(_) => "Choose generated image coordinates",
+        Command::LoadTexture(_) => "Choose a PNG or JPEG image texture",
+        Command::ClearTexture(_) => "Remove this texture",
+        Command::EditShader => "Edit custom Metal surface code",
+        Command::ApplyShader => "Compile and apply · ⌘ Return",
+        Command::CloseShader => "Close shader editor · Esc",
         Command::TogglePalette => "Workspace commands · ⌘ K",
         Command::ToggleHelp => "Keyboard reference · ?",
         Command::TogglePreviewSettings => "Material preview lighting",
@@ -1144,6 +1151,34 @@ fn inspector(s: &Studio, cx: &mut Context<Studio>) -> AnyElement {
                     .border_color(rgb(LINE))
                     .child(section("SURFACE"))
                     .child(
+                        row().gap(px(3.)).children(
+                            [ShaderKind::Pbr, ShaderKind::Glass, ShaderKind::Custom]
+                                .into_iter()
+                                .map(|kind| {
+                                    button(
+                                        format!("shader-{kind:?}"),
+                                        kind.label(),
+                                        None,
+                                        Command::SetShader(kind),
+                                        object.material.shader == kind,
+                                        cx,
+                                    )
+                                    .flex_1()
+                                    .justify_center()
+                                }),
+                        ),
+                    )
+                    .when(object.material.shader == ShaderKind::Custom, |d| {
+                        d.child(button(
+                            "edit-custom-shader",
+                            "Edit shader code…",
+                            Some(Icon::Material),
+                            Command::EditShader,
+                            false,
+                            cx,
+                        ))
+                    })
+                    .child(
                         row()
                             .gap(px(4.))
                             .children(PRESETS.into_iter().enumerate().map(
@@ -1214,10 +1249,14 @@ fn inspector(s: &Studio, cx: &mut Context<Studio>) -> AnyElement {
                     .child(
                         col()
                             .child(property(s, "roughness", "Roughness", Field::Roughness, cx))
-                            .child(property(s, "metallic", "Metallic", Field::Metallic, cx))
+                            .when(object.material.shader != ShaderKind::Glass, |d| {
+                                d.child(property(s, "metallic", "Metallic", Field::Metallic, cx))
+                            })
+                            .child(property(s, "ior", "IOR", Field::Ior, cx))
                             .child(property(s, "emission", "Emission", Field::Emission, cx)),
                     ),
             )
+            .child(texture_inspector(s, object.material, cx))
             .child(
                 col()
                     .px(px(14.))
@@ -2220,8 +2259,222 @@ pub fn render(studio: &Studio, viewport: AnyElement, cx: &mut Context<Studio>) -
             d.child(command_overlay(studio, cx))
         })
         .when(studio.help_open, |d| d.child(help_overlay(cx)))
+        .when(studio.shader_editor.is_some(), |d| {
+            d.child(shader_overlay(studio, cx))
+        })
         .when(studio.shading_pie.is_some(), |d| {
             d.child(shading_overlay(studio, cx))
         })
+        .into_any_element()
+}
+
+fn texture_inspector(
+    s: &Studio,
+    material: &forma_core::Material,
+    cx: &mut Context<Studio>,
+) -> AnyElement {
+    let slots: Vec<_> = TextureSlot::ALL
+        .into_iter()
+        .map(|slot| {
+            let image = &material.textures[slot as usize];
+            let label = image
+                .as_ref()
+                .map(|image| format!("{} · {} × {}", image.name, image.width, image.height))
+                .unwrap_or_else(|| "Choose image…".into());
+            let space = if matches!(slot, TextureSlot::BaseColor | TextureSlot::Emission) {
+                "sRGB"
+            } else {
+                "Linear data"
+            };
+            let picker = action(
+                format!("load-texture-{slot:?}"),
+                Command::LoadTexture(slot),
+                cx,
+            )
+            .flex_1()
+            .min_w(px(0.))
+            .h(px(27.))
+            .px(px(7.))
+            .rounded(px(5.))
+            .bg(rgb(WELL))
+            .hover(|d| d.bg(rgb(RAISED)))
+            .child(div().truncate().text_size(px(10.)).child(label));
+            col()
+                .gap(px(3.))
+                .child(
+                    div()
+                        .text_color(rgb(MUTED))
+                        .text_size(px(10.))
+                        .child(format!("{} · {space}", slot.label())),
+                )
+                .child(row().gap(px(4.)).child(picker).when(image.is_some(), |d| {
+                    d.child(button(
+                        format!("clear-texture-{slot:?}"),
+                        "×",
+                        None,
+                        Command::ClearTexture(slot),
+                        false,
+                        cx,
+                    ))
+                }))
+        })
+        .collect();
+    let mappings: Vec<_> = [
+        TextureMapping::Box,
+        TextureMapping::Sphere,
+        TextureMapping::Plane,
+    ]
+    .into_iter()
+    .map(|mapping| {
+        button(
+            format!("texture-mapping-{mapping:?}"),
+            mapping.label(),
+            None,
+            Command::SetTextureMapping(mapping),
+            material.mapping == mapping,
+            cx,
+        )
+        .flex_1()
+        .justify_center()
+        .text_size(px(10.))
+    })
+    .collect();
+    let tiles: Vec<_> = (0..2)
+        .map(|axis| {
+            field(
+                s,
+                &format!("texture-scale-{axis}"),
+                ["Tile U", "Tile V"][axis],
+                Field::TextureScale(axis),
+                cx,
+            )
+            .flex_1()
+            .min_w(px(0.))
+        })
+        .collect();
+    let offsets: Vec<_> = (0..2)
+        .map(|axis| {
+            field(
+                s,
+                &format!("texture-offset-{axis}"),
+                ["Offset U", "Offset V"][axis],
+                Field::TextureOffset(axis),
+                cx,
+            )
+            .flex_1()
+            .min_w(px(0.))
+        })
+        .collect();
+    col().px(px(14.)).py(px(12.)).gap(px(8.)).border_b_1().border_color(rgb(LINE))
+        .child(section("IMAGE TEXTURES"))
+        .child(div().text_size(px(10.)).text_color(rgb(MUTED)).child(
+            if s.texture_loading { "Loading image…" } else { "PNG / JPEG · Images saved in project" }
+        ))
+        .children(slots)
+        .child(div().text_size(px(10.)).text_color(rgb(MUTED)).child("Generated coordinates"))
+        .child(row().gap(px(2.)).children(mappings))
+        .child(row().gap(px(6.)).children(tiles))
+        .child(row().gap(px(6.)).children(offsets))
+        .when(material.textures[TextureSlot::Normal as usize].is_some(), |d| {
+            d.child(property(s, "normal-strength", "Normal strength", Field::NormalStrength, cx))
+        })
+        .child(div().text_size(px(9.)).text_color(rgb(FAINT)).child(
+            "Color maps multiply the color above. Roughness and metallic maps replace their values. Normal maps use OpenGL +Y."
+        ))
+        .into_any_element()
+}
+
+fn shader_overlay(s: &Studio, cx: &mut Context<Studio>) -> AnyElement {
+    let heading = col()
+        .gap(px(4.))
+        .child(div().text_size(px(16.)).child("Custom surface shader"))
+        .child(
+            div()
+                .text_size(px(10.))
+                .text_color(rgb(MUTED))
+                .child("Metal · Function body · Shared by Preview and Rendered"),
+        );
+    let header = row().justify_between().child(heading).child(button(
+        "close-shader",
+        "Close",
+        None,
+        Command::CloseShader,
+        false,
+        cx,
+    ));
+    let instructions = div().text_size(px(10.)).text_color(rgb(MUTED)).child(
+        "Edit surface.color, roughness, metallic, emission, normal or ior; set surface.glass = true for refraction. Use input.uv, generated, position, normal and view_direction. Image textures are applied before your code."
+    );
+    let footer = row()
+        .justify_between()
+        .child(
+            div()
+                .text_size(px(10.))
+                .text_color(rgb(FAINT))
+                .child("⌘ Return to apply · ⌘ Z to undo code · Only applied code is saved"),
+        )
+        .child(button(
+            "apply-shader",
+            if s.shader_compiling {
+                "Compiling…"
+            } else {
+                "Compile & apply"
+            },
+            None,
+            Command::ApplyShader,
+            true,
+            cx,
+        ));
+    let panel = col()
+        .id("shader-editor-panel")
+        .w(px(780.))
+        .max_w(relative(0.94))
+        .max_h(relative(0.94))
+        .overflow_y_scroll()
+        .rounded(px(12.))
+        .bg(rgb(PANEL))
+        .border_1()
+        .border_color(rgb(EDGE))
+        .shadow_lg()
+        .p(px(16.))
+        .gap(px(12.))
+        .child(header)
+        .child(instructions)
+        .child(s.shader_editor.as_ref().unwrap().clone())
+        .when_some(s.shader_message.clone(), |d, message| {
+            let color = if message.contains("failed") {
+                ALERT
+            } else {
+                MUTED
+            };
+            d.child(
+                div()
+                    .id("shader-diagnostics")
+                    .max_h(px(100.))
+                    .overflow_y_scroll()
+                    .p(px(8.))
+                    .rounded(px(5.))
+                    .bg(rgb(WELL))
+                    .text_size(px(11.))
+                    .text_color(rgb(color))
+                    .child(message),
+            )
+        })
+        .child(footer);
+    div()
+        .id("shader-editor-overlay")
+        .absolute()
+        .inset_0()
+        .occlude()
+        .bg(rgba(0x00000088))
+        .flex()
+        .items_center()
+        .justify_center()
+        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+        .on_mouse_down(MouseButton::Right, |_, _, cx| cx.stop_propagation())
+        .on_mouse_down(MouseButton::Middle, |_, _, cx| cx.stop_propagation())
+        .on_mouse_move(|_, _, cx| cx.stop_propagation())
+        .on_scroll_wheel(|_, _, cx| cx.stop_propagation())
+        .child(panel)
         .into_any_element()
 }
