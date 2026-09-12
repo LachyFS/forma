@@ -1,6 +1,6 @@
 use forma_core::{
-    History, MAX_SHADER_BYTES, Material, Primitive, Scene, ShaderKind, TextureImage,
-    TextureMapping, TextureSlot, Vec2, Vec3,
+    History, MAX_SHADER_BYTES, Material, Primitive, Scene, ShaderKind, ShaderLanguage,
+    TextureImage, TextureMapping, TextureSlot, Vec2, Vec3,
 };
 use std::sync::Arc;
 
@@ -40,6 +40,11 @@ fn materials_textures_and_code_are_portable_and_undoable() {
     assert_eq!(scene, before);
     assert!(history.redo(&mut scene));
     assert_eq!(scene, edited);
+    let m = scene.object_material_mut(id).unwrap();
+    m.custom_language = ShaderLanguage::Wgsl;
+    m.custom_code = ShaderLanguage::Wgsl.default_code().into();
+    scene.save(&file).unwrap();
+    assert_eq!(Scene::load(&file).unwrap(), scene);
 }
 
 #[test]

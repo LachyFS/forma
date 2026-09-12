@@ -523,7 +523,7 @@ impl Scene {
             .map(|data| &data.material)
             .chain(std::iter::once(&material))
             .filter(|material| material.shader == crate::ShaderKind::Custom)
-            .map(|material| &material.custom_code)
+            .map(|material| (material.custom_language, &material.custom_code))
             .collect();
         ensure!(codes.len() <= 32, "Scene exceeds 32 unique custom shaders");
         ensure!(
@@ -1261,7 +1261,7 @@ impl Scene {
                 "Scene textures exceed 64 MiB"
             );
             if data.material.shader == crate::ShaderKind::Custom {
-                custom_shaders.insert(&data.material.custom_code);
+                custom_shaders.insert((data.material.custom_language, &data.material.custom_code));
             }
             ensure!(
                 custom_shaders.len() <= 32,

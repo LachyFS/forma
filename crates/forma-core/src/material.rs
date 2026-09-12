@@ -10,6 +10,32 @@ pub const MAX_TEXTURE_PIXELS: usize = 4 * 1024 * 1024;
 pub const MAX_SCENE_TEXTURE_BYTES: usize = 64 * 1024 * 1024;
 pub const DEFAULT_SHADER_CODE: &str = "// Metal surface function body. Colors are scene-linear.\n// input: uv, generated, position, normal, view_direction\n// Textures have already been applied to surface.\nfloat bands = 0.5f + 0.5f * sin(input.uv.x * 30.0f);\nsurface.color = mix(float3(0.04f, 0.12f, 0.3f),\n                    float3(0.6f, 0.3f, 0.08f), bands);\nsurface.roughness = 0.28f;\n";
 
+/// The language is persisted so changing renderers cannot silently reinterpret code.
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum ShaderLanguage {
+    #[default]
+    Metal,
+    Wgsl,
+}
+impl ShaderLanguage {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Metal => "Metal",
+            Self::Wgsl => "WGSL",
+        }
+    }
+    pub fn default_code(self) -> &'static str {
+        match self {
+            Self::Metal => DEFAULT_SHADER_CODE,
+            Self::Wgsl => DEFAULT_WGSL_CODE,
+        }
+    }
+}
+pub const DEFAULT_WGSL_CODE: &str = "// WGSL surface function body. Colors are scene-linear.\n// input: uv, generated, position, normal, view_direction\n// Textures have already been applied to surface.\nlet bands = 0.5 + 0.5 * sin(input.uv.x * 30.0);\nsurface.color = mix(vec3(0.04, 0.12, 0.3),\n                    vec3(0.6, 0.3, 0.08), bands);\nsurface.roughness = 0.28;\n";
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 #[repr(u32)]
@@ -140,6 +166,7 @@ pub struct Material {
     pub textures: [Option<Arc<TextureImage>>; 5],
     /// Function body retained when switching away from Custom.
     pub custom_code: String,
+    pub custom_language: ShaderLanguage,
 }
 impl Default for Material {
     fn default() -> Self {
@@ -156,6 +183,7 @@ impl Default for Material {
             texture_offset: Vec2::ZERO,
             textures: Default::default(),
             custom_code: DEFAULT_SHADER_CODE.into(),
+            custom_language: ShaderLanguage::Metal,
         }
     }
 }

@@ -1,6 +1,7 @@
 //! A latest-request mailbox keeps input responsive when rendering is slower than input.
 use forma_core::{Camera, Scene, World};
-use forma_render::{Frame, RenderSettings, Renderer};
+use forma_render::{Backend, Frame, RenderSettings, Renderer};
+use gpui::RenderImage;
 use std::{
     collections::VecDeque,
     path::PathBuf,
@@ -26,7 +27,7 @@ struct Inbox {
 
 #[derive(Default)]
 pub struct Output {
-    pub frame: Option<(u64, Frame)>,
+    pub frame: Option<(u64, Frame, Option<Arc<RenderImage>>)>,
     pub device: Option<String>,
     pub messages: VecDeque<Result<String, String>>,
     pub render_error: Option<(u64, String)>,
@@ -68,10 +69,11 @@ impl OutputMailbox {
 pub struct RenderWorker {
     input: Arc<(Mutex<Inbox>, Condvar)>,
     output: OutputMailbox,
+    backend: Backend,
 }
 
 impl RenderWorker {
-    pub fn new() -> (Self, async_channel::Receiver<()>) {
+    pub fn new(backend: Backend) -> (Self, async_channel::Receiver<()>) {
         let input = Arc::new((Mutex::new(Inbox::default()), Condvar::new()));
         let (output, notifications) = OutputMailbox::new();
         let worker_input = input.clone();
@@ -79,16 +81,22 @@ impl RenderWorker {
         thread::Builder::new()
             .name("forma-viewport".into())
             .spawn(move || {
-                let mut renderer = match Renderer::new() {
+                let mut renderer = match Renderer::with_backend(backend) {
                     Ok(renderer) => renderer,
                     Err(error) => {
                         worker_output.publish(|output| {
-                            output.render_error = Some((0, format!("Metal renderer: {error:#}")));
+                            output.render_error = Some((0, format!("GPU renderer: {error:#}")));
                         });
                         return;
                     }
                 };
-                worker_output.publish(|output| output.device = Some(renderer.device_name()));
+                worker_output.publish(|output| {
+                    output.device = Some(format!(
+                        "{} · {}",
+                        renderer.backend(),
+                        renderer.device_name()
+                    ));
+                });
                 let mut active: Option<Request> = None;
                 let mut active_snapshot: Option<Arc<Scene>> = None;
                 let mut scene: Option<Scene> = None;
@@ -121,16 +129,23 @@ impl RenderWorker {
                     let Some(request) = &active else {
                         continue;
                     };
-                    match renderer.render(
-                        scene.as_ref().unwrap(),
-                        &request.settings,
-                        request.revision,
-                    ) {
-                        Ok(frame) => {
+                    let rendered = renderer
+                        .render(scene.as_ref().unwrap(), &request.settings, request.revision)
+                        .and_then(|frame| {
+                            // GPUI's portable image path uses BGRA. Prepare it on the
+                            // worker so megapixel channel conversion never blocks input.
+                            let image = frame
+                                .rgba()
+                                .map(|rgba| presentation_image(frame.width(), frame.height(), rgba))
+                                .transpose()?;
+                            Ok((frame, image))
+                        });
+                    match rendered {
+                        Ok((frame, image)) => {
                             complete = !request.settings.mode.progressive()
                                 || frame.samples >= request.settings.max_samples;
                             worker_output.publish(|output| {
-                                output.frame = Some((request.generation, frame));
+                                output.frame = Some((request.generation, frame, image));
                                 output.render_error = None;
                             });
                         }
@@ -145,7 +160,14 @@ impl RenderWorker {
                 }
             })
             .expect("could not start render worker");
-        (Self { input, output }, notifications)
+        (
+            Self {
+                input,
+                output,
+                backend,
+            },
+            notifications,
+        )
     }
 
     pub fn take_output(&self) -> Output {
@@ -163,6 +185,7 @@ impl RenderWorker {
         request.settings.selected = None;
         request.settings.show_grid = false;
         let output = self.output.clone();
+        let backend = self.backend;
         thread::Builder::new()
             .name("forma-image-export".into())
             .spawn(move || {
@@ -170,7 +193,7 @@ impl RenderWorker {
                     let mut scene = (*request.scene).clone();
                     scene.camera = request.camera;
                     scene.world = request.world.clone();
-                    let mut renderer = Renderer::new()?;
+                    let mut renderer = Renderer::with_backend(backend)?;
                     loop {
                         let frame = renderer.render(&scene, &request.settings, request.revision)?;
                         if !request.settings.mode.progressive()
@@ -193,6 +216,23 @@ impl RenderWorker {
     }
 }
 
+fn presentation_image(width: u32, height: u32, rgba: &[u8]) -> anyhow::Result<Arc<RenderImage>> {
+    let expected = u64::from(width) * u64::from(height) * 4;
+    anyhow::ensure!(
+        width > 0 && height > 0 && expected == rgba.len() as u64,
+        "GPU frame dimensions do not match its RGBA pixels"
+    );
+    let mut bgra = rgba.to_vec();
+    for pixel in bgra.as_chunks_mut::<4>().0 {
+        pixel.swap(0, 2);
+    }
+    let pixels = image::RgbaImage::from_raw(width, height, bgra)
+        .ok_or_else(|| anyhow::anyhow!("could not prepare the GPU frame for display"))?;
+    Ok(Arc::new(RenderImage::new(smallvec::smallvec![
+        image::Frame::new(pixels)
+    ])))
+}
+
 impl Drop for RenderWorker {
     fn drop(&mut self) {
         let (lock, wake) = &*self.input;
@@ -206,6 +246,20 @@ impl Drop for RenderWorker {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn portable_presentation_keeps_dimensions_alpha_and_bgra_channel_order() {
+        let rgba = [255, 80, 10, 255, 12, 34, 56, 128];
+        let image = presentation_image(2, 1, &rgba).unwrap();
+        assert_eq!(image.size(0), gpui::size(2.into(), 1.into()));
+        assert_eq!(
+            image.as_bytes(0).unwrap(),
+            &[10, 80, 255, 255, 56, 34, 12, 128]
+        );
+        assert_eq!(rgba[0], 255);
+        assert!(presentation_image(3, 1, &rgba).is_err());
+        assert!(presentation_image(0, 0, &[]).is_err());
+    }
 
     #[test]
     fn output_notifications_coalesce_without_losing_latest_state_or_messages() {

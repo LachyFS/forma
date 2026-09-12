@@ -10,6 +10,11 @@ anyhow.workspace = true
 glam.workspace = true
 bytemuck.workspace = true
 image.workspace = true
+wgpu = { version = "27.0.1", default-features = false, features = ["std", "parking_lot", "wgsl", "vulkan", "metal", "dx12"] }
+pollster = "0.4"
+
+[dev-dependencies]
+naga = { version = "27", features = ["wgsl-in", "spv-out", "msl-out", "hlsl-out"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 metal = "0.29"
@@ -17,4 +22,3 @@ core-video = { version = "0.4.3", features = ["metal"] }
 core-foundation = "0.10"
 foreign-types = "0.5"
 objc = "0.2"
-

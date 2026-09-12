@@ -10,7 +10,7 @@ use std::{
 };
 
 use anyhow::{Context, Result, anyhow, ensure};
-use bytemuck::{Pod, Zeroable};
+use bytemuck::Pod;
 use core_foundation::{
     base::{CFType, TCFType},
     boolean::CFBoolean,
@@ -27,15 +27,17 @@ use core_video::{
     pixel_buffer_pool::CVPixelBufferPool,
 };
 use foreign_types::ForeignTypeRef;
-use forma_core::Scene;
-use glam::Vec3;
+use forma_core::{Scene, ShaderLanguage};
 use metal::*;
 
 use crate::{
     RenderMode, RenderSettings,
     bvh::Geometry,
-    material::{MaterialResources, custom_sources, shader_source},
+    material::{
+        MaterialResources, custom_cache_key, custom_sources, shader_source, validate_language,
+    },
     preview::{EnvironmentKey, PreviewResources},
+    render_data::{Uniforms, geometry_hash},
 };
 
 #[derive(Clone)]
@@ -52,22 +54,6 @@ pub struct Frame {
 // including GPUI's Metal texture cache, have released their references.
 unsafe impl Send for Frame {}
 unsafe impl Sync for Frame {}
-
-#[repr(C)]
-#[derive(Clone, Copy, Pod, Zeroable)]
-struct Uniforms {
-    cam_origin: [f32; 4],
-    cam_right: [f32; 4],
-    cam_up: [f32; 4],
-    cam_forward: [f32; 4],
-    world: [f32; 4],
-    camera: [f32; 4],
-    image: [u32; 4],
-    scene: [u32; 4],
-    settings: [f32; 4],
-    preview_lighting: [f32; 4],
-    preview_display: [f32; 4],
-}
 
 struct Film {
     width: u32,
@@ -96,7 +82,7 @@ pub struct Renderer {
     render_pipeline: ComputePipelineState,
     preview_pipeline: ComputePipelineState,
     custom_pipelines: Option<(ComputePipelineState, ComputePipelineState)>,
-    compiled_codes: Vec<String>,
+    compiled_codes: Vec<(ShaderLanguage, String)>,
     shader_error: Option<String>,
     accelerated_preview: bool,
     preview_resources: PreviewResources,
@@ -115,6 +101,7 @@ pub struct Renderer {
 /// draft. Call on a background executor; errors retain Metal's line diagnostics.
 pub fn validate_custom_shaders(scene: &Scene) -> Result<()> {
     scene.validate()?;
+    validate_language(scene, ShaderLanguage::Metal)?;
     objc::rc::autoreleasepool(|| {
         let device = Device::system_default().context("No Metal GPU is available")?;
         let codes = custom_sources(scene);
@@ -272,10 +259,13 @@ impl Renderer {
         if self.checked_revision != Some(revision) {
             scene.validate().context("Cannot render invalid scene")?;
             let codes = custom_sources(scene);
-            if codes != self.compiled_codes {
+            let cache_key = custom_cache_key(scene);
+            if cache_key != self.compiled_codes {
                 // Commit both pipelines together. A bad shader loaded from disk
                 // uses the built-in PBR fallback and reports its compiler log.
-                match compile_surface_pipelines(&self.device, &codes, self.accelerated_preview) {
+                match validate_language(scene, ShaderLanguage::Metal).and_then(|()| {
+                    compile_surface_pipelines(&self.device, &codes, self.accelerated_preview)
+                }) {
                     Ok(pipelines) => {
                         self.custom_pipelines = Some(pipelines);
                         self.shader_error = None;
@@ -286,7 +276,7 @@ impl Renderer {
                             Some(format!("Custom shader: {error:#} · Using PBR fallback"));
                     }
                 }
-                self.compiled_codes = codes.into_iter().map(str::to_owned).collect();
+                self.compiled_codes = cache_key;
             }
             let hash = geometry_hash(scene);
             if self.geometry_hash != Some(hash) {
@@ -476,6 +466,45 @@ impl Renderer {
         Ok(frame)
     }
 
+    /// Explicit normalized scene-linear readback for numerical validation.
+    pub fn read_linear_pixels(&self) -> Result<Vec<[f32; 4]>> {
+        objc::rc::autoreleasepool(|| {
+            let film = self
+                .film
+                .as_ref()
+                .filter(|_| self.frame.is_some())
+                .context("Render an image before reading the linear film")?;
+            let size = film.width as u64 * film.height as u64 * 16;
+            let buffer = self
+                .device
+                .new_buffer(size, MTLResourceOptions::StorageModeShared);
+            let command = self.queue.new_command_buffer();
+            let encoder = command.new_blit_command_encoder();
+            encoder.copy_from_buffer(&film.accumulation, 0, &buffer, 0, size);
+            encoder.end_encoding();
+            command.commit();
+            command.wait_until_completed();
+            ensure!(
+                command.status() == MTLCommandBufferStatus::Completed,
+                "Metal linear film readback failed"
+            );
+            // SAFETY: GPU copy has completed; the aligned buffer remains alive.
+            let values = unsafe {
+                std::slice::from_raw_parts(
+                    buffer.contents().cast::<[f32; 4]>(),
+                    (film.width * film.height) as usize,
+                )
+            };
+            Ok(values
+                .iter()
+                .map(|p| {
+                    let weight = p[3].max(1.0);
+                    [p[0] / weight, p[1] / weight, p[2] / weight, 1.0]
+                })
+                .collect())
+        })
+    }
+
     /// Explicit GPU-to-CPU transfer, used only for export and image regression QA.
     pub fn export_png(&mut self, path: &Path) -> Result<()> {
         objc::rc::autoreleasepool(|| {
@@ -647,97 +676,6 @@ impl Film {
     }
 }
 
-impl Uniforms {
-    fn new(
-        scene: &Scene,
-        settings: &RenderSettings,
-        width: u32,
-        height: u32,
-        sample: u32,
-        counts: [u32; 3],
-    ) -> Self {
-        let camera = scene.camera;
-        let view_inverse = camera.view_matrix().inverse();
-        let vector = |v: Vec3| {
-            let v = view_inverse.transform_vector3(v).normalize();
-            [v.x, v.y, v.z, 0.0]
-        };
-        let position = camera.position();
-        Self {
-            cam_origin: [position.x, position.y, position.z, 0.0],
-            cam_right: vector(Vec3::X),
-            cam_up: vector(Vec3::Y),
-            cam_forward: vector(Vec3::NEG_Z),
-            world: if settings.mode == RenderMode::MaterialPreview
-                && !settings.preview.use_scene_world
-            {
-                [0.0; 4]
-            } else {
-                [
-                    scene.world.color.x,
-                    scene.world.color.y,
-                    scene.world.color.z,
-                    scene.world.strength,
-                ]
-            },
-            camera: [
-                (camera.fov_y * 0.5).tan(),
-                width as f32 / height as f32,
-                camera.distance * (camera.fov_y * 0.5).tan(),
-                u32::from(camera.orthographic) as f32,
-            ],
-            image: [width, height, sample, settings.mode as u32],
-            scene: [
-                counts[0],
-                counts[1],
-                counts[2],
-                if settings.mode == RenderMode::Rendered {
-                    settings.max_bounces.clamp(1, 32)
-                } else {
-                    1
-                },
-            ],
-            settings: [
-                settings.exposure,
-                u32::from(settings.show_grid) as f32,
-                settings
-                    .selected
-                    .and_then(|id| scene.objects.iter().position(|object| object.id == id))
-                    .map_or(0.0, |index| (index + 1) as f32),
-                0.0,
-            ],
-            preview_lighting: if settings.mode == RenderMode::MaterialPreview {
-                if settings.preview.use_scene_world {
-                    [1.0, 0.0, 1.0, 1.0]
-                } else {
-                    [
-                        settings.preview.rotation.cos(),
-                        settings.preview.rotation.sin(),
-                        settings.preview.strength,
-                        0.0,
-                    ]
-                }
-            } else {
-                [0.0; 4]
-            },
-            preview_display: if settings.mode == RenderMode::MaterialPreview {
-                [
-                    settings.preview.world_opacity,
-                    if settings.preview.use_scene_world {
-                        0.0
-                    } else {
-                        settings.preview.background_blur
-                    },
-                    u32::from(settings.preview.ambient_occlusion) as f32,
-                    0.5,
-                ]
-            } else {
-                [0.0; 4]
-            },
-        }
-    }
-}
-
 pub(super) fn dispatch(
     encoder: &ComputeCommandEncoderRef,
     pipeline: &ComputePipelineStateRef,
@@ -784,248 +722,4 @@ fn upload<T: Pod>(device: &DeviceRef, values: &[T]) -> Buffer {
         bytes.len() as u64,
         MTLResourceOptions::StorageModeShared,
     )
-}
-
-fn geometry_hash(scene: &Scene) -> u64 {
-    let mut hasher = DefaultHasher::new();
-    scene.collections.len().hash(&mut hasher);
-    for collection in &scene.collections {
-        collection.id.hash(&mut hasher);
-        collection.parent.hash(&mut hasher);
-        collection.visible.hash(&mut hasher);
-    }
-    for data in &scene.materials {
-        let m = &data.material;
-        data.id.hash(&mut hasher);
-        m.shader.hash(&mut hasher);
-        m.mapping.hash(&mut hasher);
-        m.custom_code.hash(&mut hasher);
-        m.textures.hash(&mut hasher);
-        for v in [
-            m.ior,
-            m.normal_strength,
-            m.texture_scale.x,
-            m.texture_scale.y,
-            m.texture_offset.x,
-            m.texture_offset.y,
-        ] {
-            v.to_bits().hash(&mut hasher);
-        }
-    }
-    scene.objects.len().hash(&mut hasher);
-    for object in &scene.objects {
-        object.id.hash(&mut hasher);
-        object.visible.hash(&mut hasher);
-        object.data.material_ids().hash(&mut hasher);
-        object.parent.hash(&mut hasher);
-        object.collections.hash(&mut hasher);
-        if !scene.is_effectively_visible(object.id) {
-            continue;
-        }
-        let Some(instance) = scene.mesh_instance(object.id) else {
-            continue;
-        };
-        for p in &instance.mesh.positions {
-            for n in p.to_array() {
-                n.to_bits().hash(&mut hasher);
-            }
-        }
-        instance.mesh.faces.hash(&mut hasher);
-        for n in instance.world_transform.to_cols_array() {
-            n.to_bits().hash(&mut hasher);
-        }
-        for n in object
-            .data
-            .material_ids()
-            .iter()
-            .filter_map(|id| scene.material(*id))
-            .flat_map(|data| {
-                data.material
-                    .base_color
-                    .to_array()
-                    .into_iter()
-                    .chain(data.material.emission.to_array())
-                    .chain([data.material.roughness, data.material.metallic])
-            })
-        {
-            n.to_bits().hash(&mut hasher);
-        }
-    }
-    hasher.finish()
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::RenderMode;
-    use forma_core::Primitive;
-
-    // Read the untonemapped floating-point film. This deliberate test-only
-    // transfer checks radiometry, which an 8-bit screenshot cannot establish.
-    fn mean_linear(renderer: &Renderer) -> Vec3 {
-        objc::rc::autoreleasepool(|| {
-            let film = renderer.film.as_ref().unwrap();
-            let size = film.width as u64 * film.height as u64 * 16;
-            let buffer = renderer
-                .device
-                .new_buffer(size, MTLResourceOptions::StorageModeShared);
-            let command = renderer.queue.new_command_buffer();
-            let encoder = command.new_blit_command_encoder();
-            encoder.copy_from_buffer(&film.accumulation, 0, &buffer, 0, size);
-            encoder.end_encoding();
-            command.commit();
-            command.wait_until_completed();
-            assert_eq!(command.status(), MTLCommandBufferStatus::Completed);
-            // SAFETY: completed GPU copy, aligned Metal allocation, fixed length.
-            let values = unsafe {
-                std::slice::from_raw_parts(
-                    buffer.contents().cast::<[f32; 4]>(),
-                    (film.width * film.height) as usize,
-                )
-            };
-            values
-                .iter()
-                .map(|value| Vec3::from_slice(value) / value[3])
-                .sum::<Vec3>()
-                / values.len() as f32
-        })
-    }
-
-    #[test]
-    fn white_furnace_preserves_diffuse_energy_and_linear_world_scaling() {
-        let mut renderer = Renderer::new().unwrap();
-        let mut scene = Scene::default();
-        scene.objects.clear();
-        let id = scene.add(Primitive::Plane);
-        let plane = scene.object_mut(id).unwrap();
-        plane.transform.scale = Vec3::splat(100.0);
-        let material = scene.object_material_mut(id).unwrap();
-        material.base_color = Vec3::splat(0.5);
-        material.roughness = 1.0;
-        scene.camera.target = Vec3::ZERO;
-        scene.camera.distance = 2.0;
-        scene.camera.pitch = 1.3;
-        scene.world.color = Vec3::ONE;
-        scene.world.strength = 1.0;
-        let settings = RenderSettings {
-            width: 32,
-            height: 32,
-            mode: RenderMode::Rendered,
-            max_samples: 48,
-            max_bounces: 1,
-            show_grid: false,
-            ..Default::default()
-        };
-        for _ in 0..settings.max_samples {
-            renderer.render(&scene, &settings, 1).unwrap();
-        }
-        let mean = mean_linear(&renderer);
-        // A 50% diffuse dielectric has ~48% diffuse + a few percent single-
-        // scattering specular energy. This catches MIS double counting and
-        // terminal-bounce loss without requiring a particular noise realization.
-        assert!(
-            (0.46..0.54).contains(&mean.x),
-            "Unexpected furnace energy: {mean:?}"
-        );
-        scene.world.strength = 2.0;
-        for _ in 0..settings.max_samples {
-            renderer.render(&scene, &settings, 1).unwrap();
-        }
-        let doubled = mean_linear(&renderer);
-        assert!(
-            (doubled - mean * 2.0).abs().max_element() < 0.002,
-            "Radiance must scale linearly: {mean:?}, {doubled:?}"
-        );
-    }
-
-    #[test]
-    fn preview_furnace_preserves_linear_energy_and_emission() {
-        let mut renderer = Renderer::new().unwrap();
-        let mut scene = Scene::default();
-        scene.objects.clear();
-        let id = scene.add(Primitive::Plane);
-        scene.object_mut(id).unwrap().transform.scale = Vec3::splat(100.0);
-        scene.camera.target = Vec3::ZERO;
-        scene.camera.distance = 2.0;
-        scene.camera.pitch = 1.55;
-        scene.world.color = Vec3::ONE;
-        scene.world.strength = 1.0;
-        let mut settings = RenderSettings {
-            width: 16,
-            height: 16,
-            mode: RenderMode::MaterialPreview,
-            show_grid: false,
-            preview: crate::PreviewSettings {
-                use_scene_world: true,
-                ambient_occlusion: false,
-                ..Default::default()
-            },
-            ..Default::default()
-        };
-        let material = scene.object_material_mut(id).unwrap();
-        material.base_color = Vec3::splat(0.5);
-        material.roughness = 1.0;
-        renderer.render(&scene, &settings, 1).unwrap();
-        let diffuse = mean_linear(&renderer);
-        assert!(
-            (0.48..0.53).contains(&diffuse.x),
-            "Diffuse furnace energy: {diffuse:?}"
-        );
-        let material = scene.object_material_mut(id).unwrap();
-        material.base_color = Vec3::new(0.7, 0.4, 0.2);
-        material.roughness = 0.025;
-        material.metallic = 1.0;
-        renderer.render(&scene, &settings, 2).unwrap();
-        let mirror = mean_linear(&renderer);
-        assert!(
-            (mirror - Vec3::new(0.7, 0.4, 0.2)).abs().max_element() < 0.012,
-            "Metal furnace energy: {mirror:?}"
-        );
-        scene.world.strength = 2.0;
-        renderer.render(&scene, &settings, 2).unwrap();
-        assert!((mean_linear(&renderer) - mirror * 2.0).abs().max_element() < 0.002);
-        scene.world.strength = 0.0;
-        scene.object_material_mut(id).unwrap().emission = Vec3::new(3.0, 1.5, 0.5);
-        renderer.render(&scene, &settings, 3).unwrap();
-        assert!(
-            (mean_linear(&renderer) - Vec3::new(3.0, 1.5, 0.5))
-                .abs()
-                .max_element()
-                < 0.002,
-            "Emission is visible radiance independent of world energy"
-        );
-        settings.preview.use_scene_world = false;
-        settings.preview.strength = 0.0;
-        renderer.render(&scene, &settings, 3).unwrap();
-        assert!(
-            (mean_linear(&renderer) - Vec3::new(3.0, 1.5, 0.5))
-                .abs()
-                .max_element()
-                < 0.002
-        );
-        // The baked texture route must retain the same linear radiometry as
-        // an analytic constant world, including HDR values above one.
-        let path =
-            std::env::temp_dir().join(format!("forma-preview-furnace-{}.hdr", std::process::id()));
-        let pixels = vec![image::Rgb([2.0_f32, 1.0, 0.5]); 16 * 8];
-        image::codecs::hdr::HdrEncoder::new(std::fs::File::create(&path).unwrap())
-            .encode(&pixels, 16, 8)
-            .unwrap();
-        settings.preview.hdri_path = Some(path.clone());
-        settings.preview.strength = 1.0;
-        scene.object_material_mut(id).unwrap().emission = Vec3::ZERO;
-        renderer.render(&scene, &settings, 4).unwrap();
-        let baked = mean_linear(&renderer);
-        assert!(
-            (baked - mirror * Vec3::new(2.0, 1.0, 0.5))
-                .abs()
-                .max_element()
-                < 0.003,
-            "Constant HDR must survive irradiance, GGX and BRDF baking: {baked:?}"
-        );
-        settings.preview.strength = 2.0;
-        renderer.render(&scene, &settings, 4).unwrap();
-        assert!((mean_linear(&renderer) - baked * 2.0).abs().max_element() < 0.003);
-        std::fs::remove_file(path).unwrap();
-    }
 }

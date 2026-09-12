@@ -1,32 +1,67 @@
 # Forma
 
-A native Rust geometry editor built with GPUI and Metal. Forma combines a compact,
+A native Rust geometry editor built with GPUI, Metal, and wgpu. Forma combines a compact,
 keyboard-driven workspace with direct mesh editing and a progressive path-traced
-viewport. The initial scope is modelling and rendering on macOS.
+viewport on macOS, Windows, and Linux.
 
 The application opens into a small studio scene: a teal torus, metallic sphere,
 rounded cube, plinth and emissive area light.
 
 ![Forma native GPUI workspace](docs/images/workspace.png)
 
-## Run
+## Download website
 
-Use a Mac with a Metal GPU, Rust and the Apple Command Line Tools. Development
-has been verified with Rust 1.92.0 on macOS 26.6.2 / Apple M4 Pro; an older macOS
-compatibility floor has not been established.
+The standalone [download site](site/README.md) lives in `site/`. It can be served
+by any static host without a build step and automatically discovers the latest
+public GitHub release and available Mac downloads. The included
+[GitHub Pages workflow](.github/workflows/pages.yml) deploys it from `main` after
+selecting **GitHub Actions** as the source in the repository's Pages settings.
 
 ```sh
-# Install the Command Line Tools if they are missing.
-xcode-select --install
+python3 -m http.server 4173 --directory site
+```
 
-# From this repository:
+## Run
+
+Install stable Rust and the platform build dependencies below, then run:
+
+```sh
 cargo run --locked -p forma
 ```
 
-The GPUI dependency enables `runtime_shaders`. GPUI and Forma compile Metal
-source at runtime, so the verified development setup uses the Command Line Tools
-without a full Xcode installation or the separate offline Metal compiler.
-The first build downloads and compiles GPUI's dependencies.
+| Platform | Default viewport renderer | Build requirements |
+| --- | --- | --- |
+| macOS | Native Metal, retaining direct CoreVideo display and accelerated preview | Apple Command Line Tools (`xcode-select --install`) and a Metal GPU |
+| Windows | wgpu DirectX 12 | Rust MSVC toolchain, Visual Studio C++ Build Tools and Windows SDK, DirectX 12 GPU/driver |
+| Linux | wgpu Vulkan | C/C++ toolchain, Clang, pkg-config, desktop development libraries, Vulkan GPU/driver; X11 or Wayland session |
+
+On Ubuntu/Debian, install the Linux build dependencies with:
+
+```sh
+sudo apt-get install build-essential clang libclang-dev cmake pkg-config \
+  libssl-dev libzstd-dev libasound2-dev libfontconfig1-dev libwayland-dev \
+  libxkbcommon-dev libxkbcommon-x11-dev libx11-xcb-dev libvulkan-dev
+```
+
+The first build downloads and compiles dependencies. On macOS GPUI's
+`runtime_shaders` feature compiles Metal source using the Command Line Tools.
+On Windows GPUI's build also uses the Windows SDK shader compiler (`fxc`).
+
+Backend selection is optional and does not change project files or tools:
+
+```sh
+cargo run --locked -p forma -- --renderer wgpu        # platform-native wgpu API
+cargo run --locked -p forma -- --renderer native-metal # macOS existing renderer
+cargo run --locked -p forma -- --renderer metal       # macOS through wgpu
+cargo run --locked -p forma -- --renderer dx12        # Windows
+cargo run --locked -p forma -- --renderer vulkan      # Linux or Windows
+```
+
+`FORMA_RENDERER` accepts the same values plus `auto`, and also applies to renderer
+benchmarks and tests. `--renderer` overrides it in the app. Explicit unsupported
+backends return an error instead of silently changing graphics APIs. The status
+bar reports the active backend and device. See [platform support](docs/PLATFORMS.md)
+for presentation differences and the validation matrix.
 
 For an optimized executable:
 
@@ -43,7 +78,7 @@ cargo run --locked --release -p forma
 - Extrude a selected face by 0.30 units, then transform it. Apply Catmull–Clark
   subdivision to the selected mesh.
 - Choose PBR, Glass or Custom surface shaders, select PNG/JPEG image textures,
-  and edit Metal surface code with compile diagnostics. Adjust roughness, IOR, metallic response, emission,
+  and edit Metal/WGSL surface code with compile diagnostics. Adjust roughness, IOR, metallic response, emission,
   world strength and exposure. Enter arbitrary sRGB base colors and rename objects.
   Set the progressive sample and bounce limits.
 - Save `.forma` projects with a versioned object graph, reusable mesh/material
@@ -52,7 +87,7 @@ cargo run --locked --release -p forma
 - Import OBJ polygon geometry, export transformed scene geometry to OBJ, and
   export the current render mode to PNG while continuing to edit.
 - Search commands with `⌘K`, type a name, then use arrows and Return to execute.
-  Native macOS File/Edit/View menus expose the same editor operations.
+  Native menus and the command panel expose the same editor operations.
 
 OBJ import combines groups into one object. Texture coordinates, supplied normals
 and MTL materials are not retained; normals are generated from the editable
@@ -83,7 +118,7 @@ Material Preview displays a complete, deterministic frame without accumulating
 path-tracing noise. The modelling modes use the display's backing pixel density
 for sharp Retina rendering, within a proportional 2560 × 1600 resolution cap.
 Camera updates and completed frames use event-driven delivery. Material Preview
-uses Metal ray-tracing acceleration where supported, keeping full preview quality
+uses Metal ray-tracing acceleration on the native macOS backend where supported, keeping full preview quality
 during navigation.
 Its lighting dropdown provides Studio, Courtyard and Sunset
 environments, custom Radiance `.hdr` loading, rotation, intensity, background
@@ -97,9 +132,11 @@ These preview controls are session settings and do not change the document or un
 Rendered mode traces full light paths. The renderer implements Lambert
 diffuse, GGX reflection and rough dielectric glass transmission, direct emitter/environment sampling, multiple
 importance sampling, Russian roulette, linear accumulation, exposure and an
-ACES-style display curve. Display stays on the GPU through IOSurface-backed
-CoreVideo NV12 buffers consumed by GPUI; CPU pixel readback occurs for explicit
-PNG export and numerical tests.
+ACES-style display curve. Native Metal display stays on the GPU through
+IOSurface-backed CoreVideo NV12 buffers consumed by GPUI. wgpu computes the same
+film on the selected GPU and hands immutable RGBA pixels to GPUI for display;
+this path includes a readback and UI texture upload. PNG exports retain full RGB
+chroma on every backend.
 
 This is an initial surface renderer, with no claim of Blender or Cycles
 feature parity. Volumes, subsurface scattering, denoising and adaptive sampling
@@ -113,7 +150,9 @@ vertex/edge modelling toolkit are outside the current application. See the
 
 ## Controls
 
-The viewport must have keyboard focus. The in-app command panel opens with
+The tables use macOS notation: on Windows/Linux use **Ctrl** in place of **⌘**
+and **Alt** in place of **Option**. The viewport must have keyboard focus.
+The in-app command panel opens with
 `⌘K`, `Space` or `Shift+A`; `H` opens the shortcut reference.
 
 | Action | Input |
@@ -147,24 +186,32 @@ cargo test --locked --workspace
 cargo clippy --locked --workspace --all-targets -- -D warnings
 cargo run --locked -p forma -- --smoke-test artifacts/native-smoke
 
-# Render all four modes through real Metal kernels, without opening a window.
+# Render all four modes through the selected GPU backend, without opening a window.
 cargo run --locked -p forma-render --bin render-smoke -- artifacts/render 128
 ```
 
 The native smoke test opens its own GPUI window without taking keyboard focus.
-It exercises keyboard dispatch, continuous pointer-handler input, real Metal
+It exercises keyboard dispatch, continuous pointer-handler input, real GPU
 frames, modelling commands, background document operations, and concurrent PNG
-export. It also captures only its own window for visual checks. Native file-picker
+export. On macOS it captures its own window; other platforms export viewport images
+from the smoke workflow. Native file-picker
 interaction and OS pointer routing remain manual checks.
 
 Core geometry tests can run independently with `cargo test --locked -p forma-core`.
-Renderer tests and the native application require macOS and a Metal GPU. The
-[validation record](docs/VALIDATION.md) separates executed numerical, image and
+Renderer integration tests require a compatible GPU (Mesa software Vulkan can
+also execute them in CI). The [validation record](docs/VALIDATION.md) separates executed numerical, image and
 application checks from unverified scale or performance claims.
 
 ## Bundle
 
 ```sh
+# Linux portable directory and tar.gz:
+./scripts/bundle-linux.sh release
+
+# Windows PowerShell portable directory and zip:
+./scripts/bundle-windows.ps1 -Profile release
+
+# macOS:
 ./scripts/bundle-macos.sh release
 open target/release/Forma.app
 
@@ -172,9 +219,9 @@ open target/release/Forma.app
 ./scripts/bundle-macos.sh debug
 ```
 
-The script builds the selected profile and creates a local `Forma.app` inside
-`target/<profile>/`. It packages the current host architecture and does not sign
-for distribution, notarize or install the application. Release builds use thin
+The macOS script creates `Forma.app`; Linux and Windows scripts create portable
+directories and archives under `target/<profile>/`. They package the host
+architecture and do not sign, notarize or install the application. Release builds use thin
 LTO and may take longer than development builds.
 
 See [architecture](docs/ARCHITECTURE.md) for crate boundaries, frame ownership,
