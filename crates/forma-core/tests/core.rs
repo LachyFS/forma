@@ -293,7 +293,7 @@ fn scene_round_trip_is_versioned_atomic_and_validated() {
     let bytes = fs::read(&path).unwrap();
     assert_eq!(Scene::load(&path).unwrap(), scene);
     let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-    assert_eq!(json["version"], 2);
+    assert_eq!(json["version"], 3);
     assert_eq!(json["format"], "forma");
     let mut invalid = scene.clone();
     let id = invalid.objects[0].id;

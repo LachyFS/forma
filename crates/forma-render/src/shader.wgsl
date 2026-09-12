@@ -4,6 +4,7 @@ struct Triangle {
     v0: vec4<f32>, v1: vec4<f32>, v2: vec4<f32>,
     n0: vec4<f32>, n1: vec4<f32>, n2: vec4<f32>,
     base_color: vec4<f32>, emission: vec4<f32>, params: vec4<f32>,
+    generated0: vec4<f32>, generated1: vec4<f32>, generated2: vec4<f32>,
 }
 struct BvhNode { minimum: vec4<f32>, maximum: vec4<f32>, data: vec4<u32> }
 struct Uniforms {
@@ -16,6 +17,7 @@ struct Hit { distance: f32, bary: vec2<f32>, triangle: u32 }
 struct Surface {
     position: vec3<f32>, normal: vec3<f32>, geometric_normal: vec3<f32>,
     color: vec3<f32>, emission: vec3<f32>, metallic: f32, roughness: f32,
+    ior: f32, front_face: bool, glass: bool,
 }
 struct BsdfSample { direction: vec3<f32>, value: vec3<f32>, pdf: f32 }
 struct BsdfValue { value: vec3<f32>, pdf: f32 }
@@ -158,13 +160,130 @@ fn surface_at(ray: Ray, hit: Hit) -> Surface {
     let weights = vec3(1.0 - hit.bary.x - hit.bary.y, hit.bary.x, hit.bary.y);
     var geometric = safe_normalize(cross(tri.v1.xyz - tri.v0.xyz, tri.v2.xyz - tri.v0.xyz), vec3(0.0, 1.0, 0.0));
     var normal = safe_normalize(weights.x * tri.n0.xyz + weights.y * tri.n1.xyz + weights.z * tri.n2.xyz, geometric);
-    if dot(normal, geometric) < 0.0 { normal = -normal; }
+    if dot(normal, geometric) < 0.0 { geometric = -geometric; }
+    let front_face = dot(geometric, ray.direction) < 0.0;
     if dot(geometric, ray.direction) > 0.0 { geometric = -geometric; normal = -normal; }
     if dot(normal, -ray.direction) < 1e-4 { normal = geometric; }
     return Surface(ray.origin + ray.direction * hit.distance, normal, geometric,
         clamp(tri.base_color.xyz, vec3(0.0), vec3(1.0)), max(tri.emission.xyz, vec3(0.0)),
-        clamp(tri.params.x, 0.0, 1.0), clamp(tri.params.y, 0.025, 1.0));
+        clamp(tri.params.x, 0.0, 1.0), clamp(tri.params.y, 0.025, 1.0), 1.5, front_face, false);
 }
+struct GpuMaterial {
+    color: vec4<f32>, emission: vec4<f32>, params: vec4<f32>, mapping: vec4<f32>,
+    info: vec4<u32>, textures: array<u32, 8>,
+}
+struct ShaderInput {
+    uv: vec2<f32>, generated: vec3<f32>, position: vec3<f32>, normal: vec3<f32>, view_direction: vec3<f32>,
+}
+@group(0) @binding(6) var<storage, read> materials: array<GpuMaterial>;
+@group(0) @binding(7) var<storage, read> texture_pixels: array<vec4<f32>>;
+@group(0) @binding(8) var<storage, read> texture_levels: array<vec4<u32>>;
+
+// FORMA_CUSTOM_FUNCTIONS
+fn forma_custom(index: u32, surface: Surface, input: ShaderInput) -> Surface { return surface; }
+
+fn generated_uv(p: vec3<f32>, face_normal: vec3<f32>, mapping: u32) -> vec2<f32> {
+    if mapping == 1u {
+        let d = safe_normalize(p - vec3(0.5), vec3(0.0, 1.0, 0.0));
+        return vec2(atan2(d.z, d.x) / (2.0 * PI_F) + 0.5, acos(clamp(d.y, -1.0, 1.0)) / PI_F);
+    }
+    if mapping == 2u { return vec2(p.x, 1.0 - p.z); }
+    let a = abs(face_normal);
+    if a.x >= a.y && a.x >= a.z { return vec2(select(p.z, 1.0 - p.z, face_normal.x >= 0.0), 1.0 - p.y); }
+    if a.y >= a.z { return vec2(p.x, select(p.z, 1.0 - p.z, face_normal.y >= 0.0)); }
+    return vec2(select(1.0 - p.x, p.x, face_normal.z >= 0.0), 1.0 - p.y);
+}
+fn wrap_texel(p: i32, size: u32) -> u32 { let n = i32(size); return u32((p % n + n) % n); }
+fn bilinear_texture(desc: vec4<u32>, uv: vec2<f32>) -> vec4<f32> {
+    let p = fract(uv) * vec2<f32>(desc.yz) - vec2(0.5);
+    let a = vec2<i32>(floor(p)); let f = fract(p);
+    let x0 = wrap_texel(a.x, desc.y); let x1 = wrap_texel(a.x + 1, desc.y);
+    let y0 = wrap_texel(a.y, desc.z); let y1 = wrap_texel(a.y + 1, desc.z);
+    return mix(mix(texture_pixels[desc.x + y0 * desc.y + x0], texture_pixels[desc.x + y0 * desc.y + x1], f.x),
+               mix(texture_pixels[desc.x + y1 * desc.y + x0], texture_pixels[desc.x + y1 * desc.y + x1], f.x), f.y);
+}
+fn image_texture(index: u32, uv: vec2<f32>, footprint: f32) -> vec4<f32> {
+    if index == NO_HIT { return vec4(1.0); }
+    let desc = texture_levels[index];
+    let lod = clamp(log2(max(1.0, footprint * f32(max(desc.y, desc.z)))), 0.0, f32(desc.w - 1u));
+    let lo = u32(floor(lod)); let hi = min(lo + 1u, desc.w - 1u);
+    return mix(bilinear_texture(texture_levels[index + lo], uv), bilinear_texture(texture_levels[index + hi], uv), fract(lod));
+}
+fn evaluate_surface(ray: Ray, hit: Hit) -> Surface {
+    var s = surface_at(ray, hit);
+    let tri = triangles[hit.triangle]; let m = materials[u32(tri.generated0.w)];
+    let weights = vec3(1.0 - hit.bary.x - hit.bary.y, hit.bary.x, hit.bary.y);
+    let q0 = tri.generated0.xyz; let q1 = tri.generated1.xyz; let q2 = tri.generated2.xyz;
+    let generated = q0 * weights.x + q1 * weights.y + q2 * weights.z;
+    let face = safe_normalize(cross(q1 - q0, q2 - q0), vec3(0.0, 1.0, 0.0));
+    let uv = generated_uv(generated, face, m.info.y) * m.mapping.xy + m.mapping.zw;
+    let uv0 = generated_uv(q0, face, m.info.y);
+    var uv1 = generated_uv(q1, face, m.info.y); var uv2 = generated_uv(q2, face, m.info.y);
+    if m.info.y == 1u { uv1.x -= round(uv1.x - uv0.x); uv2.x -= round(uv2.x - uv0.x); }
+    let d1 = (uv1 - uv0) * m.mapping.xy; let d2 = (uv2 - uv0) * m.mapping.xy;
+    let e1 = tri.v1.xyz - tri.v0.xyz; let e2 = tri.v2.xyz - tri.v0.xyz;
+    let density = max(length(d1) / max(length(e1), 1e-6), length(d2) / max(length(e2), 1e-6));
+    let pixel_width = 2.0 * select(hit.distance * u.camera.x, u.camera.z, u.camera.w > 0.5) / f32(u.image.y);
+    let footprint = density * pixel_width / max(0.15, abs(dot(s.normal, ray.direction)));
+    s.color = m.color.xyz * image_texture(m.textures[0], uv, footprint).xyz;
+    s.emission = m.emission.xyz * image_texture(m.textures[4], uv, footprint).xyz;
+    s.metallic = m.params.x; s.roughness = m.params.y;
+    if m.textures[2] != NO_HIT { s.metallic = image_texture(m.textures[2], uv, footprint).x; }
+    if m.textures[1] != NO_HIT { s.roughness = image_texture(m.textures[1], uv, footprint).x; }
+    s.ior = m.params.z; s.glass = m.info.x == 1u;
+    let determinant = d1.x * d2.y - d1.y * d2.x;
+    if m.textures[3] != NO_HIT && abs(determinant) > 1e-8 {
+        var t = (e1 * d2.y - e2 * d1.y) / determinant;
+        t = safe_normalize(t - s.normal * dot(t, s.normal), vec3(1.0, 0.0, 0.0));
+        var b = cross(s.normal, t);
+        let dpdv = (e2 * d1.x - e1 * d2.x) / determinant;
+        if dot(b, dpdv) > 0.0 { b = -b; }
+        var map = image_texture(m.textures[3], uv, footprint).xyz * 2.0 - vec3(1.0);
+        map.x *= m.params.w; map.y *= m.params.w;
+        s.normal = safe_normalize(t * map.x + b * map.y + s.normal * map.z, s.normal);
+    }
+    let before = s;
+    if m.info.x == 2u { s = forma_custom(m.info.z, s, ShaderInput(uv, generated, s.position, s.normal, -ray.direction)); }
+    // Protect geometry and film from malformed numerical output.
+    s.position = before.position; s.geometric_normal = before.geometric_normal; s.front_face = before.front_face;
+    s.color = select(before.color, clamp(s.color, vec3(0.0), vec3(1.0)), finite3(s.color));
+    s.emission = select(before.emission, clamp(s.emission, vec3(0.0), vec3(1e6)), finite3(s.emission));
+    s.metallic = select(m.params.x, clamp(s.metallic, 0.0, 1.0), abs(s.metallic) <= FAR);
+    s.roughness = select(max(0.025, m.params.y), clamp(s.roughness, 0.025, 1.0), abs(s.roughness) <= FAR);
+    s.ior = select(m.params.z, clamp(s.ior, 1.01, 3.0), abs(s.ior) <= FAR);
+    s.normal = select(s.geometric_normal, safe_normalize(s.normal, s.geometric_normal), finite3(s.normal));
+    if dot(s.normal, s.geometric_normal) < 1e-4 || dot(s.normal, -ray.direction) < 1e-4 { s.normal = s.geometric_normal; }
+    return s;
+}
+fn dielectric_f0(ior: f32) -> f32 { let r = (ior - 1.0) / (ior + 1.0); return r * r; }
+fn dielectric_fresnel(cosine: f32, eta: f32) -> f32 {
+    let c = clamp(abs(cosine), 0.0, 1.0); let sin2_t = (1.0 - c * c) / (eta * eta);
+    if sin2_t >= 1.0 { return 1.0; }
+    let ct = sqrt(max(0.0, 1.0 - sin2_t));
+    let rs = (c - eta * ct) / max(1e-12, c + eta * ct);
+    let rp = (eta * c - ct) / max(1e-12, eta * c + ct);
+    return 0.5 * (rs * rs + rp * rp);
+}
+fn evaluate_glass(s: Surface, wo: vec3<f32>, wi: vec3<f32>) -> BsdfValue {
+    let nv = dot(s.normal, wo); let nl = dot(s.normal, wi);
+    if nv <= 0.0 || abs(nl) < 1e-7 || nl * dot(s.geometric_normal, wi) <= 0.0 { return BsdfValue(vec3(0.0), 0.0); }
+    let reflection = nl > 0.0; let eta = select(1.0 / s.ior, s.ior, s.front_face);
+    var h = safe_normalize(wo + wi * select(eta, 1.0, reflection), s.normal);
+    if dot(h, s.normal) < 0.0 { h = -h; }
+    let vh = dot(wo, h); let lh = dot(wi, h);
+    if vh <= 0.0 || lh * nl <= 0.0 { return BsdfValue(vec3(0.0), 0.0); }
+    let alpha = s.roughness * s.roughness;
+    let D = ggx_D(max(0.0, dot(s.normal, h)), alpha);
+    let Gv = ggx_G1(nv, alpha); let Gl = ggx_G1(abs(nl), alpha);
+    let F = dielectric_fresnel(vh, eta); let half_pdf = D * Gv * vh / nv;
+    if reflection {
+        return BsdfValue(vec3(F * D * Gv * Gl / max(1e-12, 4.0 * nv * nl)), half_pdf * F / (4.0 * vh));
+    }
+    let d = lh + vh / eta; let denom = max(1e-16, d * d);
+    return BsdfValue(s.color * ((1.0 - F) * D * Gv * Gl * abs(lh * vh / (nl * nv)) / (denom * eta * eta)),
+                     half_pdf * (1.0 - F) * abs(lh) / denom);
+}
+
 fn fresnel(cos_theta: f32, f0: vec3<f32>) -> vec3<f32> {
     let x = clamp(1.0 - cos_theta, 0.0, 1.0); let x2 = x * x;
     return f0 + (vec3(1.0) - f0) * (x2 * x2 * x);
@@ -179,19 +298,20 @@ fn ggx_G1(n_dot_v: f32, alpha: f32) -> f32 {
     return (2.0 * n_dot_v) / max(1e-12, n_dot_v + sqrt(a2 + (1.0 - a2) * n_dot_v * n_dot_v));
 }
 fn specular_probability(s: Surface, wo: vec3<f32>) -> f32 {
-    let f0 = mix(vec3(0.04), s.color, s.metallic);
+    let f0 = mix(vec3(dielectric_f0(s.ior)), s.color, s.metallic);
     let reflectance = luminance(fresnel(max(0.0, dot(s.normal, wo)), f0));
     let diffuse = luminance(s.color) * (1.0 - s.metallic);
     return select(clamp(reflectance / max(1e-6, reflectance + diffuse), 0.1, 0.95), 1.0, s.metallic > 0.999);
 }
 fn evaluate_bsdf(s: Surface, wo: vec3<f32>, wi: vec3<f32>) -> BsdfValue {
+    if s.glass { return evaluate_glass(s, wo, wi); }
     let nv = dot(s.normal, wo); let nl = dot(s.normal, wi);
     if nv <= 0.0 || nl <= 0.0 || dot(s.geometric_normal, wi) <= 0.0 { return BsdfValue(vec3(0.0), 0.0); }
     let h = safe_normalize(wo + wi, s.normal);
     let nh = max(0.0, dot(s.normal, h)); let vh = max(0.0, dot(wo, h));
     let alpha = s.roughness * s.roughness;
     let D = ggx_D(nh, alpha); let Gv = ggx_G1(nv, alpha); let Gl = ggx_G1(nl, alpha);
-    let F = fresnel(vh, mix(vec3(0.04), s.color, s.metallic));
+    let F = fresnel(vh, mix(vec3(dielectric_f0(s.ior)), s.color, s.metallic));
     let specular = F * (D * Gv * Gl / max(1e-12, 4.0 * nv * nl));
     let diffuse = (vec3(1.0) - F) * (1.0 - s.metallic) * s.color * INV_PI_F;
     let p_spec = specular_probability(s, wo);
@@ -217,6 +337,15 @@ fn sample_visible_ggx(wo: vec3<f32>, n: vec3<f32>, alpha: f32, uv: vec2<f32>) ->
 fn sample_bsdf(s: Surface, wo: vec3<f32>, rng: ptr<function, u32>) -> BsdfSample {
     let choose = random_float(rng); let uv = random_pair(rng);
     var direction: vec3<f32>;
+    if s.glass {
+        let reflected = sample_visible_ggx(wo, s.normal, s.roughness * s.roughness, uv);
+        let h = safe_normalize(wo + reflected, s.normal);
+        let eta = select(1.0 / s.ior, s.ior, s.front_face);
+        let F = dielectric_fresnel(dot(wo, h), eta);
+        direction = select(refract(-wo, h, 1.0 / eta), reflected, choose < F);
+        let bsdf = evaluate_glass(s, wo, direction);
+        return BsdfSample(direction, bsdf.value, bsdf.pdf);
+    }
     if choose < specular_probability(s, wo) {
         direction = sample_visible_ggx(wo, s.normal, s.roughness * s.roughness, uv);
     } else { direction = cosine_sample(uv, s.normal); }
@@ -263,7 +392,9 @@ fn direct_lighting(s: Surface, wo: vec3<f32>, rng: ptr<function, u32>) -> vec3<f
                     let shadow_delta = light_position - origin; let distance = length(shadow_delta);
                     let shadow = Ray(origin, shadow_delta / distance);
                     if trace(shadow, distance * (1.0 - 1e-5), true).triangle == NO_HIT {
-                        result += max(light.emission.xyz, vec3(0.0)) * bsdf.value * max(0.0, dot(s.normal, wi))
+                        let light_hit = Hit(distance, vec2(r * (1.0 - uv.y), r * uv.y), light_index);
+                        let emission = evaluate_surface(shadow, light_hit).emission;
+                        result += emission * bsdf.value * abs(dot(s.normal, wi))
                             * (power_heuristic(light_pdf, bsdf.pdf) / light_pdf);
                     }
                 }
@@ -276,7 +407,7 @@ fn direct_lighting(s: Surface, wo: vec3<f32>, rng: ptr<function, u32>) -> vec3<f
     if light_pdf > 0.0 && bsdf.pdf > 0.0 {
         let shadow = Ray(offset_origin(s.position, s.geometric_normal, wi), wi);
         if trace(shadow, FAR, true).triangle == NO_HIT {
-            result += environment(wi) * bsdf.value * max(0.0, dot(s.normal, wi))
+            result += environment(wi) * bsdf.value * abs(dot(s.normal, wi))
                 * (power_heuristic(light_pdf, bsdf.pdf) / light_pdf);
         }
     }
@@ -296,7 +427,7 @@ fn path_trace(initial_ray: Ray, primary: Hit, rng: ptr<function, u32>) -> vec3<f
             radiance += throughput * environment(ray.direction) * weight;
             break;
         }
-        let s = surface_at(ray, hit);
+        let s = evaluate_surface(ray, hit);
         if max_component(s.emission) > 0.0 {
             var weight = 1.0;
             if bounce > 0u {
@@ -309,7 +440,7 @@ fn path_trace(initial_ray: Ray, primary: Hit, rng: ptr<function, u32>) -> vec3<f
         radiance += throughput * direct_lighting(s, wo, rng);
         let next = sample_bsdf(s, wo, rng);
         if !(next.pdf > 1e-12) || max_component(next.value) <= 0.0 { break; }
-        throughput *= next.value * (max(0.0, dot(s.normal, next.direction)) / next.pdf);
+        throughput *= next.value * (abs(dot(s.normal, next.direction)) / next.pdf);
         if !finite3(throughput) || max_component(throughput) <= 0.0 { break; }
         previous_position = s.position; previous_normal = s.normal; previous_pdf = next.pdf;
         ray = Ray(offset_origin(s.position, s.geometric_normal, next.direction), next.direction);
@@ -320,7 +451,7 @@ fn path_trace(initial_ray: Ray, primary: Hit, rng: ptr<function, u32>) -> vec3<f
                 radiance += throughput * environment(ray.direction)
                     * power_heuristic(previous_pdf, environment_pdf(ray.direction, previous_normal));
             } else {
-                let emitter = surface_at(ray, terminal);
+                let emitter = evaluate_surface(ray, terminal);
                 let light_pdf = area_light_pdf(triangles[terminal.triangle], previous_position, emitter.position, u.scene.z);
                 radiance += throughput * emitter.emission * power_heuristic(previous_pdf, light_pdf);
             }
@@ -421,11 +552,19 @@ fn add_grid(initial_color: vec3<f32>, ray: Ray, hit: Hit, pixel: vec2<f32>) -> v
     let wx = max(1e-6, length(vec2(px.x - p.x, py.x - p.x)));
     let wz = max(1e-6, length(vec2(px.z - p.z, py.z - p.z)));
     let footprint = max(wx, wz);
-    let spacing = pow(10.0, floor(log2(max(0.001, footprint * 35.0)) / log2(10.0)));
+    // Blend adjacent density levels instead of snapping per pixel: a hard
+    // decade switch makes perspective bands and flashes during orthographic
+    // zoom. Fade the finest lines before their spacing approaches a few pixels.
+    let level = log2(max(0.001, footprint * 35.0)) / log2(10.0);
+    let spacing = pow(10.0, floor(level));
+    let blend = smoothstep(0.0, 1.0, fract(level));
     let minor = max(grid_line(p.x, spacing, wx), grid_line(p.z, spacing, wz));
     let major = max(grid_line(p.x, spacing * 10.0, wx), grid_line(p.z, spacing * 10.0, wz));
+    let coarse = max(grid_line(p.x, spacing * 100.0, wx), grid_line(p.z, spacing * 100.0, wz));
     let fade = (1.0 / (1.0 + distance * 0.025)) * smoothstep(0.015, 0.12, abs(ray.direction.y));
-    let opacity = (0.11 * minor + 0.13 * major) * fade;
+    // At blend=1 the major/coarse pair exactly matches the next level's
+    // minor/major pair, including their contrast at shared grid intersections.
+    let opacity = mix(0.11 * minor + 0.13 * major, 0.11 * major + 0.13 * coarse, blend) * fade;
     color = mix(color, vec3(0.13, 0.15, 0.18), opacity);
     let x_axis = 1.0 - smoothstep(wz * 0.5, wz * 1.6, abs(p.z));
     let z_axis = 1.0 - smoothstep(wx * 0.5, wx * 1.6, abs(p.x));

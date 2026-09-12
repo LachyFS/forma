@@ -1,4 +1,5 @@
 mod app;
+mod code_editor;
 mod render_worker;
 mod shading_pie;
 mod smoke;
