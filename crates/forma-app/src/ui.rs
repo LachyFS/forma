@@ -6,22 +6,24 @@ use forma_core::{Primitive, ShaderKind, TextureMapping, TextureSlot};
 use forma_render::{RenderMode, StudioLight};
 use gpui::{prelude::*, *};
 
-// Surfaces, deepest first. Panels sit above the shell, wells sit below it.
-const SHELL: u32 = 0x101315;
-const PANEL: u32 = 0x171a1d;
-const RAISED: u32 = 0x22272a;
-const WELL: u32 = 0x0d0f11;
-const LINE: u32 = 0x262b2f;
-const EDGE: u32 = 0x3a423f;
+// Neutral charcoal surfaces keep the scene's color distinct from editor chrome.
+const SHELL: u32 = 0x1d1e20;
+const PANEL: u32 = 0x292a2d;
+const CARD: u32 = 0x333437;
+const RAISED: u32 = 0x3c3e42;
+const INPUT: u32 = 0x46484c;
+const WELL: u32 = 0x222326;
+const LINE: u32 = 0x1c1d1f;
+const EDGE: u32 = 0x4b4d51;
 // Ink, primary to faintest.
-pub(crate) const TEXT: u32 = 0xdce2e4;
-pub(crate) const MUTED: u32 = 0x8b9498;
-const FAINT: u32 = 0x5c656a;
+pub(crate) const TEXT: u32 = 0xe1e2e4;
+pub(crate) const MUTED: u32 = 0xa5a7ad;
+const FAINT: u32 = 0x7d8087;
 // Accent and state.
-pub(crate) const ACCENT: u32 = 0x84cfba;
-pub(crate) const ACCENT_LINE: u32 = 0x4a7266;
-pub(crate) const ACTIVE: u32 = 0x1d302c;
-const ACTIVE_HOVER: u32 = 0x25403a;
+pub(crate) const ACCENT: u32 = 0x96d5c2;
+pub(crate) const ACCENT_LINE: u32 = 0x597d71;
+pub(crate) const ACTIVE: u32 = 0x354e46;
+const ACTIVE_HOVER: u32 = 0x405f55;
 pub(crate) const ALERT: u32 = 0xd7a175;
 /// Fully transparent fill for the resting state of ghost controls.
 fn clear() -> Rgba {
@@ -30,7 +32,56 @@ fn clear() -> Rgba {
 /// Axis identity, shared with the viewport gizmo.
 pub(crate) const AXIS: [u32; 3] = [0xe77778, 0x83c799, 0x7b9ee8];
 /// The same identity dimmed for small field labels.
-const AXIS_INK: [u32; 3] = [0xb87b7c, 0x7ea98a, 0x7c93c2];
+const AXIS_INK: [u32; 3] = [0xe0a0a1, 0xa7cfb1, 0xa5bde9];
+
+#[derive(Clone, Copy)]
+enum PanelSection {
+    Transform,
+    Surface,
+    Geometry,
+    Render,
+    AddGeometry,
+}
+
+impl PanelSection {
+    fn contains_field(self, field: Field) -> bool {
+        matches!(
+            (self, field),
+            (
+                Self::Transform,
+                Field::Translation(_) | Field::Rotation(_) | Field::Scale(_)
+            ) | (
+                Self::Surface,
+                Field::Color(_)
+                    | Field::Roughness
+                    | Field::Metallic
+                    | Field::Emission
+                    | Field::Ior
+                    | Field::NormalStrength
+                    | Field::TextureScale(_)
+                    | Field::TextureOffset(_)
+            ) | (
+                Self::Render,
+                Field::Samples | Field::Bounces | Field::Exposure | Field::WorldStrength
+            )
+        )
+    }
+}
+
+/// Workspace disclosure state is independent of the document and undo history.
+pub(crate) struct PanelState {
+    open: [bool; 5],
+    collection_open: bool,
+}
+
+impl Default for PanelState {
+    fn default() -> Self {
+        Self {
+            open: [true, true, false, true, false],
+            collection_open: true,
+        }
+    }
+}
 
 /// Surface presets: swatch color, name, and the linear base color they apply.
 const PRESETS: [(u32, &str, [f32; 3]); 5] = [
@@ -130,14 +181,14 @@ fn col() -> Div {
     div().flex().flex_col()
 }
 fn divider() -> Div {
-    div().w(px(1.)).h(px(18.)).flex_shrink_0().bg(rgb(LINE))
+    div().w(px(1.)).h(px(16.)).flex_shrink_0().bg(rgb(EDGE))
 }
 fn key(text: &str) -> Div {
     div()
         .px(px(5.))
         .h(px(17.))
         .flex_shrink_0()
-        .rounded(px(4.))
+        .rounded(px(3.))
         .bg(rgb(WELL))
         .border_1()
         .border_color(rgb(LINE))
@@ -148,10 +199,10 @@ fn key(text: &str) -> Div {
         .justify_center()
         .child(text.to_owned())
 }
-/// Uppercase panel section label.
+/// Quiet section label for popovers and editor headers.
 fn section(text: &str) -> Div {
     row()
-        .h(px(26.))
+        .h(px(24.))
         .text_size(px(10.))
         .font_weight(FontWeight::SEMIBOLD)
         .text_color(rgb(MUTED))
@@ -166,12 +217,92 @@ fn caption(text: impl Into<SharedString>) -> Div {
 /// Inset track that groups mutually exclusive choices.
 fn segmented() -> Div {
     row()
-        .p(px(2.))
-        .gap(px(2.))
-        .rounded(px(8.))
+        .p(px(1.))
+        .gap(px(1.))
+        .rounded(px(4.))
         .bg(rgb(WELL))
         .border_1()
         .border_color(rgb(LINE))
+}
+
+/// Each editor has a crisp boundary against the narrow workspace gutters.
+fn editor() -> Div {
+    col()
+        .min_w(px(0.))
+        .min_h(px(0.))
+        .rounded(px(5.))
+        .bg(rgb(PANEL))
+        .border_1()
+        .border_color(rgb(LINE))
+        .overflow_hidden()
+}
+
+fn editor_header() -> Div {
+    row()
+        .h(px(29.))
+        .flex_shrink_0()
+        .px(px(8.))
+        .gap(px(7.))
+        .bg(rgb(PANEL))
+        .border_b_1()
+        .border_color(rgb(LINE))
+}
+
+fn panel_card(
+    s: &Studio,
+    panel: PanelSection,
+    title: &'static str,
+    detail: impl Into<SharedString>,
+    contents: impl IntoElement,
+    cx: &mut Context<Studio>,
+) -> Div {
+    let open = s.panels.open[panel as usize];
+    col()
+        .flex_shrink_0()
+        .rounded(px(4.))
+        .border_1()
+        .border_color(rgb(EDGE))
+        .bg(rgb(CARD))
+        .overflow_hidden()
+        .child(
+            row()
+                .id(SharedString::from(format!("panel-{}", panel as usize)))
+                .h(px(26.))
+                .flex_shrink_0()
+                .px(px(7.))
+                .gap(px(6.))
+                .cursor_pointer()
+                .hover(|d| d.bg(rgb(RAISED)))
+                .child(icon(
+                    if open {
+                        Icon::Chevron
+                    } else {
+                        Icon::ChevronRight
+                    },
+                    MUTED,
+                    11.,
+                ))
+                .child(div().font_weight(FontWeight::MEDIUM).child(title))
+                .child(div().flex_1())
+                .child(caption(detail))
+                .on_click(cx.listener(move |s, _, _, cx| {
+                    cx.stop_propagation();
+                    s.panels.open[panel as usize] = !s.panels.open[panel as usize];
+                    // A collapsed field must not keep consuming keyboard input.
+                    if !s.panels.open[panel as usize]
+                        && s.active_field
+                            .as_ref()
+                            .is_some_and(|(field, _)| panel.contains_field(*field))
+                    {
+                        s.active_field = None;
+                        s.status = "Edit cancelled".into();
+                    }
+                    cx.notify();
+                })),
+        )
+        .when(open, |d| {
+            d.child(col().px(px(8.)).pb(px(8.)).pt(px(3.)).child(contents))
+        })
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -199,6 +330,8 @@ enum Icon {
     Material,
     Render,
     Chevron,
+    ChevronRight,
+    Plus,
 }
 
 /// Stroke icons on a 16 unit grid, scaled to `side` and painted in one pass.
@@ -384,6 +517,8 @@ fn icon(kind: Icon, color: u32, side: f32) -> AnyElement {
                     vec![(8., 13.), (8., 15.6)],
                 ]),
                 Icon::Chevron => vec![vec![(5., 6.5), (8., 9.5), (11., 6.5)]],
+                Icon::ChevronRight => vec![vec![(6.5, 4.), (10., 8.), (6.5, 12.)]],
+                Icon::Plus => vec![vec![(3., 8.), (13., 8.)], vec![(8., 3.), (8., 13.)]],
             };
             let weight = px((side / 16. * 1.25).max(1.));
             for points in paths {
@@ -435,10 +570,10 @@ fn button(
 ) -> Stateful<Div> {
     let ink = if active { ACCENT } else { MUTED };
     action(id, command, cx)
-        .h(px(26.))
-        .px(px(8.))
-        .gap(px(6.))
-        .rounded(px(6.))
+        .h(px(23.))
+        .px(px(7.))
+        .gap(px(5.))
+        .rounded(px(3.))
         .text_color(rgb(ink))
         .bg(if active { rgb(ACTIVE) } else { clear() })
         .hover(move |s| {
@@ -465,7 +600,7 @@ fn icon_button(
     action(id, command, cx)
         .size(px(side))
         .justify_center()
-        .rounded(px(6.))
+        .rounded(px(3.))
         .bg(if active { rgb(ACTIVE) } else { clear() })
         .hover(move |s| {
             if active {
@@ -486,10 +621,10 @@ fn primary(
     cx: &mut Context<Studio>,
 ) -> Stateful<Div> {
     action(id, command, cx)
-        .h(px(26.))
+        .h(px(24.))
         .px(px(9.))
         .gap(px(6.))
-        .rounded(px(6.))
+        .rounded(px(4.))
         .bg(rgb(ACTIVE))
         .border_1()
         .border_color(rgb(ACCENT_LINE))
@@ -501,11 +636,11 @@ fn primary(
 
 fn titlebar(s: &Studio, cx: &mut Context<Studio>) -> AnyElement {
     row()
-        .h(px(44.))
+        .h(px(36.))
         .flex_shrink_0()
         .pl(px(if cfg!(target_os = "macos") { 80. } else { 12. }))
-        .pr(px(12.))
-        .gap(px(12.))
+        .pr(px(8.))
+        .gap(px(8.))
         .border_b_1()
         .border_color(rgb(LINE))
         .bg(rgb(PANEL))
@@ -513,13 +648,13 @@ fn titlebar(s: &Studio, cx: &mut Context<Studio>) -> AnyElement {
             row()
                 .gap(px(9.))
                 .flex_shrink_0()
-                .child(icon(Icon::Cube, ACCENT, 18.))
+                .child(icon(Icon::Cube, ACCENT, 16.))
                 .child(
                     div()
                         .font_weight(FontWeight::BOLD)
                         .text_size(px(12.))
                         .text_color(rgb(TEXT))
-                        .child("F O R M A"),
+                        .child("FORMA"),
                 ),
         )
         .child(divider())
@@ -594,9 +729,9 @@ fn mode_segment(
 ) -> Stateful<Div> {
     row()
         .id(id)
-        .h(px(26.))
-        .px(px(11.))
-        .rounded(px(6.))
+        .h(px(22.))
+        .px(px(9.))
+        .rounded(px(3.))
         .justify_center()
         .text_color(rgb(if active { ACCENT } else { MUTED }))
         .bg(if active { rgb(ACTIVE) } else { clear() })
@@ -618,23 +753,39 @@ fn mode_segment(
 /// Everything that acts on the viewport: what you select, how it shades, where
 /// the camera looks.
 fn toolbar(s: &Studio, cx: &mut Context<Studio>) -> AnyElement {
-    row()
-        .h(px(40.))
-        .flex_shrink_0()
-        .px(px(12.))
-        .gap(px(8.))
-        .border_b_1()
-        .border_color(rgb(LINE))
-        .bg(rgb(PANEL))
+    editor_header()
+        .h(px(32.))
+        .child(icon(Icon::Cube, MUTED, 14.))
         .child(
             segmented()
                 .child(mode_segment("mode-object", "Object", !s.edit_mode, cx))
                 .child(mode_segment("mode-face", "Face", s.edit_mode, cx)),
         )
+        .child(divider())
+        .child(
+            row()
+                .id("add-menu")
+                .h(px(23.))
+                .px(px(7.))
+                .gap(px(5.))
+                .rounded(px(3.))
+                .cursor_pointer()
+                .text_color(rgb(MUTED))
+                .hover(|d| d.bg(rgb(RAISED)).text_color(rgb(TEXT)))
+                .tooltip(|_, cx| cx.new(|_| Tooltip("Add geometry")).into())
+                .child(icon(Icon::Plus, MUTED, 12.))
+                .child("Add")
+                .child(icon(Icon::Chevron, MUTED, 10.))
+                .on_click(cx.listener(|s, _, w, cx| {
+                    s.execute(Command::TogglePalette, w, cx);
+                    s.palette_query = "Add ".into();
+                    s.palette_index = 0;
+                })),
+        )
         .child(div().flex_1())
         .child(
             row()
-                .gap(px(2.))
+                .gap(px(1.))
                 .child(button(
                     "view-front",
                     "Front",
@@ -657,82 +808,103 @@ fn toolbar(s: &Studio, cx: &mut Context<Studio>) -> AnyElement {
                     Icon::Cube,
                     Command::ToggleProjection,
                     s.scene.camera.orthographic,
-                    26.,
+                    23.,
                     cx,
                 )),
         )
+        .child(divider())
+        .child(shading_controls(s, cx))
         .into_any_element()
 }
 
 fn outliner(s: &Studio, cx: &mut Context<Studio>) -> AnyElement {
-    let objects = s
-        .scene
-        .objects
-        .iter()
-        .map(|object| {
-            let id = object.id;
-            let selected = s.selected == Some(id);
-            let ink = if !object.visible {
-                FAINT
-            } else if selected {
-                ACCENT
-            } else {
-                TEXT
-            };
-            row()
-                .id(SharedString::from(format!("object-{id}")))
-                .h(px(28.))
-                .px(px(8.))
-                .gap(px(8.))
-                .rounded(px(6.))
-                .bg(if selected { rgb(ACTIVE) } else { clear() })
-                .cursor_pointer()
-                .hover(move |d| d.bg(rgb(if selected { ACTIVE_HOVER } else { RAISED })))
-                .child(icon(Icon::Cube, if selected { ACCENT } else { FAINT }, 13.))
+    let objects =
+        s.scene
+            .objects
+            .iter()
+            .enumerate()
+            .map(|(index, object)| {
+                let id = object.id;
+                let selected = s.selected == Some(id);
+                let ink = if !object.visible { FAINT } else { TEXT };
+                row()
+                    .id(SharedString::from(format!("object-{id}")))
+                    .h(px(22.))
+                    .flex_shrink_0()
+                    .pr(px(5.))
+                    .gap(px(6.))
+                    .bg(rgb(if selected {
+                        ACTIVE
+                    } else if index % 2 == 0 {
+                        PANEL
+                    } else {
+                        0x2c2d30
+                    }))
+                    .cursor_pointer()
+                    .hover(move |d| d.bg(rgb(if selected { ACTIVE_HOVER } else { RAISED })))
+                    .child(div().w(px(2.)).h_full().bg(if selected {
+                        rgb(ACCENT)
+                    } else {
+                        clear()
+                    }))
+                    .child(
+                        div()
+                            .w(px(19.))
+                            .h_full()
+                            .flex_shrink_0()
+                            .border_r_1()
+                            .border_color(rgb(EDGE)),
+                    )
+                    .child(icon(
+                        Icon::Cube,
+                        if object.visible { ALERT } else { FAINT },
+                        12.,
+                    ))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w(px(0.))
+                            .overflow_hidden()
+                            .text_ellipsis()
+                            .text_color(rgb(ink))
+                            .child(object.name.clone()),
+                    )
+                    .child(icon_button(
+                        format!("visibility-{id}"),
+                        if object.visible {
+                            Icon::Eye
+                        } else {
+                            Icon::Hidden
+                        },
+                        Command::ToggleVisible(id),
+                        false,
+                        20.,
+                        cx,
+                    ))
+                    .on_click(cx.listener(move |s, _, w, cx| s.execute(Command::Select(id), w, cx)))
+            })
+            .collect::<Vec<_>>();
+    editor()
+        .h(px(190.))
+        .flex_shrink_0()
+        .child(
+            editor_header()
+                .child(icon(Icon::Folder, MUTED, 13.))
                 .child(
                     div()
-                        .flex_1()
-                        .min_w(px(0.))
-                        .overflow_hidden()
-                        .text_ellipsis()
-                        .text_color(rgb(ink))
-                        .child(object.name.clone()),
+                        .font_weight(FontWeight::MEDIUM)
+                        .child("Scene Collection"),
                 )
+                .child(div().flex_1())
+                .child(caption(s.scene.objects.len().to_string()))
                 .child(icon_button(
-                    format!("visibility-{id}"),
-                    if object.visible {
-                        Icon::Eye
-                    } else {
-                        Icon::Hidden
-                    },
-                    Command::ToggleVisible(id),
-                    !object.visible,
-                    22.,
+                    "scene-commands",
+                    Icon::Search,
+                    Command::TogglePalette,
+                    false,
+                    21.,
                     cx,
-                ))
-                .on_click(
-                    cx.listener(move |s, _, window, cx| s.execute(Command::Select(id), window, cx)),
-                )
-                .into_any_element()
-        })
-        .collect::<Vec<_>>();
-    col()
-        .w(px(200.))
-        .flex_shrink_0()
-        .h_full()
-        .bg(rgb(PANEL))
-        .border_r_1()
-        .border_color(rgb(LINE))
-        .child(
-            row()
-                .h(px(40.))
-                .flex_shrink_0()
-                .px(px(12.))
-                .justify_between()
-                .border_b_1()
-                .border_color(rgb(LINE))
-                .child(section("SCENE"))
-                .child(caption(format!("{} objects", s.scene.objects.len()))),
+                )),
         )
         .child(
             col()
@@ -740,43 +912,32 @@ fn outliner(s: &Studio, cx: &mut Context<Studio>) -> AnyElement {
                 .flex_1()
                 .min_h(px(0.))
                 .overflow_y_scroll()
-                .p(px(6.))
-                .gap(px(1.))
-                .children(objects),
-        )
-        .child(
-            col()
-                .flex_shrink_0()
-                .px(px(8.))
-                .pt(px(6.))
-                .pb(px(8.))
-                .gap(px(2.))
-                .border_t_1()
-                .border_color(rgb(LINE))
-                .child(section("ADD GEOMETRY").pl(px(4.)))
-                .children(sources().chunks(2).enumerate().map(|(r, pair)| {
-                    row().gap(px(2.)).children(pair.iter().enumerate().map(
-                        |(c, (glyph, label, command))| {
-                            action(format!("add-{r}-{c}"), *command, cx)
-                                .flex_1()
-                                .min_w(px(0.))
-                                .h(px(28.))
-                                .px(px(7.))
-                                .gap(px(7.))
-                                .rounded(px(6.))
-                                .text_color(rgb(MUTED))
-                                .hover(|d| d.bg(rgb(RAISED)).text_color(rgb(TEXT)))
-                                .child(icon(*glyph, MUTED, 14.))
-                                .child(
-                                    div()
-                                        .min_w(px(0.))
-                                        .overflow_hidden()
-                                        .text_ellipsis()
-                                        .child(*label),
-                                )
-                        },
-                    ))
-                })),
+                .child(
+                    row()
+                        .id("scene-collection")
+                        .h(px(25.))
+                        .flex_shrink_0()
+                        .px(px(8.))
+                        .gap(px(7.))
+                        .cursor_pointer()
+                        .hover(|d| d.bg(rgb(RAISED)))
+                        .child(icon(
+                            if s.panels.collection_open {
+                                Icon::Chevron
+                            } else {
+                                Icon::ChevronRight
+                            },
+                            MUTED,
+                            11.,
+                        ))
+                        .child(icon(Icon::Folder, MUTED, 12.))
+                        .child("Collection")
+                        .on_click(cx.listener(|s, _, _, cx| {
+                            s.panels.collection_open = !s.panels.collection_open;
+                            cx.notify();
+                        })),
+                )
+                .when(s.panels.collection_open, |d| d.children(objects)),
         )
         .into_any_element()
 }
@@ -799,13 +960,13 @@ fn sources() -> [(Icon, &'static str, Command); 6] {
 
 fn toolrail(s: &Studio, cx: &mut Context<Studio>) -> AnyElement {
     col()
-        .w(px(40.))
+        .w(px(36.))
         .h_full()
         .flex_shrink_0()
         .items_center()
-        .py(px(8.))
-        .gap(px(3.))
-        .bg(rgb(SHELL))
+        .py(px(5.))
+        .gap(px(2.))
+        .bg(rgb(PANEL))
         .border_r_1()
         .border_color(rgb(LINE))
         .children(
@@ -823,7 +984,7 @@ fn toolrail(s: &Studio, cx: &mut Context<Studio>) -> AnyElement {
                     glyph,
                     Command::SetTool(tool),
                     s.tool == tool,
-                    30.,
+                    28.,
                     cx,
                 )
             }),
@@ -834,7 +995,7 @@ fn toolrail(s: &Studio, cx: &mut Context<Studio>) -> AnyElement {
             Icon::Frame,
             Command::FrameSelected,
             false,
-            30.,
+            28.,
             cx,
         ))
         .child(icon_button(
@@ -842,49 +1003,40 @@ fn toolrail(s: &Studio, cx: &mut Context<Studio>) -> AnyElement {
             Icon::Grid,
             Command::ToggleGrid,
             s.settings.show_grid,
-            30.,
+            28.,
             cx,
         ))
         .into_any_element()
 }
 
 fn viewport_panel(s: &Studio, viewport: AnyElement, cx: &mut Context<Studio>) -> AnyElement {
-    row()
+    editor()
         .flex_1()
         .min_w(px(220.))
         .h_full()
-        .overflow_hidden()
-        .bg(rgb(SHELL))
-        .child(toolrail(s, cx))
+        .child(toolbar(s, cx))
         .child(
-            div()
-                .relative()
+            row()
                 .flex_1()
-                .min_w(px(0.))
-                .h_full()
+                .min_h(px(0.))
                 .overflow_hidden()
-                .child(viewport)
-                .child(shading_float(s, cx)),
+                .child(toolrail(s, cx))
+                .child(
+                    div()
+                        .relative()
+                        .flex_1()
+                        .min_w(px(0.))
+                        .h_full()
+                        .overflow_hidden()
+                        .child(viewport),
+                ),
         )
         .into_any_element()
 }
 
-/// Viewport shading, pinned to the top right of the view it controls. `occlude`
-/// keeps its clicks out of selection and navigation while scroll still zooms.
-fn shading_float(s: &Studio, cx: &mut Context<Studio>) -> AnyElement {
-    row()
-        .id("shading-float")
-        .absolute()
-        .top(px(10.))
-        .right(px(10.))
-        .p(px(3.))
-        .gap(px(2.))
-        .rounded(px(9.))
-        .bg(rgba(0x101315d9))
-        .border_1()
-        .border_color(rgb(EDGE))
-        .shadow_md()
-        .occlude()
+/// Shading lives in the viewport header, alongside its other display controls.
+fn shading_controls(s: &Studio, cx: &mut Context<Studio>) -> AnyElement {
+    segmented()
         .children(
             [
                 (RenderMode::Wireframe, Icon::Wire),
@@ -900,11 +1052,21 @@ fn shading_float(s: &Studio, cx: &mut Context<Studio>) -> AnyElement {
                     glyph,
                     Command::SetMode(mode),
                     s.settings.mode == mode,
-                    28.,
+                    22.,
                     cx,
                 )
             }),
         )
+        .when(s.settings.mode == RenderMode::MaterialPreview, |d| {
+            d.child(icon_button(
+                "shading-lighting",
+                Icon::Chevron,
+                Command::TogglePreviewSettings,
+                s.preview_open,
+                20.,
+                cx,
+            ))
+        })
         .into_any_element()
 }
 
@@ -927,15 +1089,22 @@ fn field(s: &Studio, id: &str, label: &str, f: Field, cx: &mut Context<Studio>) 
     };
     row()
         .id(SharedString::from(id.to_owned()))
-        .h(px(28.))
+        .h(px(21.))
+        .flex_shrink_0()
         .px(px(7.))
         .gap(px(5.))
-        .rounded(px(6.))
-        .bg(rgb(WELL))
+        .rounded(px(3.))
+        .bg(rgb(if active { WELL } else { INPUT }))
         .border_1()
-        .border_color(rgb(if active { ACCENT } else { LINE }))
+        .border_color(if active { rgb(ACCENT) } else { clear() })
         .cursor_pointer()
-        .hover(|d| d.border_color(rgb(EDGE)))
+        .hover(move |d| {
+            if active {
+                d.border_color(rgb(ACCENT))
+            } else {
+                d.bg(rgb(0x53565b))
+            }
+        })
         .when(!label.is_empty(), |d| {
             d.child(
                 div()
@@ -952,23 +1121,34 @@ fn field(s: &Studio, id: &str, label: &str, f: Field, cx: &mut Context<Studio>) 
                 .text_ellipsis()
                 .text_color(rgb(if active { ACCENT } else { TEXT }))
                 .text_right()
+                .when(!label.is_empty(), |d| d.text_center())
+                .when(f == Field::Name, |d| d.text_left())
                 .child(value),
         )
-        .on_click(cx.listener(move |s, _, w, cx| s.begin_field(f, w, cx)))
+        .on_click(cx.listener(move |s, _, w, cx| {
+            cx.stop_propagation();
+            s.begin_field(f, w, cx);
+        }))
 }
 
 /// Label on the left, editable value on the right.
 fn property(s: &Studio, id: &str, label: &str, f: Field, cx: &mut Context<Studio>) -> AnyElement {
     row()
-        .h(px(30.))
-        .justify_between()
+        .h(px(23.))
+        .gap(px(8.))
         .text_color(rgb(MUTED))
-        .child(label.to_owned())
-        .child(field(s, id, "", f, cx).w(px(100.)))
+        .child(
+            div()
+                .w(px(92.))
+                .flex_shrink_0()
+                .text_right()
+                .child(label.to_owned()),
+        )
+        .child(field(s, id, "", f, cx).flex_1().min_w(px(0.)))
         .into_any_element()
 }
 
-/// Three axis fields under a small caption.
+/// Blender-style vector stack: one group label and contiguous axis controls.
 fn axis_row(
     s: &Studio,
     label: &str,
@@ -977,19 +1157,31 @@ fn axis_row(
     field_of: impl Fn(usize) -> Field,
     cx: &mut Context<Studio>,
 ) -> AnyElement {
-    col()
-        .gap(px(5.))
+    row()
+        .items_start()
+        .gap(px(8.))
         .child(
             div()
-                .text_size(px(10.))
+                .w(px(73.))
+                .flex_shrink_0()
+                .pt(px(3.))
+                .text_right()
                 .text_color(rgb(MUTED))
                 .child(label.to_owned()),
         )
-        .child(row().gap(px(6.)).children((0..3).map(|axis| {
-            field(s, &format!("{id}-{axis}"), axes[axis], field_of(axis), cx)
+        .child(
+            col()
                 .flex_1()
                 .min_w(px(0.))
-        })))
+                .gap(px(1.))
+                .rounded(px(3.))
+                .overflow_hidden()
+                .children((0..3).map(|axis| {
+                    field(s, &format!("{id}-{axis}"), axes[axis], field_of(axis), cx)
+                        .w_full()
+                        .rounded(px(0.))
+                })),
+        )
         .into_any_element()
 }
 
@@ -1023,38 +1215,47 @@ fn render_settings(s: &Studio, cx: &mut Context<Studio>) -> AnyElement {
     let mode = s.settings.mode;
     let preview = mode == RenderMode::MaterialPreview;
     let progressive = mode.progressive();
-    col()
-        .px(px(14.))
-        .pt(px(6.))
-        .pb(px(14.))
-        .child(section(if preview {
-            "MATERIAL PREVIEW"
-        } else {
-            "RENDER"
-        }))
+    let contents = col()
+        .gap(px(1.))
         .when(preview, |d| {
             d.child(
                 row()
-                    .h(px(30.))
+                    .h(px(23.))
                     .gap(px(8.))
-                    .child(div().text_color(rgb(MUTED)).child("Lighting"))
-                    .child(div().flex_1())
                     .child(
                         div()
-                            .max_w(px(110.))
-                            .overflow_hidden()
-                            .text_ellipsis()
-                            .text_color(rgb(TEXT))
-                            .child(preview_light_name(s)),
+                            .w(px(92.))
+                            .flex_shrink_0()
+                            .text_right()
+                            .text_color(rgb(MUTED))
+                            .child("Lighting"),
                     )
-                    .child(icon_button(
-                        "inspector-preview-settings",
-                        Icon::Chevron,
-                        Command::TogglePreviewSettings,
-                        s.preview_open,
-                        22.,
-                        cx,
-                    )),
+                    .child(
+                        action(
+                            "inspector-preview-settings",
+                            Command::TogglePreviewSettings,
+                            cx,
+                        )
+                        .flex_1()
+                        .min_w(px(0.))
+                        .h(px(21.))
+                        .px(px(7.))
+                        .gap(px(5.))
+                        .rounded(px(3.))
+                        .bg(rgb(WELL))
+                        .border_1()
+                        .border_color(rgb(EDGE))
+                        .hover(|d| d.bg(rgb(RAISED)))
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w(px(0.))
+                                .overflow_hidden()
+                                .text_ellipsis()
+                                .child(preview_light_name(s)),
+                        )
+                        .child(icon(Icon::Chevron, MUTED, 10.)),
+                    ),
             )
         })
         .when(progressive, |d| {
@@ -1077,21 +1278,18 @@ fn render_settings(s: &Studio, cx: &mut Context<Studio>) -> AnyElement {
         .when(progressive, |d| {
             d.child(
                 row()
-                    .mt(px(10.))
+                    .mt(px(6.))
                     .justify_between()
-                    .text_size(px(10.))
-                    .text_color(rgb(FAINT))
-                    .child("SAMPLES")
-                    .child(
-                        div()
-                            .text_color(rgb(MUTED))
-                            .child(format!("{} / {}", s.samples, s.settings.max_samples)),
-                    ),
+                    .child(caption("Samples"))
+                    .child(caption(format!(
+                        "{} / {}",
+                        s.samples, s.settings.max_samples
+                    ))),
             )
             .child(
                 div()
                     .h(px(3.))
-                    .mt(px(6.))
+                    .mt(px(4.))
                     .rounded_full()
                     .bg(rgb(WELL))
                     .child(
@@ -1105,59 +1303,129 @@ fn render_settings(s: &Studio, cx: &mut Context<Studio>) -> AnyElement {
                             .bg(rgb(ACCENT)),
                     ),
             )
-        })
-        .into_any_element()
+        });
+    panel_card(
+        s,
+        PanelSection::Render,
+        if preview {
+            "Material Preview"
+        } else {
+            "Render"
+        },
+        if progressive {
+            "Path tracing"
+        } else {
+            "Lighting"
+        },
+        contents,
+        cx,
+    )
+    .into_any_element()
+}
+
+fn geometry_sources(cx: &mut Context<Studio>) -> Div {
+    col()
+        .gap(px(3.))
+        .children(sources().chunks(2).enumerate().map(|(r, pair)| {
+            row().gap(px(3.)).children(pair.iter().enumerate().map(
+                |(c, (glyph, label, command))| {
+                    button(
+                        format!("add-{r}-{c}"),
+                        label,
+                        Some(*glyph),
+                        *command,
+                        false,
+                        cx,
+                    )
+                    .flex_1()
+                    .min_w(px(0.))
+                    .bg(rgb(RAISED))
+                },
+            ))
+        }))
 }
 
 fn inspector(s: &Studio, cx: &mut Context<Studio>) -> AnyElement {
     let object = s.selected_object();
-    let mut contents = col();
+    let mut contents = col().flex_shrink_0().p(px(5.)).gap(px(4.));
     if let Some(object) = object {
         let base = object.material.base_color;
-        contents = contents
+        let transform = col()
+            .gap(px(7.))
+            .child(axis_row(
+                s,
+                "Location",
+                "transform-0",
+                ["X", "Y", "Z"],
+                Field::Translation,
+                cx,
+            ))
+            .child(axis_row(
+                s,
+                "Rotation · °",
+                "transform-1",
+                ["X", "Y", "Z"],
+                Field::Rotation,
+                cx,
+            ))
+            .child(axis_row(
+                s,
+                "Scale",
+                "transform-2",
+                ["X", "Y", "Z"],
+                Field::Scale,
+                cx,
+            ));
+        contents = contents.child(panel_card(
+            s,
+            PanelSection::Transform,
+            "Transform",
+            "XYZ",
+            transform,
+            cx,
+        ));
+
+        let surface = col()
+            .gap(px(7.))
             .child(
-                col()
-                    .px(px(14.))
-                    .pt(px(6.))
-                    .pb(px(14.))
-                    .gap(px(10.))
-                    .border_b_1()
-                    .border_color(rgb(LINE))
-                    .child(section("TRANSFORM"))
-                    .child(axis_row(
-                        s,
-                        "Position",
-                        "transform-0",
-                        ["X", "Y", "Z"],
-                        Field::Translation,
-                        cx,
-                    ))
-                    .child(axis_row(
-                        s,
-                        "Rotation · °",
-                        "transform-1",
-                        ["X", "Y", "Z"],
-                        Field::Rotation,
-                        cx,
-                    ))
-                    .child(axis_row(
-                        s,
-                        "Scale",
-                        "transform-2",
-                        ["X", "Y", "Z"],
-                        Field::Scale,
-                        cx,
+                row()
+                    .gap(px(3.))
+                    .children(PRESETS.into_iter().enumerate().map(
+                        |(index, (swatch, name, color))| {
+                            let applied =
+                                (0..3).all(|axis| (base[axis] - color[axis]).abs() < 0.002);
+                            action(
+                                format!("preset-{index}"),
+                                Command::MaterialPreset(index),
+                                cx,
+                            )
+                            .flex_col()
+                            .flex_1()
+                            .min_w(px(0.))
+                            .py(px(4.))
+                            .gap(px(4.))
+                            .rounded(px(3.))
+                            .border_1()
+                            .border_color(if applied { rgb(ACCENT_LINE) } else { clear() })
+                            .text_color(rgb(if applied { ACCENT } else { MUTED }))
+                            .bg(rgb(if applied { ACTIVE } else { PANEL }))
+                            .hover(move |d| d.bg(rgb(if applied { ACTIVE_HOVER } else { RAISED })))
+                            .child(
+                                div()
+                                    .w(px(25.))
+                                    .h(px(14.))
+                                    .rounded(px(3.))
+                                    .bg(rgb(swatch))
+                                    .border_1()
+                                    .border_color(rgb(if applied { ACCENT } else { EDGE })),
+                            )
+                            .child(div().text_size(px(9.)).child(name))
+                        },
                     )),
             )
             .child(
                 col()
-                    .px(px(14.))
-                    .pt(px(6.))
-                    .pb(px(14.))
-                    .gap(px(10.))
-                    .border_b_1()
-                    .border_color(rgb(LINE))
-                    .child(section("SURFACE"))
+                    .gap(px(4.))
                     .child(
                         row().gap(px(3.)).children(
                             [ShaderKind::Pbr, ShaderKind::Glass, ShaderKind::Custom]
@@ -1188,61 +1456,26 @@ fn inspector(s: &Studio, cx: &mut Context<Studio>) -> AnyElement {
                     })
                     .child(
                         row()
-                            .gap(px(4.))
-                            .children(PRESETS.into_iter().enumerate().map(
-                                |(index, (swatch, name, color))| {
-                                    let applied =
-                                        (0..3).all(|axis| (base[axis] - color[axis]).abs() < 0.002);
-                                    action(
-                                        format!("preset-{index}"),
-                                        Command::MaterialPreset(index),
-                                        cx,
-                                    )
-                                    .flex_col()
-                                    .flex_1()
-                                    .min_w(px(0.))
-                                    .py(px(5.))
-                                    .gap(px(5.))
-                                    .rounded(px(6.))
-                                    .text_color(rgb(if applied { ACCENT } else { FAINT }))
-                                    .bg(if applied { rgb(ACTIVE) } else { clear() })
-                                    .hover(move |d| {
-                                        d.bg(rgb(if applied { ACTIVE_HOVER } else { RAISED }))
-                                    })
-                                    .child(
-                                        div()
-                                            .size(px(22.))
-                                            .rounded_full()
-                                            .bg(rgb(swatch))
-                                            .border_2()
-                                            .border_color(rgb(if applied { ACCENT } else { LINE })),
-                                    )
-                                    .child(div().text_size(px(9.)).child(name))
-                                },
-                            )),
+                            .gap(px(6.))
+                            .child(div().text_color(rgb(MUTED)).child("Base color"))
+                            .child(div().flex_1())
+                            .child(caption("sRGB"))
+                            .child(
+                                div()
+                                    .w(px(24.))
+                                    .h(px(12.))
+                                    .rounded(px(2.))
+                                    .bg(rgb(swatch_color(base)))
+                                    .border_1()
+                                    .border_color(rgb(EDGE)),
+                            ),
                     )
                     .child(
-                        col()
-                            .gap(px(5.))
-                            .child(
-                                row()
-                                    .justify_between()
-                                    .child(
-                                        div()
-                                            .text_size(px(10.))
-                                            .text_color(rgb(MUTED))
-                                            .child("Base color · sRGB"),
-                                    )
-                                    .child(
-                                        div()
-                                            .size(px(13.))
-                                            .rounded(px(4.))
-                                            .bg(rgb(swatch_color(base)))
-                                            .border_1()
-                                            .border_color(rgb(EDGE)),
-                                    ),
-                            )
-                            .child(row().gap(px(6.)).children((0..3).map(|axis| {
+                        row()
+                            .gap(px(1.))
+                            .rounded(px(3.))
+                            .overflow_hidden()
+                            .children((0..3).map(|axis| {
                                 field(
                                     s,
                                     &format!("base-color-{axis}"),
@@ -1252,131 +1485,142 @@ fn inspector(s: &Studio, cx: &mut Context<Studio>) -> AnyElement {
                                 )
                                 .flex_1()
                                 .min_w(px(0.))
-                            }))),
-                    )
-                    .child(
-                        col()
-                            .child(property(s, "roughness", "Roughness", Field::Roughness, cx))
-                            .when(object.material.shader != ShaderKind::Glass, |d| {
-                                d.child(property(s, "metallic", "Metallic", Field::Metallic, cx))
-                            })
-                            .child(property(s, "ior", "IOR", Field::Ior, cx))
-                            .child(property(s, "emission", "Emission", Field::Emission, cx)),
+                                .rounded(px(0.))
+                            })),
                     ),
             )
-            .child(texture_inspector(s, object.material, cx))
             .child(
                 col()
-                    .px(px(14.))
-                    .pt(px(6.))
-                    .pb(px(14.))
-                    .gap(px(10.))
-                    .border_b_1()
-                    .border_color(rgb(LINE))
-                    .child(section("GEOMETRY"))
+                    .gap(px(1.))
+                    .child(property(s, "roughness", "Roughness", Field::Roughness, cx))
+                    .when(object.material.shader != ShaderKind::Glass, |d| {
+                        d.child(property(s, "metallic", "Metallic", Field::Metallic, cx))
+                    })
+                    .child(property(s, "ior", "IOR", Field::Ior, cx))
+                    .child(property(s, "emission", "Emission", Field::Emission, cx)),
+            )
+            .child(texture_inspector(s, object.material, cx));
+        contents = contents.child(panel_card(
+            s,
+            PanelSection::Surface,
+            "Surface",
+            "Material",
+            surface,
+            cx,
+        ));
+
+        let geometry = col()
+            .gap(px(7.))
+            .child(
+                row().gap(px(4.)).children(
+                    [
+                        ("Vertices", object.mesh.positions.len()),
+                        ("Faces", object.mesh.faces.len()),
+                    ]
+                    .into_iter()
+                    .map(|(label, count)| {
+                        row()
+                            .flex_1()
+                            .px(px(7.))
+                            .h(px(25.))
+                            .gap(px(6.))
+                            .rounded(px(3.))
+                            .bg(rgb(PANEL))
+                            .child(caption(label))
+                            .child(div().flex_1())
+                            .child(count.to_string())
+                    }),
+                ),
+            )
+            .child(
+                row()
+                    .gap(px(4.))
                     .child(
-                        row().gap(px(22.)).children(
-                            [
-                                ("Vertices", object.mesh.positions.len()),
-                                ("Faces", object.mesh.faces.len()),
-                            ]
-                            .into_iter()
-                            .map(|(label, count)| {
-                                col()
-                                    .gap(px(3.))
-                                    .child(caption(label))
-                                    .child(div().text_color(rgb(TEXT)).child(count.to_string()))
-                            }),
-                        ),
+                        button(
+                            "subdivide",
+                            "Subdivide",
+                            Some(Icon::Grid),
+                            Command::Subdivide,
+                            false,
+                            cx,
+                        )
+                        .flex_1()
+                        .justify_center()
+                        .bg(rgb(RAISED)),
                     )
                     .child(
-                        row()
-                            .gap(px(4.))
-                            .child(button(
-                                "subdivide",
-                                "Subdivide",
-                                Some(Icon::Grid),
-                                Command::Subdivide,
-                                false,
-                                cx,
-                            ))
-                            .child(button(
-                                "extrude",
-                                "Extrude",
-                                Some(Icon::Export),
-                                Command::Extrude,
-                                false,
-                                cx,
-                            )),
+                        button(
+                            "extrude",
+                            "Extrude",
+                            Some(Icon::Export),
+                            Command::Extrude,
+                            false,
+                            cx,
+                        )
+                        .flex_1()
+                        .justify_center()
+                        .bg(rgb(RAISED)),
                     ),
             );
+        contents = contents.child(panel_card(
+            s,
+            PanelSection::Geometry,
+            "Geometry",
+            format!("{} faces", object.mesh.faces.len()),
+            geometry,
+            cx,
+        ));
     } else {
         contents = contents.child(
-            col()
-                .px(px(14.))
-                .py(px(22.))
-                .gap(px(9.))
-                .items_start()
-                .border_b_1()
-                .border_color(rgb(LINE))
-                .child(icon(Icon::Select, FAINT, 20.))
-                .child(div().text_color(rgb(MUTED)).child("Nothing selected"))
-                .child(
-                    div()
-                        .text_size(px(10.))
-                        .line_height(px(15.))
-                        .text_color(rgb(FAINT))
-                        .child("Pick an object in the viewport or the scene list to edit it."),
-                ),
+            col().p(px(14.)).gap(px(8.)).rounded(px(4.)).border_1().border_color(rgb(EDGE))
+                .bg(rgb(CARD)).child(icon(Icon::Select, MUTED, 18.))
+                .child("Nothing selected")
+                .child(div().text_size(px(10.)).line_height(px(15.)).text_color(rgb(MUTED))
+                    .child("Select an object in the viewport or Collection to edit its properties.")),
         );
     }
     if s.settings.mode == RenderMode::MaterialPreview || s.settings.mode.progressive() {
         contents = contents.child(render_settings(s, cx));
     }
-    col()
-        .w(px(272.))
-        .flex_shrink_0()
-        .h_full()
-        .bg(rgb(PANEL))
-        .border_l_1()
-        .border_color(rgb(LINE))
+    let sources = geometry_sources(cx);
+    contents = contents.child(panel_card(
+        s,
+        PanelSection::AddGeometry,
+        "Add Geometry",
+        "Primitives / OBJ",
+        sources,
+        cx,
+    ));
+    editor()
+        .flex_1()
+        .child(
+            editor_header()
+                .child(icon(Icon::Scale, MUTED, 13.))
+                .child(div().font_weight(FontWeight::MEDIUM).child("Properties"))
+                .child(div().flex_1())
+                .child(caption(if s.edit_mode { "Face" } else { "Object" })),
+        )
         .child(
             row()
-                .h(px(40.))
+                .h(px(35.))
                 .flex_shrink_0()
-                .px(px(12.))
-                .gap(px(9.))
-                .border_b_1()
-                .border_color(rgb(LINE))
-                .child(icon(Icon::Cube, ACCENT, 14.))
+                .px(px(8.))
+                .gap(px(7.))
+                .child(icon(Icon::Cube, ALERT, 13.))
                 .child(if object.is_some() {
-                    div()
-                        .id("object-name")
+                    field(s, "object-name", "", Field::Name, cx)
                         .flex_1()
                         .min_w(px(0.))
-                        .px(px(5.))
-                        .py(px(3.))
-                        .rounded(px(5.))
-                        .text_color(rgb(if s.field_is_active(Field::Name) {
+                        .bg(rgb(WELL))
+                        .border_1()
+                        .border_color(rgb(if s.field_is_active(Field::Name) {
                             ACCENT
                         } else {
-                            TEXT
+                            EDGE
                         }))
-                        .font_weight(FontWeight::MEDIUM)
-                        .cursor_pointer()
-                        .hover(|d| d.bg(rgb(RAISED)))
                         .tooltip(|_, cx| {
                             cx.new(|_| Tooltip("Rename object · Enter to apply")).into()
                         })
-                        .child(div().overflow_hidden().text_ellipsis().child(
-                            match &s.active_field {
-                                Some((Field::Name, text)) => format!("{text}│"),
-                                _ => s.field_value(Field::Name),
-                            },
-                        ))
-                        .on_click(
-                            cx.listener(|s, _, window, cx| s.begin_field(Field::Name, window, cx)),
-                        )
                         .into_any_element()
                 } else {
                     div()
@@ -1403,9 +1647,9 @@ fn footer(s: &Studio, cx: &mut Context<Studio>) -> AnyElement {
             .unwrap_or_else(|| "Click a face".to_owned())
     });
     row()
-        .h(px(25.))
+        .h(px(22.))
         .flex_shrink_0()
-        .px(px(12.))
+        .px(px(8.))
         .gap(px(10.))
         .bg(rgb(PANEL))
         .border_t_1()
@@ -1578,17 +1822,24 @@ fn preview_property(
         return property(s, id, label, field_id, cx);
     }
     row()
-        .h(px(30.))
-        .justify_between()
+        .h(px(23.))
+        .gap(px(8.))
         .text_color(rgb(FAINT))
-        .child(label.to_owned())
+        .child(
+            div()
+                .w(px(92.))
+                .flex_shrink_0()
+                .text_right()
+                .child(label.to_owned()),
+        )
         .child(
             row()
-                .w(px(100.))
-                .h(px(28.))
+                .flex_1()
+                .min_w(px(0.))
+                .h(px(21.))
                 .px(px(7.))
                 .justify_end()
-                .rounded(px(6.))
+                .rounded(px(3.))
                 .bg(rgb(WELL))
                 .child(s.field_value(field_id)),
         )
@@ -1637,7 +1888,7 @@ fn preview_overlay(s: &Studio, cx: &mut Context<Studio>) -> AnyElement {
                 .top(px(top))
                 .w(px(width))
                 .max_h(px(height))
-                .rounded(px(10.))
+                .rounded(px(5.))
                 .bg(rgb(PANEL))
                 .border_1()
                 .border_color(rgb(EDGE))
@@ -1649,7 +1900,7 @@ fn preview_overlay(s: &Studio, cx: &mut Context<Studio>) -> AnyElement {
                 .on_mouse_down(MouseButton::Middle, |_, _, cx| cx.stop_propagation())
                 .child(
                     row()
-                        .h(px(42.))
+                        .h(px(32.))
                         .flex_shrink_0()
                         .px(px(14.))
                         .gap(px(9.))
@@ -1785,7 +2036,7 @@ fn preview_overlay(s: &Studio, cx: &mut Context<Studio>) -> AnyElement {
                                 .child(preview_property(
                                     s,
                                     "preview-blur",
-                                    "Background blur · %",
+                                    "Blur · %",
                                     Field::PreviewBlur,
                                     studio_enabled,
                                     cx,
@@ -2262,16 +2513,24 @@ pub fn render(studio: &Studio, viewport: AnyElement, cx: &mut Context<Studio>) -
         .text_size(px(11.))
         .font_family(".SystemUIFont")
         .child(titlebar(studio, cx))
-        .child(toolbar(studio, cx))
         .child(
             row()
                 .flex_1()
                 .min_h(px(0.))
                 .w_full()
                 .overflow_hidden()
-                .child(outliner(studio, cx))
+                .p(px(4.))
+                .gap(px(4.))
                 .child(viewport_panel(studio, viewport, cx))
-                .child(inspector(studio, cx)),
+                .child(
+                    col()
+                        .w(px(292.))
+                        .h_full()
+                        .flex_shrink_0()
+                        .gap(px(4.))
+                        .child(outliner(studio, cx))
+                        .child(inspector(studio, cx)),
+                ),
         )
         .child(footer(studio, cx))
         .when(studio.preview_open, |d| {
