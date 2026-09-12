@@ -1,5 +1,24 @@
 # Implementation validation
 
+## CI checks (2026-09-12)
+
+Validated the CI configuration locally on Linux with the repository's pinned
+Rust 1.98.1 toolchain:
+
+- All **103 workspace tests** passed with `FORMA_RENDERER=vulkan` and the Mesa
+  llvmpipe driver explicitly selected, including shader translation tests.
+- `cargo build --locked --workspace --bins` built the Linux application and
+  renderer tools successfully.
+- Strict workspace Clippy, rustfmt, actionlint 1.7.12, ShellCheck, JavaScript
+  syntax checks, all **7 website tests**, and `git diff --check` passed.
+- The headless smoke tool exported all four nonblank 640 × 480 modes through
+  llvmpipe, using four samples for Rendered, to `artifacts/ci-render/`.
+- cargo-audit 0.22.2 reported **zero known vulnerabilities**. Unmaintained
+  transitive dependencies remain reported as warnings; no advisories are ignored.
+- The workflow's checksum-verified actionlint download and Mesa-driver selection
+  steps were executed locally. GitHub-hosted execution of the revised workflows,
+  Windows/macOS builds, and Pages deployment are not established by these checks.
+
 ## Cross-platform implementation (2026-09-12)
 
 Executed locally with Rust 1.98.1 on Linux, Mesa 26.0.3 and an AMD Ryzen 7

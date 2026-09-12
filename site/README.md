@@ -18,6 +18,9 @@ directly, because the release enhancements use JavaScript modules.
 
 The repository includes `.github/workflows/pages.yml`. It tests the release
 logic and publishes `site/` directly, without bundling or a site build step.
+The Quality workflow also runs syntax and download tests on every pull request.
+Pages validation uses read-only permissions; a separate job publishes the
+validated artifact. Manual deployment is restricted to `main`.
 
 1. In the repository's **Settings → Pages**, set **Source** to **GitHub Actions**.
 2. Merge the website and workflow into `main`. Changes under `site/`, the
