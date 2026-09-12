@@ -552,11 +552,19 @@ fn add_grid(initial_color: vec3<f32>, ray: Ray, hit: Hit, pixel: vec2<f32>) -> v
     let wx = max(1e-6, length(vec2(px.x - p.x, py.x - p.x)));
     let wz = max(1e-6, length(vec2(px.z - p.z, py.z - p.z)));
     let footprint = max(wx, wz);
-    let spacing = pow(10.0, floor(log2(max(0.001, footprint * 35.0)) / log2(10.0)));
+    // Blend adjacent density levels instead of snapping per pixel: a hard
+    // decade switch makes perspective bands and flashes during orthographic
+    // zoom. Fade the finest lines before their spacing approaches a few pixels.
+    let level = log2(max(0.001, footprint * 35.0)) / log2(10.0);
+    let spacing = pow(10.0, floor(level));
+    let blend = smoothstep(0.0, 1.0, fract(level));
     let minor = max(grid_line(p.x, spacing, wx), grid_line(p.z, spacing, wz));
     let major = max(grid_line(p.x, spacing * 10.0, wx), grid_line(p.z, spacing * 10.0, wz));
+    let coarse = max(grid_line(p.x, spacing * 100.0, wx), grid_line(p.z, spacing * 100.0, wz));
     let fade = (1.0 / (1.0 + distance * 0.025)) * smoothstep(0.015, 0.12, abs(ray.direction.y));
-    let opacity = (0.11 * minor + 0.13 * major) * fade;
+    // At blend=1 the major/coarse pair exactly matches the next level's
+    // minor/major pair, including their contrast at shared grid intersections.
+    let opacity = mix(0.11 * minor + 0.13 * major, 0.11 * major + 0.13 * coarse, blend) * fade;
     color = mix(color, vec3(0.13, 0.15, 0.18), opacity);
     let x_axis = 1.0 - smoothstep(wz * 0.5, wz * 1.6, abs(p.z));
     let z_axis = 1.0 - smoothstep(wx * 0.5, wx * 1.6, abs(p.x));
