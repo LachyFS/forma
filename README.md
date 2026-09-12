@@ -116,9 +116,9 @@ The viewport must have keyboard focus. The in-app command panel opens with
 | Action | Input |
 | --- | --- |
 | Select object / face | Left click; `Tab` toggles object and face modes |
-| Orbit | Middle/right drag, `Option` + left drag, or `Option` + scroll |
-| Pan | `Shift` + middle/right drag or `Shift` + scroll |
-| Zoom / frame selection | Scroll / `F` |
+| Orbit | Two-finger trackpad drag, middle/right drag, `Option` + left drag, or `Option` + wheel |
+| Pan | `Shift` + two-finger drag, `Shift` + middle/right drag, or `Shift` + wheel |
+| Zoom / frame selection | Pinch, mouse wheel, or `Ctrl` / `⌘` + two-finger drag / `F` |
 | Shading pie | `Z`; hold and flick, or tap then select |
 | Move / rotate / scale | `G` / `R` / `S` |
 | Constrain transform | `X`, `Y` or `Z` during a transform |

@@ -4,6 +4,8 @@ mod shading_pie;
 mod smoke;
 mod ui;
 mod viewport;
+#[cfg(target_os = "macos")]
+mod trackpad;
 
 use app::{Command, Studio};
 use gpui::{

@@ -7,6 +7,33 @@ use gpui::{
     size,
 };
 
+/// AppKit's momentum updates arrive after Ended without a new Started phase.
+/// Keep their navigation mode when a modifier is released after lifting fingers.
+#[derive(Default)]
+pub(crate) struct TrackpadGesture {
+    modifiers: gpui::Modifiers,
+    momentum: bool,
+}
+
+impl TrackpadGesture {
+    fn event(&mut self, event: &ScrollWheelEvent) -> ScrollWheelEvent {
+        let mut event = event.clone();
+        if event.delta.precise() {
+            match event.touch_phase {
+                gpui::TouchPhase::Started => {
+                    self.momentum = false;
+                    self.modifiers = event.modifiers;
+                }
+                gpui::TouchPhase::Ended => self.momentum = true,
+                gpui::TouchPhase::Moved if !self.momentum => self.modifiers = event.modifiers,
+                _ => {}
+            }
+            event.modifiers = self.modifiers;
+        }
+        event
+    }
+}
+
 fn mouse_point(point: Point<Pixels>) -> Vec2 {
     Vec2::new(point.x.into(), point.y.into())
 }
@@ -211,19 +238,7 @@ impl Studio {
                 cx.listener(|s, _, _, _| s.navigation = None),
             )
             .on_scroll_wheel(cx.listener(|s, event: &ScrollWheelEvent, _, cx| {
-                if s.transform_drag.is_some() || s.shading_pie.is_some() || s.preview_open {
-                    return;
-                }
-                let delta = mouse_point(event.delta.pixel_delta(px(18.)));
-                if event.modifiers.shift {
-                    s.scene.camera.pan(delta);
-                } else if event.modifiers.alt {
-                    s.scene.camera.orbit(delta);
-                } else {
-                    s.scene.camera.zoom(delta.y * 0.24);
-                }
-                s.invalidate(false, cx);
-                cx.stop_propagation();
+                s.scroll_wheel(event, cx);
             }))
             .child(canvas)
             .child(
@@ -285,6 +300,48 @@ impl Studio {
             );
         }
         viewport.into_any_element()
+    }
+
+    pub(crate) fn scroll_wheel(&mut self, event: &ScrollWheelEvent, cx: &mut Context<Self>) {
+        if self.navigation_blocked() {
+            self.trackpad_gesture = TrackpadGesture::default();
+            return;
+        }
+        let event = self.trackpad_gesture.event(event);
+        if navigate_scroll(
+            &mut self.scene.camera,
+            &event,
+            f32::from(self.bounds.get().size.height),
+        ) {
+            self.invalidate(false, cx);
+        }
+        cx.stop_propagation();
+    }
+
+    pub(crate) fn magnify(
+        &mut self,
+        position: Point<Pixels>,
+        magnification: f32,
+        cx: &mut Context<Self>,
+    ) {
+        if self.navigation_blocked() || !self.bounds.get().contains(&position) {
+            return;
+        }
+        let before = self.scene.camera;
+        // Spreading fingers zooms in; exponential scaling composes smoothly
+        // across small updates without snapping to wheel-sized steps.
+        self.scene.camera.zoom(magnification * 100.);
+        if self.scene.camera != before {
+            self.invalidate(false, cx);
+        }
+    }
+
+    pub(crate) fn navigation_blocked(&self) -> bool {
+        self.transform_drag.is_some()
+            || self.shading_pie.is_some()
+            || self.preview_open
+            || self.help_open
+            || self.palette_open
     }
 
     pub(crate) fn mouse_down(
@@ -396,7 +453,10 @@ impl Studio {
             } else {
                 let delta = position - self.last_mouse;
                 if pan {
-                    self.scene.camera.pan(delta);
+                    self.scene.camera.pan_in_viewport(
+                        delta,
+                        f32::from(self.bounds.get().size.height),
+                    );
                 } else {
                     self.scene.camera.orbit(delta);
                 }
@@ -587,6 +647,25 @@ impl Studio {
     }
 }
 
+/// Preserve subpixel trackpad motion; wheel notches keep their existing zoom speed.
+fn navigate_scroll(camera: &mut forma_core::Camera, event: &ScrollWheelEvent, height: f32) -> bool {
+    let delta = mouse_point(event.delta.pixel_delta(px(18.)));
+    if !delta.is_finite() || delta == Vec2::ZERO {
+        return false;
+    }
+    let before = *camera;
+    if event.modifiers.control || event.modifiers.platform {
+        camera.zoom(delta.y * 0.24);
+    } else if event.modifiers.shift {
+        camera.pan_in_viewport(delta, height);
+    } else if event.delta.precise() || event.modifiers.alt {
+        camera.orbit(delta * if event.delta.precise() { 0.6 } else { 1. });
+    } else {
+        camera.zoom(delta.y * 0.24);
+    }
+    *camera != before
+}
+
 fn segment_distance(p: Vec2, a: Vec2, b: Vec2) -> f32 {
     let segment = b - a;
     let t = ((p - a).dot(segment) / segment.length_squared().max(0.001)).clamp(0., 1.);
@@ -596,6 +675,127 @@ fn segment_distance(p: Vec2, a: Vec2, b: Vec2) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn scroll(delta: gpui::ScrollDelta, modifiers: gpui::Modifiers) -> ScrollWheelEvent {
+        ScrollWheelEvent {
+            delta,
+            modifiers,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn trackpad_orbits_both_axes_and_preserves_fractional_motion() {
+        let mut camera = forma_core::Camera::default();
+        let before = camera;
+        let event = scroll(
+            gpui::ScrollDelta::Pixels(point(px(0.25), px(0.5))),
+            Default::default(),
+        );
+        assert!(navigate_scroll(&mut camera, &event, 600.));
+        assert!(camera.yaw < before.yaw && camera.pitch > before.pitch);
+        assert_eq!(camera.distance, before.distance);
+        assert_eq!(camera.target, before.target);
+        let mut batched = before;
+        let mut incremental = before;
+        for _ in 0..100 {
+            navigate_scroll(&mut incremental, &event, 600.);
+        }
+        navigate_scroll(
+            &mut batched,
+            &scroll(
+                gpui::ScrollDelta::Pixels(point(px(25.), px(50.))),
+                Default::default(),
+            ),
+            600.,
+        );
+        assert!((incremental.yaw - batched.yaw).abs() < 0.00001);
+        assert!((incremental.pitch - batched.pitch).abs() < 0.00001);
+    }
+
+    #[test]
+    fn modifiers_pan_and_zoom_without_orbiting_and_wheels_still_zoom() {
+        let before = forma_core::Camera::default();
+        let pixels = gpui::ScrollDelta::Pixels(point(px(4.), px(8.)));
+        let mut camera = before;
+        navigate_scroll(
+            &mut camera,
+            &scroll(
+                pixels,
+                gpui::Modifiers {
+                    shift: true,
+                    ..Default::default()
+                },
+            ),
+            600.,
+        );
+        assert_ne!(camera.target, before.target);
+        assert_eq!(camera.yaw, before.yaw);
+        assert_eq!(camera.distance, before.distance);
+        for (delta, modifiers) in [
+            (
+                pixels,
+                gpui::Modifiers {
+                    control: true,
+                    ..Default::default()
+                },
+            ),
+            (
+                pixels,
+                gpui::Modifiers {
+                    platform: true,
+                    ..Default::default()
+                },
+            ),
+            (
+                gpui::ScrollDelta::Lines(point(0., 1.)),
+                gpui::Modifiers::default(),
+            ),
+        ] {
+            let mut camera = before;
+            navigate_scroll(&mut camera, &scroll(delta, modifiers), 600.);
+            assert!(camera.distance < before.distance);
+            assert_eq!(camera.target, before.target);
+            assert_eq!(camera.yaw, before.yaw);
+        }
+        let mut camera = before;
+        for delta in [Vec2::ZERO, Vec2::new(f32::NAN, 1.)] {
+            assert!(!navigate_scroll(
+                &mut camera,
+                &scroll(
+                    gpui::ScrollDelta::Pixels(point(px(delta.x), px(delta.y))),
+                    Default::default()
+                ),
+                600.
+            ));
+            assert_eq!(camera, before);
+        }
+    }
+
+    #[test]
+    fn momentum_keeps_pan_after_shift_release_and_next_gesture_resets() {
+        let mut gesture = TrackpadGesture::default();
+        let mut event = scroll(
+            gpui::ScrollDelta::Pixels(point(px(1.), px(2.))),
+            gpui::Modifiers {
+                shift: true,
+                ..Default::default()
+            },
+        );
+        event.touch_phase = gpui::TouchPhase::Started;
+        assert!(gesture.event(&event).modifiers.shift);
+        event.touch_phase = gpui::TouchPhase::Ended;
+        event.modifiers.shift = false;
+        assert!(gesture.event(&event).modifiers.shift);
+        event.touch_phase = gpui::TouchPhase::Moved;
+        assert!(gesture.event(&event).modifiers.shift);
+        event.touch_phase = gpui::TouchPhase::Started;
+        assert!(!gesture.event(&event).modifiers.shift);
+        // Modifiers can still change mode while fingers remain on the pad.
+        event.touch_phase = gpui::TouchPhase::Moved;
+        event.modifiers.control = true;
+        assert!(gesture.event(&event).modifiers.control);
+    }
 
     #[test]
     fn modelling_modes_use_backing_pixels_and_keep_path_tracing_budget() {

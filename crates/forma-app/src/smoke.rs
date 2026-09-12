@@ -749,6 +749,110 @@ async fn run(window: WindowHandle<Studio>, output: PathBuf, cx: &mut AsyncApp) -
         "continuous orbit starved GPU frame presentation ({presentations} frames)"
     );
     println!("continuous_navigation_presentations={presentations}");
+    // Exercise high-resolution trackpad input through the viewport's handler.
+    let before_trackpad = window.update(cx, |s, _, _| s.scene.camera)?;
+    let mut trackpad_presentations = 0;
+    for _ in 0..80 {
+        window.update(cx, |s, _, cx| {
+            s.scroll_wheel(
+                &gpui::ScrollWheelEvent {
+                    position: origin,
+                    delta: gpui::ScrollDelta::Pixels(point(px(0.7), px(0.15))),
+                    ..Default::default()
+                },
+                cx,
+            );
+        })?;
+        Timer::after(Duration::from_millis(8)).await;
+        window.update(cx, |s, _, _| {
+            if let Some(frame) = &s.frame
+                && frame.surface != surface
+            {
+                trackpad_presentations += 1;
+                surface = frame.surface.clone();
+            }
+        })?;
+    }
+    ensure!(
+        trackpad_presentations >= 5,
+        "trackpad orbit starved frame presentation"
+    );
+    println!("trackpad_navigation_presentations={trackpad_presentations}");
+    settle(window, cx).await?;
+    window.update(cx, |s, _, cx| -> Result<()> {
+        ensure!(
+            (s.scene.camera.yaw - before_trackpad.yaw).abs() > 0.1,
+            "fractional trackpad input did not orbit"
+        );
+        ensure!(
+            s.scene.camera.distance == before_trackpad.distance,
+            "trackpad orbit unexpectedly zoomed"
+        );
+        let event = gpui::ScrollWheelEvent {
+            position: origin,
+            delta: gpui::ScrollDelta::Pixels(point(px(12.), px(8.))),
+            modifiers: gpui::Modifiers {
+                shift: true,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        s.scroll_wheel(&event, cx);
+        ensure!(
+            s.scene.camera.target != before_trackpad.target,
+            "trackpad pan did not move target"
+        );
+        let before = s.scene.camera;
+        s.help_open = true;
+        s.scroll_wheel(&event, cx);
+        s.help_open = false;
+        ensure!(
+            s.scene.camera == before,
+            "trackpad moved camera behind help overlay"
+        );
+        s.scroll_wheel(
+            &gpui::ScrollWheelEvent {
+                modifiers: gpui::Modifiers {
+                    control: true,
+                    ..Default::default()
+                },
+                ..event
+            },
+            cx,
+        );
+        ensure!(
+            s.scene.camera.distance < before.distance,
+            "trackpad zoom did not dolly in"
+        );
+        Ok(())
+    })??;
+    window.update(cx, |s, _, cx| -> Result<()> {
+        let before = s.scene.camera;
+        s.magnify(point(px(-1.), px(-1.)), 0.1, cx);
+        ensure!(
+            s.scene.camera == before,
+            "pinch outside viewport changed camera"
+        );
+        s.preview_open = true;
+        s.magnify(origin, 0.1, cx);
+        s.preview_open = false;
+        ensure!(
+            s.scene.camera == before,
+            "pinch changed camera behind popup"
+        );
+        s.magnify(origin, 0.1, cx);
+        ensure!(
+            s.scene.camera.distance < before.distance,
+            "spread gesture did not zoom in"
+        );
+        s.magnify(origin, -0.1, cx);
+        ensure!(
+            (s.scene.camera.distance - before.distance).abs() < 0.0001,
+            "inverse pinch did not restore distance"
+        );
+        Ok(())
+    })??;
+    println!("trackpad_navigation_pass");
     keys(window, &["0"], cx).await?;
     let (id, before_x) = window.update(cx, |s, w, cx| {
         s.execute(Command::Add(Primitive::Cube), w, cx);

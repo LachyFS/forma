@@ -113,7 +113,10 @@ pub struct Studio {
     pub(crate) frame: Option<Frame>,
     pub(crate) last_mouse: Vec2,
     pub(crate) navigation: Option<(MouseButton, bool)>,
+    pub(crate) trackpad_gesture: crate::viewport::TrackpadGesture,
     pub(crate) transform_drag: Option<TransformDrag>,
+    #[cfg(target_os = "macos")]
+    _pinch_monitor: Option<crate::trackpad::PinchMonitor>,
     worker: RenderWorker,
     path: Option<PathBuf>,
     scene_revision: u64,
@@ -204,7 +207,10 @@ impl Studio {
             frame: None,
             last_mouse: Vec2::ZERO,
             navigation: None,
+            trackpad_gesture: Default::default(),
             transform_drag: None,
+            #[cfg(target_os = "macos")]
+            _pinch_monitor: crate::trackpad::PinchMonitor::install(window, cx),
             worker,
             path: None,
             scene_revision: 1,

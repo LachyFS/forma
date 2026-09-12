@@ -1892,7 +1892,10 @@ fn help_overlay(cx: &mut Context<Studio>) -> AnyElement {
                 vec![
                     ("Middle drag", "Orbit view"),
                     ("Shift + middle drag", "Pan view"),
-                    ("Scroll", "Zoom"),
+                    ("Two fingers", "Orbit view"),
+                    ("Shift + two fingers", "Pan view"),
+                    ("Pinch / wheel", "Zoom"),
+                    ("Ctrl / ⌘ + two fingers", "Zoom"),
                     ("F", "Frame selection"),
                     ("1 / 3 / 7", "Front / right / top"),
                     ("5", "Toggle projection"),
