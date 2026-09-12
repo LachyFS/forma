@@ -12,6 +12,7 @@ pub use glam::{Mat4, Vec2, Vec3};
 pub use history::History;
 pub use mesh::{Mesh, Primitive};
 pub use scene::{
-    CameraData, CameraProjection, Collection, Hit, Light, LightKind, Material, MaterialData,
-    MeshData, MeshInstance, Object, ObjectData, RenderPreferences, Scene, Transform, World,
+    CameraData, CameraProjection, Collection, DenoiseQuality, DenoiseSettings, Hit, Light,
+    LightKind, Material, MaterialData, MeshData, MeshInstance, Object, ObjectData,
+    RenderPreferences, Scene, Transform, World,
 };

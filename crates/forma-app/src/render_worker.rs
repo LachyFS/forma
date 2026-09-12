@@ -1,10 +1,13 @@
 //! A latest-request mailbox keeps input responsive when rendering is slower than input.
 use forma_core::{Camera, Scene, World};
-use forma_render::{Backend, Frame, RenderSettings, Renderer};
+use forma_render::{
+    Backend, DenoiseInput, DenoiseQuality, Denoiser, Frame, RenderSettings, Renderer,
+};
 use gpui::RenderImage;
 use std::{
     collections::VecDeque,
     path::PathBuf,
+    sync::atomic::{AtomicU64, Ordering},
     sync::{Arc, Condvar, Mutex},
     thread,
 };
@@ -29,6 +32,8 @@ struct Inbox {
 pub struct Output {
     pub frame: Option<(u64, Frame, Option<Arc<RenderImage>>)>,
     pub device: Option<String>,
+    pub denoised: Option<(u64, Frame, Arc<RenderImage>)>,
+    pub denoise_error: Option<(u64, String)>,
     pub messages: VecDeque<Result<String, String>>,
     pub render_error: Option<(u64, String)>,
     pub export_finished: bool,
@@ -70,12 +75,15 @@ pub struct RenderWorker {
     input: Arc<(Mutex<Inbox>, Condvar)>,
     output: OutputMailbox,
     backend: Backend,
+    denoise: DenoiseQueue,
 }
 
 impl RenderWorker {
     pub fn new(backend: Backend) -> (Self, async_channel::Receiver<()>) {
         let input = Arc::new((Mutex::new(Inbox::default()), Condvar::new()));
         let (output, notifications) = OutputMailbox::new();
+        let denoise = DenoiseQueue::new(output.clone());
+        let worker_denoise = denoise.clone();
         let worker_input = input.clone();
         let worker_output = output.clone();
         thread::Builder::new()
@@ -101,6 +109,7 @@ impl RenderWorker {
                 let mut active_snapshot: Option<Arc<Scene>> = None;
                 let mut scene: Option<Scene> = None;
                 let mut complete = true;
+                let mut last_denoise_sample = 0;
                 loop {
                     let (lock, wake) = &*worker_input;
                     let mut inbox = lock.lock().unwrap();
@@ -113,6 +122,7 @@ impl RenderWorker {
                     let request = inbox.request.take();
                     drop(inbox);
                     if let Some(request) = request {
+                        last_denoise_sample = 0;
                         if active_snapshot
                             .as_ref()
                             .is_none_or(|old| !Arc::ptr_eq(old, &request.scene))
@@ -144,10 +154,42 @@ impl RenderWorker {
                         Ok((frame, image)) => {
                             complete = !request.settings.mode.progressive()
                                 || frame.samples >= request.settings.max_samples;
+                            let samples = frame.samples;
                             worker_output.publish(|output| {
                                 output.frame = Some((request.generation, frame, image));
                                 output.render_error = None;
                             });
+                            if request.settings.mode.progressive()
+                                && request.settings.denoise.viewport
+                                && denoise_due(
+                                    samples,
+                                    request.settings.max_samples,
+                                    request.settings.denoise.start_sample,
+                                    last_denoise_sample,
+                                )
+                                && (complete || worker_denoise.idle())
+                                && worker_denoise.current.load(Ordering::Acquire)
+                                    == request.generation
+                            {
+                                match renderer.read_denoise_input() {
+                                    Ok(input) => {
+                                        last_denoise_sample = samples;
+                                        worker_denoise.submit(DenoiseJob {
+                                            generation: request.generation,
+                                            input,
+                                            quality: request.settings.denoise.quality,
+                                            exposure: request.settings.exposure,
+                                        });
+                                    }
+                                    Err(error) => {
+                                        last_denoise_sample = samples;
+                                        worker_output.publish(|output| {
+                                            output.denoise_error =
+                                                Some((request.generation, format!("{error:#}")))
+                                        });
+                                    }
+                                }
+                            }
                         }
                         Err(error) => {
                             complete = true;
@@ -165,6 +207,7 @@ impl RenderWorker {
                 input,
                 output,
                 backend,
+                denoise,
             },
             notifications,
         )
@@ -175,6 +218,7 @@ impl RenderWorker {
     }
 
     pub fn request(&self, request: Request) {
+        self.denoise.set_generation(request.generation);
         let (lock, wake) = &*self.input;
         lock.lock().unwrap().request = Some(request);
         wake.notify_one();
@@ -202,7 +246,16 @@ impl RenderWorker {
                             break;
                         }
                     }
-                    renderer.export_png(&path)
+                    if request.settings.mode.progressive() && request.settings.denoise.render {
+                        output.publish(|output| {
+                            output
+                                .messages
+                                .push_back(Ok("Denoising image · High quality".into()))
+                        });
+                        renderer.export_denoised_png(&path, &mut Denoiser::new()?)
+                    } else {
+                        renderer.export_png(&path)
+                    }
                 })();
                 output.publish(|output| {
                     output.messages.push_back(Ok(match result {
@@ -213,6 +266,128 @@ impl RenderWorker {
                 });
             })
             .expect("could not start image export");
+    }
+}
+
+/// Geometric cadence amortizes inference and readback. The final sample always
+/// gets a pass, even when the target is below Start Sample or is not a power of 2.
+fn denoise_due(samples: u32, target: u32, start: u32, last: u32) -> bool {
+    samples > last
+        && (samples >= target.max(1)
+            || (samples >= start.max(1) && (last == 0 || samples >= last.saturating_mul(2))))
+}
+
+struct DenoiseJob {
+    generation: u64,
+    input: DenoiseInput,
+    quality: DenoiseQuality,
+    exposure: f32,
+}
+
+#[derive(Default)]
+struct DenoiseInbox {
+    pending: Option<DenoiseJob>,
+    running: bool,
+    stop: bool,
+}
+
+#[derive(Clone)]
+struct DenoiseQueue {
+    inbox: Arc<(Mutex<DenoiseInbox>, Condvar)>,
+    current: Arc<AtomicU64>,
+}
+
+impl DenoiseQueue {
+    fn new(output: OutputMailbox) -> Self {
+        let queue = Self {
+            inbox: Arc::new((Mutex::new(DenoiseInbox::default()), Condvar::new())),
+            current: Arc::new(AtomicU64::new(0)),
+        };
+        let worker = queue.clone();
+        thread::Builder::new()
+            .name("forma-viewport-denoise".into())
+            .spawn(move || {
+                // Initialize lazily, once, on this thread. Native handles never cross
+                // threads. A missing runtime is reported without stopping the tracer.
+                let mut denoiser: Option<Result<Denoiser, String>> = None;
+                loop {
+                    let (lock, wake) = &*worker.inbox;
+                    let mut inbox = lock.lock().unwrap();
+                    while inbox.pending.is_none() && !inbox.stop {
+                        inbox = wake.wait(inbox).unwrap();
+                    }
+                    if inbox.stop {
+                        break;
+                    }
+                    let job = inbox.pending.take().unwrap();
+                    inbox.running = true;
+                    drop(inbox);
+                    if worker.current.load(Ordering::Acquire) == job.generation {
+                        let result = match denoiser
+                            .get_or_insert_with(|| Denoiser::new().map_err(|e| format!("{e:#}")))
+                        {
+                            Ok(denoiser) => denoiser
+                                .denoise_frame(&job.input, job.quality, false, job.exposure)
+                                .and_then(|frame| {
+                                    let image = presentation_image(
+                                        frame.width(),
+                                        frame.height(),
+                                        frame.rgba().unwrap(),
+                                    )?;
+                                    Ok((frame, image))
+                                })
+                                .map_err(|e| format!("{e:#}")),
+                            Err(error) => Err(error.clone()),
+                        };
+                        if worker.current.load(Ordering::Acquire) == job.generation {
+                            output.publish(|output| match result {
+                                Ok((frame, image)) => {
+                                    output.denoised = Some((job.generation, frame, image))
+                                }
+                                Err(error) => output.denoise_error = Some((job.generation, error)),
+                            });
+                        }
+                    }
+                    lock.lock().unwrap().running = false;
+                }
+            })
+            .expect("could not start denoising worker");
+        queue
+    }
+
+    fn set_generation(&self, generation: u64) {
+        self.current.store(generation, Ordering::Release);
+        let mut inbox = self.inbox.0.lock().unwrap();
+        if inbox
+            .pending
+            .as_ref()
+            .is_some_and(|job| job.generation != generation)
+        {
+            inbox.pending = None;
+        }
+    }
+
+    fn idle(&self) -> bool {
+        let inbox = self.inbox.0.lock().unwrap();
+        !inbox.running && inbox.pending.is_none()
+    }
+
+    fn submit(&self, job: DenoiseJob) {
+        let (lock, wake) = &*self.inbox;
+        let mut inbox = lock.lock().unwrap();
+        if !inbox.stop && self.current.load(Ordering::Acquire) == job.generation {
+            inbox.pending = Some(job); // bounded: one inference + one latest snapshot
+            wake.notify_one();
+        }
+    }
+
+    fn stop(&self) {
+        self.current.store(u64::MAX, Ordering::Release);
+        let (lock, wake) = &*self.inbox;
+        let mut inbox = lock.lock().unwrap();
+        inbox.stop = true;
+        inbox.pending = None;
+        wake.notify_one();
     }
 }
 
@@ -235,6 +410,7 @@ fn presentation_image(width: u32, height: u32, rgba: &[u8]) -> anyhow::Result<Ar
 
 impl Drop for RenderWorker {
     fn drop(&mut self) {
+        self.denoise.stop();
         let (lock, wake) = &*self.input;
         if let Ok(mut inbox) = lock.lock() {
             inbox.stop = true;
@@ -246,6 +422,71 @@ impl Drop for RenderWorker {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn denoising_cadence_always_finishes_and_handles_resumed_targets() {
+        let mut last = 0;
+        let scheduled: Vec<_> = (1..=37)
+            .filter(|&sample| {
+                if denoise_due(sample, 37, 8, last) {
+                    last = sample;
+                    true
+                } else {
+                    false
+                }
+            })
+            .collect();
+        assert_eq!(scheduled, [8, 16, 32, 37]);
+        assert!(!denoise_due(37, 37, 8, last));
+        assert!(denoise_due(4, 4, 8, 0));
+        assert!(denoise_due(38, 38, 8, last));
+        assert!(!denoise_due(1, 128, 8, 0));
+    }
+
+    #[test]
+    fn denoise_mailbox_discards_old_generations_and_bounds_pending_work() {
+        let queue = DenoiseQueue {
+            inbox: Arc::new((Mutex::new(DenoiseInbox::default()), Condvar::new())),
+            current: Arc::new(AtomicU64::new(1)),
+        };
+        let job = |generation, samples| DenoiseJob {
+            generation,
+            quality: DenoiseQuality::Balanced,
+            exposure: 0.0,
+            input: DenoiseInput {
+                width: 1,
+                height: 1,
+                samples,
+                color: vec![],
+                albedo: vec![],
+                normal: vec![],
+            },
+        };
+        queue.submit(job(1, 8));
+        queue.submit(job(1, 16));
+        assert_eq!(
+            queue
+                .inbox
+                .0
+                .lock()
+                .unwrap()
+                .pending
+                .as_ref()
+                .unwrap()
+                .input
+                .samples,
+            16
+        );
+        queue.set_generation(2);
+        assert!(queue.idle());
+        queue.submit(job(1, 32));
+        assert!(queue.idle());
+        queue.submit(job(2, 8));
+        assert!(!queue.idle());
+        queue.stop();
+        queue.submit(job(2, 16));
+        assert!(queue.inbox.0.lock().unwrap().pending.is_none());
+    }
 
     #[test]
     fn portable_presentation_keeps_dimensions_alpha_and_bgra_channel_order() {

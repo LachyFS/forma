@@ -510,6 +510,8 @@ kernel void render_main(device const Triangle *triangles [[buffer(0)]],
                         constant Uniforms &u [[buffer(2)]],
                         device float4 *accumulation [[buffer(3)]],
                         device const uint *lights [[buffer(4)]],
+                        device float4 *albedo_accumulation [[buffer(6)]],
+                        device float4 *normal_accumulation [[buffer(7)]],
                         texture2d<float, access::write> output [[texture(0)]],
                         uint2 gid [[thread_position_in_grid]]) {
     if (gid.x >= u.image.x || gid.y >= u.image.y) return;
@@ -521,6 +523,19 @@ kernel void render_main(device const Triangle *triangles [[buffer(0)]],
     Hit primary = trace(ray, INFINITY, triangles, nodes, u);
     float3 color;
     if (progressive) {
+        float4 albedo = float4(1.0f);
+        float4 normal = float4(0.0f, 0.0f, 0.0f, 1.0f);
+        if (primary.triangle != NO_HIT) {
+            Surface s = surface_at(ray, primary, triangles);
+            albedo = float4(clamp(s.color, 0.0f, 1.0f), 1.0f);
+            normal = float4(s.normal, 1.0f);
+        }
+        if (u.image.z != 0u) {
+            albedo += albedo_accumulation[index];
+            normal += normal_accumulation[index];
+        }
+        albedo_accumulation[index] = albedo;
+        normal_accumulation[index] = normal;
         color = path_trace(ray, primary, triangles, nodes, lights, u, rng);
     } else if (u.image.w == 0u) {
         color = wireframe_shading(ray, pixel, primary, triangles, nodes, u);

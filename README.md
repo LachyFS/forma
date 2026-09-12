@@ -14,6 +14,7 @@ rounded cube, plinth and emissive area light.
 Install stable Rust and the platform build dependencies below, then run:
 
 ```sh
+python3 scripts/setup-denoiser.py  # Python 3.12+; installs the verified AI denoiser
 cargo run --locked -p forma
 ```
 
@@ -67,7 +68,8 @@ cargo run --locked --release -p forma
   subdivision to the selected mesh.
 - Choose material presets and adjust roughness, metallic response, emission,
   world strength and exposure. Enter arbitrary sRGB base colors and rename objects.
-  Set the progressive sample and bounce limits.
+  Set the progressive sample and bounce limits, with AI denoising for the
+  viewport and PNG renders. See [denoising controls and setup](docs/DENOISING.md).
 - Save `.forma` projects with a versioned object graph, reusable mesh/material
   data, transforms, camera, world and render preferences. Version-1 projects
   migrate on open. Save replacement is atomic; edits support undo/redo.
@@ -127,7 +129,8 @@ chroma on every backend.
 
 This is an initial opaque-surface renderer, with no claim of Blender or Cycles
 feature parity. Transmission/refraction, volumes, subsurface scattering, material
-textures, denoising and adaptive sampling are not implemented. HDR environment
+textures and adaptive sampling are not implemented. Rendered mode supports
+Open Image Denoise for the viewport and PNG exports. HDR environment
 imports currently support Radiance `.hdr` files for Material Preview. Animation,
 sculpting, modifiers beyond destructive subdivision, UV editing and a full
 vertex/edge modelling toolkit are outside the current application. See the

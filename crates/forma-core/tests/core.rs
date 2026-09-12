@@ -483,6 +483,7 @@ fn render_preferences_round_trip_and_follow_undo_redo() {
         exposure: 1.25,
         max_samples: 512,
         max_bounces: 16,
+        ..Default::default()
     };
     scene.render = preferences;
     scene.save(&path).unwrap();
@@ -735,7 +736,42 @@ fn render_preference_validation_rejects_nonfinite_and_out_of_range_values() {
             exposure,
             max_samples,
             max_bounces,
+            ..Default::default()
         };
         scene.validate().unwrap();
+    }
+}
+
+#[test]
+fn denoising_preferences_migrate_round_trip_and_validate() {
+    use forma_core::{DenoiseQuality, DenoiseSettings};
+    let mut scene = empty_scene();
+    scene.render.denoise = DenoiseSettings {
+        viewport: false,
+        render: true,
+        start_sample: 32,
+        quality: DenoiseQuality::High,
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("denoise.forma");
+    scene.save(&path).unwrap();
+    assert_eq!(
+        Scene::load(&path).unwrap().render.denoise,
+        scene.render.denoise
+    );
+    let mut document: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    document["scene"]["render"]
+        .as_object_mut()
+        .unwrap()
+        .remove("denoise");
+    std::fs::write(&path, serde_json::to_vec(&document).unwrap()).unwrap();
+    assert_eq!(
+        Scene::load(&path).unwrap().render.denoise,
+        DenoiseSettings::default()
+    );
+    for start_sample in [0, 4097] {
+        scene.render.denoise.start_sample = start_sample;
+        assert!(scene.validate().is_err());
     }
 }

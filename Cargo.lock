@@ -1839,6 +1839,7 @@ dependencies = [
  "forma-core",
  "glam",
  "image",
+ "libloading",
  "metal 0.29.0",
  "naga 27.0.3",
  "objc",

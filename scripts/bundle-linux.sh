@@ -23,6 +23,7 @@ if [[ -L "$bundle" ]]; then
 fi
 mkdir -p -- "$bundle/bin" "$bundle/share/applications" "$bundle/share/icons/hicolor/64x64/apps" "$bundle/share/icons/hicolor/scalable/apps"
 install -m 755 "$output/forma" "$bundle/bin/forma"
+python3 scripts/setup-denoiser.py --output-dir "$bundle/bin/oidn"
 install -m 644 README.md "$bundle/README.md"
 install -m 644 assets/Forma-64.png "$bundle/share/icons/hicolor/64x64/apps/forma.png"
 install -m 644 assets/Forma.svg "$bundle/share/icons/hicolor/scalable/apps/forma.svg"
