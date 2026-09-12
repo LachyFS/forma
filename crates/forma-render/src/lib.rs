@@ -4,6 +4,9 @@
 //! implementation uses Metal, DirectX 12, or Vulkan behind the same render API.
 
 mod bvh;
+mod denoise;
+pub use denoise::{DenoiseInput, Denoiser};
+pub use forma_core::{DenoiseQuality, DenoiseSettings};
 mod environment;
 #[cfg(target_os = "macos")]
 mod native;
@@ -101,6 +104,7 @@ pub struct RenderSettings {
     pub show_grid: bool,
     pub selected: Option<u64>,
     pub preview: PreviewSettings,
+    pub denoise: DenoiseSettings,
 }
 
 impl Default for RenderSettings {
@@ -115,6 +119,7 @@ impl Default for RenderSettings {
             show_grid: true,
             selected: None,
             preview: PreviewSettings::default(),
+            denoise: DenoiseSettings::default(),
         }
     }
 }

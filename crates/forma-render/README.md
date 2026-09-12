@@ -71,6 +71,16 @@ Polygon boundaries and 45-degree normal creases are preserved. Geometry and GPU
 buffers persist across samples and camera moves. A scene revision triggers a
 geometry fingerprint; an unchanged fingerprint avoids rebuilding or uploading.
 
+## AI denoising
+
+Rendered accumulates antialiased albedo and signed world-space normal guides
+with the beauty film. Open Image Denoise processes normalized HDR snapshots
+before the display transform, leaving the estimator unchanged. The application
+uses asynchronous viewport updates and High quality final exports with accurate
+guide prefiltering. `read_denoise_input` and `export_denoised_png` provide explicit
+APIs; raw `render`, `read_linear_pixels` and `export_png` behavior is unchanged.
+See [the denoising design, setup and tests](../../docs/DENOISING.md).
+
 ## Backend selection
 
 `Renderer::new()` honors `FORMA_RENDERER`, defaulting to `auto`.
@@ -149,7 +159,7 @@ SPIR-V, MSL and HLSL without a GPU. See [platform validation](../../docs/PLATFOR
 
 This is a foundational path tracer, not Cycles feature parity. Transmission,
 refraction, volumes, subsurface scattering, anisotropy, material texture maps,
-denoising, adaptive sampling, motion blur and animation are not yet
+adaptive sampling, motion blur and animation are not yet
 implemented. Very smooth roughness values are bounded at 0.025 to avoid a delta
 BSDF singularity. GGX uses single scattering, so rough metals lose the energy
 that a multiple-scattering model would recover. Mesh lights are sampled uniformly

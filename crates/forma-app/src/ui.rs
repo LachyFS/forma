@@ -2,7 +2,7 @@
 use crate::app::{Command, Field, Studio, Tool};
 use crate::platform_shortcut;
 use crate::shading_pie::{CARD_HALF_SIZE, CHOICES};
-use forma_core::Primitive;
+use forma_core::{DenoiseQuality, Primitive};
 use forma_render::{RenderMode, StudioLight};
 use gpui::{prelude::*, *};
 
@@ -99,6 +99,9 @@ fn command_hint(command: Command) -> &'static str {
         Command::Extrude => "Extrude selected face · E",
         Command::Subdivide => "Subdivide selected mesh",
         Command::ToggleGrid => "Toggle ground grid",
+        Command::ToggleViewportDenoise => "AI denoising for the Rendered viewport",
+        Command::ToggleRenderDenoise => "High quality AI denoising for PNG renders",
+        Command::SetDenoiseQuality(_) => "Viewport denoising quality · exports always use High",
         Command::MaterialPreset(_) => "Apply surface preset",
         Command::TogglePalette => {
             platform_shortcut("Workspace commands · ⌘ K", "Workspace commands · Ctrl+K")
@@ -1065,43 +1068,161 @@ fn render_settings(s: &Studio, cx: &mut Context<Studio>) -> AnyElement {
             },
         )
         .when(progressive, |d| {
-            d.child(
-                row()
-                    .mt(px(10.))
-                    .justify_between()
-                    .text_size(px(10.))
-                    .text_color(rgb(FAINT))
-                    .child("SAMPLES")
-                    .child(
-                        div()
-                            .text_color(rgb(MUTED))
-                            .child(format!("{} / {}", s.samples, s.settings.max_samples)),
-                    ),
-            )
+            d.child(denoise_settings(s, cx))
+                .child(
+                    row()
+                        .mt(px(10.))
+                        .justify_between()
+                        .text_size(px(10.))
+                        .text_color(rgb(FAINT))
+                        .child("SAMPLES")
+                        .child(
+                            div()
+                                .text_color(rgb(MUTED))
+                                .child(format!("{} / {}", s.samples, s.settings.max_samples)),
+                        ),
+                )
+                .child(
+                    div()
+                        .h(px(3.))
+                        .mt(px(6.))
+                        .rounded_full()
+                        .bg(rgb(WELL))
+                        .child(
+                            div()
+                                .h_full()
+                                .rounded_full()
+                                .w(relative(
+                                    (s.samples as f32 / s.settings.max_samples.max(1) as f32)
+                                        .clamp(0., 1.),
+                                ))
+                                .bg(rgb(ACCENT)),
+                        ),
+                )
+        })
+        .into_any_element()
+}
+
+fn denoise_settings(s: &Studio, cx: &mut Context<Studio>) -> AnyElement {
+    let settings = s.settings.denoise;
+    let clean = s.denoised_generation.is_some() && s.samples > 0;
+    let status = if !settings.viewport {
+        "Original samples".to_string()
+    } else if s.denoise_error.is_some() {
+        "Unavailable · showing original samples".to_string()
+    } else if clean {
+        let frame = s.frame.as_ref().unwrap();
+        format!(
+            "Denoised · {} samples · {}",
+            frame.samples,
+            frame.denoise_device.as_deref().unwrap_or("Auto")
+        )
+    } else if s.samples < settings.start_sample.min(s.settings.max_samples) {
+        format!(
+            "Starts at sample {}",
+            settings.start_sample.min(s.settings.max_samples)
+        )
+    } else {
+        "Denoising…".to_string()
+    };
+    col()
+        .mt(px(14.))
+        .pt(px(12.))
+        .border_t_1()
+        .border_color(rgb(LINE))
+        .child(section("AI DENOISING"))
+        .child(preview_toggle(
+            "viewport-denoise",
+            "Viewport",
+            "Clean up progressive renders",
+            settings.viewport,
+            Command::ToggleViewportDenoise,
+            cx,
+        ))
+        .when(settings.viewport, |d| {
+            d.child(property(
+                s,
+                "denoise-start",
+                "Start sample",
+                Field::DenoiseStart,
+                cx,
+            ))
             .child(
-                div()
-                    .h(px(3.))
-                    .mt(px(6.))
-                    .rounded_full()
-                    .bg(rgb(WELL))
+                row()
+                    .h(px(30.))
+                    .justify_between()
+                    .child(div().text_color(rgb(MUTED)).child("Quality"))
                     .child(
-                        div()
-                            .h_full()
-                            .rounded_full()
-                            .w(relative(
-                                (s.samples as f32 / s.settings.max_samples.max(1) as f32)
-                                    .clamp(0., 1.),
-                            ))
-                            .bg(rgb(ACCENT)),
+                        row().gap(px(2.)).children(
+                            [
+                                DenoiseQuality::Fast,
+                                DenoiseQuality::Balanced,
+                                DenoiseQuality::High,
+                            ]
+                            .into_iter()
+                            .map(|quality| {
+                                action(
+                                    format!("denoise-quality-{}", quality as usize),
+                                    Command::SetDenoiseQuality(quality),
+                                    cx,
+                                )
+                                .px(px(7.))
+                                .h(px(23.))
+                                .rounded(px(4.))
+                                .text_size(px(10.))
+                                .bg(rgb(if settings.quality == quality {
+                                    ACTIVE
+                                } else {
+                                    WELL
+                                }))
+                                .text_color(rgb(if settings.quality == quality {
+                                    ACCENT
+                                } else {
+                                    MUTED
+                                }))
+                                .child(quality.label())
+                            }),
+                        ),
                     ),
             )
         })
+        .child(preview_toggle(
+            "export-denoise",
+            "Render export",
+            "High quality · accurate prefilter",
+            settings.render,
+            Command::ToggleRenderDenoise,
+            cx,
+        ))
+        .child(
+            div()
+                .mt(px(5.))
+                .text_size(px(10.))
+                .text_color(rgb(if s.denoise_error.is_some() {
+                    ALERT
+                } else if clean {
+                    ACCENT
+                } else {
+                    MUTED
+                }))
+                .child(status),
+        )
+        .child(
+            div()
+                .mt(px(4.))
+                .text_size(px(9.))
+                .text_color(rgb(FAINT))
+                .child("Open Image Denoise · Albedo + Normal"),
+        )
         .into_any_element()
 }
 
 fn inspector(s: &Studio, cx: &mut Context<Studio>) -> AnyElement {
     let object = s.selected_object();
     let mut contents = col();
+    if s.settings.mode.progressive() {
+        contents = contents.child(render_settings(s, cx));
+    }
     if let Some(object) = object {
         let base = object.material.base_color;
         contents = contents
@@ -1288,7 +1409,7 @@ fn inspector(s: &Studio, cx: &mut Context<Studio>) -> AnyElement {
                 ),
         );
     }
-    if s.settings.mode == RenderMode::MaterialPreview || s.settings.mode.progressive() {
+    if s.settings.mode == RenderMode::MaterialPreview {
         contents = contents.child(render_settings(s, cx));
     }
     col()
