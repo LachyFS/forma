@@ -2,6 +2,7 @@ mod app;
 mod render_worker;
 mod shading_pie;
 mod smoke;
+mod theme;
 #[cfg(target_os = "macos")]
 mod trackpad;
 mod ui;
@@ -28,6 +29,7 @@ actions!(
         Undo,
         Redo,
         Commands,
+        ColorTheme,
         Help,
         Quit
     ]
@@ -121,6 +123,11 @@ fn main() -> Result<()> {
             }
         })
         .detach();
+        // Smoke tests use an isolated preference file and never change the user's theme.
+        let theme_path = smoke_output
+            .as_ref()
+            .map(|output| output.join("preferences/color-theme"))
+            .or_else(theme::preference_path);
         let bounds = Bounds::centered(None, size(px(1512.), px(960.)), cx);
         let window = cx
             .open_window(
@@ -135,7 +142,7 @@ fn main() -> Result<()> {
                     }),
                     ..Default::default()
                 },
-                |window, cx| cx.new(|cx| Studio::new(backend, window, cx)),
+                |window, cx| cx.new(|cx| Studio::new(backend, theme_path, window, cx)),
             )
             .expect("could not open Forma window");
         macro_rules! register {
@@ -155,6 +162,7 @@ fn main() -> Result<()> {
         register!(Undo, Command::Undo);
         register!(Redo, Command::Redo);
         register!(Commands, Command::TogglePalette);
+        register!(ColorTheme, Command::ToggleTheme);
         register!(Help, Command::ToggleHelp);
         cx.on_action(move |_: &Quit, cx| {
             let _ = window.update(cx, |s, w, cx| {
@@ -200,6 +208,7 @@ fn main() -> Result<()> {
                 name: "View".into(),
                 items: vec![
                     MenuItem::action("Commands", Commands),
+                    MenuItem::action("Color Theme…", ColorTheme),
                     MenuItem::action("Keyboard shortcuts", Help),
                 ],
             },
