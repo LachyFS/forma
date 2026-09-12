@@ -1,7 +1,8 @@
 use crate::render_worker::{RenderWorker, Request};
 use crate::shading_pie::ShadingPie;
+use crate::{command_modifier, platform_shortcut};
 use forma_core::{History, Material, MeshInstance, Object, Primitive, Scene};
-use forma_render::{Frame, PreviewSettings, RenderMode, RenderSettings, StudioLight};
+use forma_render::{Backend, Frame, PreviewSettings, RenderMode, RenderSettings, StudioLight};
 use glam::{Vec2, Vec3};
 use gpui::{prelude::*, *};
 use std::{cell::Cell, path::PathBuf, rc::Rc, sync::Arc};
@@ -111,6 +112,7 @@ pub struct Studio {
     pub(crate) bounds: Rc<Cell<Bounds<Pixels>>>,
     pub(crate) viewport_scale: f32,
     pub(crate) frame: Option<Frame>,
+    pub(crate) frame_image: Option<Arc<RenderImage>>,
     pub(crate) last_mouse: Vec2,
     pub(crate) navigation: Option<(MouseButton, bool)>,
     pub(crate) trackpad_gesture: crate::viewport::TrackpadGesture,
@@ -135,12 +137,18 @@ pub struct Studio {
 }
 
 impl Studio {
-    pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
+    pub fn new(backend: Backend, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let focus = cx.focus_handle();
         window.focus(&focus);
         let scene = Scene::default();
         let selected = scene.objects.first().map(|o| o.id);
-        let (worker, notifications) = RenderWorker::new();
+        let (worker, notifications) = RenderWorker::new(backend);
+        cx.on_release(|studio, cx| {
+            if let Some(image) = studio.frame_image.take() {
+                cx.drop_image(image, None);
+            }
+        })
+        .detach();
         cx.spawn(async move |this, cx| {
             while notifications.recv().await.is_ok() {
                 if this.update(cx, |this, cx| this.receive_output(cx)).is_err() {
@@ -187,7 +195,7 @@ impl Studio {
             },
             samples: 0,
             render_ms: 0.,
-            device_name: "Starting Metal…".into(),
+            device_name: "Starting GPU renderer…".into(),
             status: "Ready · Select an object to begin".into(),
             project_name: "Studio study".into(),
             dirty: false,
@@ -205,6 +213,7 @@ impl Studio {
             bounds: Rc::new(Cell::new(Bounds::default())),
             viewport_scale: window.scale_factor(),
             frame: None,
+            frame_image: None,
             last_mouse: Vec2::ZERO,
             navigation: None,
             trackpad_gesture: Default::default(),
@@ -313,7 +322,7 @@ impl Studio {
                 self.device_name = name;
                 changed = true;
             }
-            if let Some((generation, frame)) = output.frame.take() {
+            if let Some((generation, frame, image)) = output.frame.take() {
                 // Display the latest completed work while input advances. Requiring an
                 // exact generation here would starve presentation throughout a drag.
                 self.samples = if generation == self.generation {
@@ -323,6 +332,11 @@ impl Studio {
                 };
                 self.render_ms = frame.elapsed_ms;
                 self.frame = Some(frame);
+                // Each completed frame has a unique image ID. Evict its predecessor
+                // from GPUI's GPU atlas as well as releasing its CPU pixels.
+                if let Some(previous) = std::mem::replace(&mut self.frame_image, image) {
+                    cx.drop_image(previous, None);
+                }
                 self.render_error = None;
                 changed = true;
             }
@@ -475,7 +489,11 @@ impl Studio {
                     self.selected = None;
                     self.selected_face = None;
                     self.dirty = true;
-                    self.status = "Object deleted · ⌘Z to undo".into();
+                    self.status = platform_shortcut(
+                        "Object deleted · ⌘Z to undo",
+                        "Object deleted · Ctrl+Z to undo",
+                    )
+                    .into();
                     self.invalidate(true, cx);
                 }
             }
@@ -1297,7 +1315,7 @@ impl Studio {
             let commands = palette_commands(&self.palette_query);
             match key {
                 "escape" => self.palette_open = false,
-                "k" if mods.platform => self.palette_open = false,
+                "k" if command_modifier(mods) => self.palette_open = false,
                 "up" => self.palette_index = self.palette_index.saturating_sub(1),
                 "down" => {
                     self.palette_index =
@@ -1385,7 +1403,7 @@ impl Studio {
                         self.open_shading_pie(Vec2::new(pointer.x.into(), pointer.y.into()), cx);
                     }
                 }
-                "k" if mods.platform => self.execute(Command::TogglePalette, window, cx),
+                "k" if command_modifier(mods) => self.execute(Command::TogglePalette, window, cx),
                 _ => {}
             }
             cx.stop_propagation();
@@ -1424,7 +1442,7 @@ impl Studio {
             cx.stop_propagation();
             return;
         }
-        let command = if mods.platform || mods.control {
+        let command = if command_modifier(mods) {
             match key {
                 "s" if mods.shift => Some(Command::SaveAs),
                 "s" => Some(Command::Save),
@@ -1432,10 +1450,13 @@ impl Studio {
                 "n" => Some(Command::New),
                 "z" if mods.shift => Some(Command::Redo),
                 "z" => Some(Command::Undo),
+                "y" if cfg!(not(target_os = "macos")) => Some(Command::Redo),
                 "d" => Some(Command::Duplicate),
                 "k" => Some(Command::TogglePalette),
                 _ => None,
             }
+        } else if mods.platform || mods.control {
+            None
         } else {
             match key {
                 "escape" => {
@@ -1541,10 +1562,26 @@ fn srgb_to_linear(value: f32) -> f32 {
 pub(crate) fn palette_commands(query: &str) -> Vec<(&'static str, &'static str, Command)> {
     let query = query.to_lowercase();
     [
-        ("New project", "⌘ N", Command::New),
-        ("Open project…", "⌘ O", Command::Open),
-        ("Save project", "⌘ S", Command::Save),
-        ("Save project as…", "⇧ ⌘ S", Command::SaveAs),
+        (
+            "New project",
+            platform_shortcut("⌘ N", "Ctrl+N"),
+            Command::New,
+        ),
+        (
+            "Open project…",
+            platform_shortcut("⌘ O", "Ctrl+O"),
+            Command::Open,
+        ),
+        (
+            "Save project",
+            platform_shortcut("⌘ S", "Ctrl+S"),
+            Command::Save,
+        ),
+        (
+            "Save project as…",
+            platform_shortcut("⇧ ⌘ S", "Ctrl+Shift+S"),
+            Command::SaveAs,
+        ),
         ("Add cube", "", Command::Add(Primitive::Cube)),
         ("Add sphere", "", Command::Add(Primitive::Sphere)),
         ("Add cylinder", "", Command::Add(Primitive::Cylinder)),

@@ -1,5 +1,3 @@
-#![cfg(target_os = "macos")]
-
 use std::{
     path::PathBuf,
     sync::atomic::{AtomicUsize, Ordering},
@@ -85,7 +83,9 @@ fn object_patch(image: &RgbImage) -> Vec<u8> {
 
 fn channel_sum(image: &RgbImage, channel: usize) -> u64 {
     object_patch(image)
-        .chunks_exact(3)
+        .as_chunks::<3>()
+        .0
+        .iter()
         .map(|pixel| pixel[channel] as u64)
         .sum()
 }

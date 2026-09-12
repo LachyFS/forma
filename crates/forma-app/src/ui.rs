@@ -1,5 +1,6 @@
 //! Native workspace chrome. Rendering and interaction state live in `Studio`.
 use crate::app::{Command, Field, Studio, Tool};
+use crate::platform_shortcut;
 use crate::shading_pie::{CARD_HALF_SIZE, CHOICES};
 use forma_core::Primitive;
 use forma_render::{RenderMode, StudioLight};
@@ -21,7 +22,7 @@ pub(crate) const ACCENT: u32 = 0x84cfba;
 pub(crate) const ACCENT_LINE: u32 = 0x4a7266;
 pub(crate) const ACTIVE: u32 = 0x1d302c;
 const ACTIVE_HOVER: u32 = 0x25403a;
-const ALERT: u32 = 0xd7a175;
+pub(crate) const ALERT: u32 = 0xd7a175;
 /// Fully transparent fill for the resting state of ghost controls.
 fn clear() -> Rgba {
     rgba(0x00000000)
@@ -60,10 +61,12 @@ impl Render for Tooltip {
 
 fn command_hint(command: Command) -> &'static str {
     match command {
-        Command::New => "New project · ⌘ N",
-        Command::Open => "Open project · ⌘ O",
-        Command::Save => "Save project · ⌘ S",
-        Command::SaveAs => "Save project as · ⇧ ⌘ S",
+        Command::New => platform_shortcut("New project · ⌘ N", "New project · Ctrl+N"),
+        Command::Open => platform_shortcut("Open project · ⌘ O", "Open project · Ctrl+O"),
+        Command::Save => platform_shortcut("Save project · ⌘ S", "Save project · Ctrl+S"),
+        Command::SaveAs => {
+            platform_shortcut("Save project as · ⇧ ⌘ S", "Save project as · Ctrl+Shift+S")
+        }
         Command::ImportObj => "Import Wavefront OBJ",
         Command::ExportObj => "Export scene geometry as OBJ",
         Command::ExportImage => "Export current rendered image as PNG",
@@ -76,8 +79,8 @@ fn command_hint(command: Command) -> &'static str {
         Command::ToggleVisible(_) => "Toggle object visibility",
         Command::Delete => "Delete selection · Delete",
         Command::Duplicate => "Duplicate selection · ⇧ D",
-        Command::Undo => "Undo · ⌘ Z",
-        Command::Redo => "Redo · ⇧ ⌘ Z",
+        Command::Undo => platform_shortcut("Undo · ⌘ Z", "Undo · Ctrl+Z"),
+        Command::Redo => platform_shortcut("Redo · ⇧ ⌘ Z", "Redo · Ctrl+Shift+Z"),
         Command::FrameSelected => "Frame selected · F",
         Command::ViewFront => "Front view · 1",
         Command::ViewRight => "Right view · 3",
@@ -97,7 +100,9 @@ fn command_hint(command: Command) -> &'static str {
         Command::Subdivide => "Subdivide selected mesh",
         Command::ToggleGrid => "Toggle ground grid",
         Command::MaterialPreset(_) => "Apply surface preset",
-        Command::TogglePalette => "Workspace commands · ⌘ K",
+        Command::TogglePalette => {
+            platform_shortcut("Workspace commands · ⌘ K", "Workspace commands · Ctrl+K")
+        }
         Command::ToggleHelp => "Keyboard reference · ?",
         Command::TogglePreviewSettings => "Material preview lighting",
         Command::SetPreviewStudio(_) => "Use this studio environment for material preview",
@@ -488,7 +493,7 @@ fn titlebar(s: &Studio, cx: &mut Context<Studio>) -> AnyElement {
     row()
         .h(px(44.))
         .flex_shrink_0()
-        .pl(px(80.))
+        .pl(px(if cfg!(target_os = "macos") { 80. } else { 12. }))
         .pr(px(12.))
         .gap(px(12.))
         .border_b_1()
@@ -541,7 +546,7 @@ fn titlebar(s: &Studio, cx: &mut Context<Studio>) -> AnyElement {
                 s.palette_open,
                 cx,
             )
-            .child(key("⌘K")),
+            .child(key(platform_shortcut("⌘K", "Ctrl+K"))),
         )
         .child(divider())
         .child(button(
@@ -1894,8 +1899,11 @@ fn help_overlay(cx: &mut Context<Studio>) -> AnyElement {
                     ("Shift + middle drag", "Pan view"),
                     ("Two fingers", "Orbit view"),
                     ("Shift + two fingers", "Pan view"),
-                    ("Pinch / wheel", "Zoom"),
-                    ("Ctrl / ⌘ + two fingers", "Zoom"),
+                    (platform_shortcut("Pinch / wheel", "Mouse wheel"), "Zoom"),
+                    (
+                        platform_shortcut("Ctrl / ⌘ + two fingers", "Ctrl + two fingers"),
+                        "Zoom",
+                    ),
                     ("F", "Frame selection"),
                     ("1 / 3 / 7", "Front / right / top"),
                     ("5", "Toggle projection"),
@@ -1920,9 +1928,15 @@ fn help_overlay(cx: &mut Context<Studio>) -> AnyElement {
                 ("Z", "Shading pie · hold and flick"),
                 ("4 / 6 / 2 / 8", "Modes inside the pie"),
                 ("X / C / V", "Solid / material / rendered"),
-                ("⌘ Z / ⇧ ⌘ Z", "Undo / redo"),
-                ("⌘ S / ⌘ O", "Save / open"),
-                ("⌘ K", "Workspace commands"),
+                (
+                    platform_shortcut("⌘ Z / ⇧ ⌘ Z", "Ctrl+Z / Ctrl+Shift+Z"),
+                    "Undo / redo",
+                ),
+                (
+                    platform_shortcut("⌘ S / ⌘ O", "Ctrl+S / Ctrl+O"),
+                    "Save / open",
+                ),
+                (platform_shortcut("⌘ K", "Ctrl+K"), "Workspace commands"),
                 ("?", "This reference"),
             ],
         )],
@@ -1943,7 +1957,12 @@ fn help_overlay(cx: &mut Context<Studio>) -> AnyElement {
             col()
                 .id("help-panel")
                 .occlude()
-                .w(px(600.))
+                .w(px(if cfg!(target_os = "macos") {
+                    600.
+                } else {
+                    760.
+                }))
+                .max_w(relative(0.92))
                 .max_h(relative(0.88))
                 .overflow_y_scroll()
                 .rounded(px(12.))
@@ -2199,7 +2218,7 @@ pub fn render(studio: &Studio, viewport: AnyElement, cx: &mut Context<Studio>) -
         .bg(rgb(SHELL))
         .text_color(rgb(TEXT))
         .text_size(px(11.))
-        .font_family(".AppleSystemUIFont")
+        .font_family(".SystemUIFont")
         .child(titlebar(studio, cx))
         .child(toolbar(studio, cx))
         .child(

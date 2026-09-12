@@ -1,5 +1,3 @@
-#![cfg(target_os = "macos")]
-
 use std::{f32::consts::PI, path::PathBuf};
 
 use forma_core::{Primitive, Scene};

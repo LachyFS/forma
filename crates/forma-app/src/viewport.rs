@@ -125,11 +125,18 @@ impl Studio {
                 selected_face,
             )
         });
-        let frame = self.frame.clone();
+        #[cfg(target_os = "macos")]
+        let surface = self
+            .frame
+            .as_ref()
+            .and_then(|frame| frame.native_surface())
+            .cloned();
+        let frame_image = self.frame_image.clone();
         let view = self.scene.camera.view_matrix();
         let camera = self.scene.camera;
         let bounds_cell = self.bounds.clone();
         let studio = cx.weak_entity();
+        let presentation_studio = cx.weak_entity();
         let edit_mode = self.edit_mode;
         let tool = self.tool;
         let axis = self.transform_drag.as_ref().and_then(|d| d.axis);
@@ -143,9 +150,25 @@ impl Studio {
                     });
                 }
             },
-            move |bounds, _, window, _| {
-                if let Some(frame) = frame {
-                    window.paint_surface(bounds, frame.surface);
+            move |bounds, _, window, cx| {
+                #[cfg(target_os = "macos")]
+                if let Some(surface) = surface {
+                    window.paint_surface(bounds, surface);
+                }
+                if let Some(image) = frame_image
+                    && let Err(error) =
+                        window.paint_image(bounds, Default::default(), image, 0, false)
+                {
+                    let error = format!("Viewport presentation failed: {error:#}");
+                    cx.defer(move |cx| {
+                        let _ = presentation_studio.update(cx, |s, cx| {
+                            if s.render_error.as_ref() != Some(&error) {
+                                s.status = error.clone();
+                                s.render_error = Some(error);
+                                cx.notify();
+                            }
+                        });
+                    });
                 }
                 let aspect = f32::from(bounds.size.width) / f32::from(bounds.size.height).max(1.);
                 let matrix = camera.projection_matrix(aspect) * view;
@@ -269,9 +292,19 @@ impl Studio {
                     .flex()
                     .items_center()
                     .justify_center()
+                    .p(px(24.))
+                    .text_center()
                     .text_size(px(12.))
-                    .text_color(rgb(crate::ui::MUTED))
-                    .child("Preparing the Metal viewport…"),
+                    .text_color(rgb(if self.render_error.is_some() {
+                        crate::ui::ALERT
+                    } else {
+                        crate::ui::MUTED
+                    }))
+                    .child(
+                        self.render_error
+                            .clone()
+                            .unwrap_or_else(|| "Preparing the GPU viewport…".into()),
+                    ),
             );
         }
         if let Some(drag) = &self.transform_drag {
@@ -453,10 +486,9 @@ impl Studio {
             } else {
                 let delta = position - self.last_mouse;
                 if pan {
-                    self.scene.camera.pan_in_viewport(
-                        delta,
-                        f32::from(self.bounds.get().size.height),
-                    );
+                    self.scene
+                        .camera
+                        .pan_in_viewport(delta, f32::from(self.bounds.get().size.height));
                 } else {
                     self.scene.camera.orbit(delta);
                 }

@@ -1,7 +1,9 @@
 # Forma renderer
 
-Native macOS Metal compute renderer with a GPUI surface display path. Build and
-run on a Mac with a Metal GPU; there is no browser or software pixel renderer.
+Native Metal and portable wgpu compute renderers behind one `Renderer` API.
+macOS defaults to the existing native Metal implementation; Windows uses wgpu
+DirectX 12 and Linux uses wgpu Vulkan. wgpu Metal is also available on macOS.
+Every backend implements all four modes, HDR lighting, and PNG export.
 
 ## Modes
 
@@ -18,9 +20,9 @@ has its own immediate shading pipeline; Rendered performs progressive path traci
 ## Material Preview
 
 Primary visibility uses the same triangle geometry and smooth normals as the
-other modes. On devices supporting Metal ray tracing, a cached primitive acceleration
-structure handles preview primary, antialiasing, AO and selection rays. Other devices
-use software BVH traversal. Both paths keep four fixed antialiasing samples and eight
+other modes. On the native macOS backend with devices supporting Metal ray tracing, a cached primitive acceleration
+structure handles preview primary, antialiasing, AO and selection rays. Other native devices and all wgpu backends use the same BVH in GPU compute.
+ Both paths keep four fixed antialiasing samples and eight
 nearest-hit contact rays; navigation never reduces resolution or sampling quality.
 The acceleration structure is built only when needed after geometry changes and
 is reused by camera updates. This follows [Metal's acceleration-structure model](https://developer.apple.com/documentation/metal/ray-tracing-with-acceleration-structures).
@@ -69,6 +71,21 @@ Polygon boundaries and 45-degree normal creases are preserved. Geometry and GPU
 buffers persist across samples and camera moves. A scene revision triggers a
 geometry fingerprint; an unchanged fingerprint avoids rebuilding or uploading.
 
+## Backend selection
+
+`Renderer::new()` honors `FORMA_RENDERER`, defaulting to `auto`.
+`Renderer::with_backend(Backend::Wgpu)` chooses wgpu's platform API;
+`Backend::Metal`, `Backend::Dx12`, `Backend::Vulkan` and `Backend::NativeMetal`
+select an explicit implementation. `backend()` and `device_name()` report the
+actual selection. Unavailable APIs return an actionable error.
+
+Shader source is embedded in the executable. WGSL implements the existing Metal
+transport equations and editor modes. Uniform layout, geometry fingerprints,
+BVH construction, procedural lights and bounded HDR decoding are shared Rust.
+Float32 environment sampling uses explicit interpolation, avoiding optional
+float32 texture-filtering requirements on adapters. Preview lighting preparation
+uses GPU compute and a bounded four-environment cache.
+
 ## Display and lifetime
 
 `Renderer` belongs to a render worker. `render` waits for one GPU sample and
@@ -78,7 +95,7 @@ mode and bounce count reset Rendered accumulation; viewport overlays reset only
 the modes that display them. Raising the Rendered sample target
 resumes it. Increment the scene revision after geometry or material changes.
 
-The RGBA film is GPU-converted to full-range BT.601 NV12 because GPUI 0.2.2's
+On native Metal, the RGBA film is GPU-converted to full-range BT.601 NV12 because GPUI 0.2.2's
 macOS compositor explicitly requires that pixel format. An IOSurface-backed
 CoreVideo pixel-buffer pool supplies the two Metal output planes. Frames retain
 their pixel buffer; the renderer never overwrites a published frame. Metal
@@ -86,8 +103,24 @@ texture wrappers remain alive through GPU completion. The pool can recycle
 storage after consumers release it. Normal display performs no CPU pixel copy.
 Odd render dimensions round up to even dimensions for 4:2:0 chroma.
 
-`export_png` is an explicit readback of the full-resolution RGB film, preserving
-RGB chroma rather than exporting the subsampled display surface. Export saves the
+wgpu keeps geometry and accumulation resident on the GPU. After each completed
+sample it copies the RGBA8 display film into a reusable aligned staging buffer,
+unpads the rows, and publishes immutable `Arc<[u8]>` pixels. The app prepares a
+BGRA `RenderImage` on the worker and uploads it through GPUI's image compositor.
+Old atlas entries are removed as frames are replaced. This portable display
+path adds a CPU transfer and texture upload per frame; it is not zero-copy.
+Retained frames remain valid through resize and renderer destruction.
+
+`Frame` exposes `width()`, `height()`, `rgba()`, and, on macOS, `native_surface()`.
+Use `same_surface()` to test allocation identity without comparing pixels.
+`read_linear_pixels()` explicitly returns normalized scene-linear RGBA for
+numerical checks. GPU allocation, validation, mapping, and completion errors are
+returned as `Result` errors. The portable renderer checks adapter limits before
+allocating geometry or film storage.
+
+`export_png` saves the full-resolution RGB film, preserving RGB chroma rather
+than exporting the subsampled native display surface. Native Metal reads the film
+on demand; wgpu reuses the completed RGBA readback. Export saves the
 current mode and its current sample count.
 
 ## Validation
@@ -98,7 +131,7 @@ cargo run -p forma-render --bin render-smoke -- artifacts/render 128
 cargo run --release -p forma-render --bin navigation-bench -- artifacts/navigation
 ```
 
-The tests execute real Metal kernels and cover film reset/resume, mode behavior,
+The tests execute the selected backend’s real GPU kernels and cover film reset/resume, mode behavior,
 black-world lighting, preview/world independence, BVH enclosure/coverage,
 original edges, nonuniform-scale smoothing, retained surface handoff, and
 floating-point radiometry. Dedicated preview tests cover single-frame completion,
@@ -108,8 +141,9 @@ geometry, contact AO, selection occlusion, cache lifetime, empty scenes and Rend
 compatibility. The navigation benchmark measures 40 warmed camera updates at
 2020 × 1390 and reports median/p95 latency without imposing device-specific thresholds.
 The smoke tool
-writes all four modes to PNG and reports measured sample cost. Tests require a
-Metal GPU and should run on a macOS runner.
+writes all four modes to PNG and reports measured sample cost. The shared tests run on all three operating systems. Native acceleration and
+Metal/wgpu parity tests run on macOS. Shader tests validate WGSL and generate
+SPIR-V, MSL and HLSL without a GPU. See [platform validation](../../docs/PLATFORMS.md).
 
 ## Deliberate scope
 
@@ -120,5 +154,5 @@ implemented. Very smooth roughness values are bounded at 0.025 to avoid a delta
 BSDF singularity. GGX uses single scattering, so rough metals lose the energy
 that a multiple-scattering model would recover. Mesh lights are sampled uniformly
 by triangle, which is unbiased but can be noisy for uneven emitter tessellation.
-Rendered uses a software BVH in Metal compute; preview acceleration does not change
+Rendered uses a software BVH in GPU compute; native preview acceleration does not change
 its estimator or sample sequence.
