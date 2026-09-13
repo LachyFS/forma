@@ -1,5 +1,17 @@
 # Implementation validation
 
+## Rust 1.92.0 compatibility (2026-09-13)
+
+The repository now pins Rust 1.92.0. All **113 workspace tests**, strict workspace
+Clippy and formatting checks passed using that toolchain and the existing
+`Cargo.lock`; dependency versions were unchanged. The real OIDN runtime test
+passed separately on the automatically selected GPU.
+Renderer Clippy with `--all-targets -- -D warnings`
+passed for `aarch64-apple-darwin` and `x86_64-pc-windows-msvc`. The older Clippy
+required simplifying one nested `else if` in native Metal pipeline selection,
+with the same selection behavior. These cross-compilation checks do not establish
+native macOS or Windows execution.
+
 ## Denoising merge validation (2026-09-12)
 
 Validated denoising together with the current material shaders, compact panels,

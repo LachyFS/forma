@@ -404,15 +404,13 @@ impl Renderer {
                     .as_ref()
                     .map(|p| &p.1)
                     .unwrap_or(&self.preview_pipeline)
+            } else if settings.mode == RenderMode::Rendered {
+                self.custom_pipelines
+                    .as_ref()
+                    .map(|p| &p.0)
+                    .unwrap_or(&self.render_pipeline)
             } else {
-                if settings.mode == RenderMode::Rendered {
-                    self.custom_pipelines
-                        .as_ref()
-                        .map(|p| &p.0)
-                        .unwrap_or(&self.render_pipeline)
-                } else {
-                    &self.render_pipeline
-                }
+                &self.render_pipeline
             };
             encoder.set_compute_pipeline_state(pipeline);
             encoder.set_buffer(0, Some(&geometry.triangles), 0);
