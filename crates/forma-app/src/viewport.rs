@@ -6,6 +6,33 @@ use gpui::{
     Point, ScrollWheelEvent, Size, Window, canvas, div, fill, point, prelude::*, px, rgb, size,
 };
 
+#[derive(Clone, Copy)]
+pub(crate) enum NavigationMode {
+    Orbit,
+    Pan,
+    Zoom,
+}
+
+impl NavigationMode {
+    fn from_modifiers(modifiers: gpui::Modifiers) -> Self {
+        if modifiers.control {
+            Self::Zoom
+        } else if modifiers.shift {
+            Self::Pan
+        } else {
+            Self::Orbit
+        }
+    }
+
+    fn apply(self, camera: &mut forma_core::Camera, delta: Vec2, height: f32) {
+        match self {
+            Self::Orbit => camera.orbit(delta),
+            Self::Pan => camera.pan_in_viewport(delta, height),
+            Self::Zoom => camera.zoom(-delta.y),
+        }
+    }
+}
+
 /// AppKit's momentum updates arrive after Ended without a new Started phase.
 /// Keep their navigation mode when a modifier is released after lifting fingers.
 #[derive(Default)]
@@ -91,6 +118,28 @@ fn line(window: &mut Window, points: &[Point<Pixels>], color: u32, width: f32) {
 }
 
 impl Studio {
+    pub(crate) fn selection_frame(&self) -> Option<(Vec3, f32)> {
+        let object = self.selected_object().filter(|object| object.visible)?;
+        if self.edit_mode {
+            let face = object.mesh.faces.get(self.selected_face?)?;
+            if face.is_empty() {
+                return None;
+            }
+            let points = face.iter().map(|index| {
+                object
+                    .world_transform
+                    .transform_point3(object.mesh.positions[*index as usize])
+            });
+            let center = points.clone().sum::<Vec3>() / face.len() as f32;
+            let radius = points
+                .map(|point| point.distance(center))
+                .fold(0.0_f32, f32::max);
+            Some((center, radius))
+        } else {
+            self.scene.bounds(object.id)
+        }
+    }
+
     pub(crate) fn viewport(&self, cx: &mut Context<Self>) -> AnyElement {
         let t = self.theme_colors();
         let geometry = self.selected_object().filter(|o| o.visible).map(|o| {
@@ -419,7 +468,10 @@ impl Studio {
             return;
         }
         if event.button != MouseButton::Left || event.modifiers.alt {
-            self.navigation = Some((event.button, event.modifiers.shift));
+            self.navigation = Some((
+                event.button,
+                NavigationMode::from_modifiers(event.modifiers),
+            ));
             return;
         }
         let bounds = self.bounds.get();
@@ -485,18 +537,16 @@ impl Studio {
         }
         if self.transform_drag.is_some() {
             self.update_transform(position, event.modifiers.shift, cx);
-        } else if let Some((button, pan)) = self.navigation {
+        } else if let Some((button, mode)) = self.navigation {
             if event.pressed_button != Some(button) {
                 self.navigation = None;
             } else {
                 let delta = position - self.last_mouse;
-                if pan {
-                    self.scene
-                        .camera
-                        .pan_in_viewport(delta, f32::from(self.bounds.get().size.height));
-                } else {
-                    self.scene.camera.orbit(delta);
-                }
+                mode.apply(
+                    &mut self.scene.camera,
+                    delta,
+                    f32::from(self.bounds.get().size.height),
+                );
                 self.invalidate(false, cx);
             }
         }
@@ -719,6 +769,29 @@ mod tests {
             modifiers,
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn control_drag_zooms_and_shift_drag_pans_without_changing_orientation() {
+        let before = forma_core::Camera::default();
+        let mut zoomed = before;
+        NavigationMode::from_modifiers(gpui::Modifiers {
+            control: true,
+            ..Default::default()
+        })
+        .apply(&mut zoomed, Vec2::new(0., -40.), 600.);
+        assert!(zoomed.distance < before.distance);
+        assert_eq!(zoomed.target, before.target);
+        assert_eq!((zoomed.yaw, zoomed.pitch), (before.yaw, before.pitch));
+        let mut panned = before;
+        NavigationMode::from_modifiers(gpui::Modifiers {
+            shift: true,
+            ..Default::default()
+        })
+        .apply(&mut panned, Vec2::new(20., 40.), 600.);
+        assert_ne!(panned.target, before.target);
+        assert_eq!(panned.distance, before.distance);
+        assert_eq!((panned.yaw, panned.pitch), (before.yaw, before.pitch));
     }
 
     #[test]

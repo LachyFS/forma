@@ -149,7 +149,7 @@ pub struct Studio {
     pub(crate) frame: Option<Frame>,
     pub(crate) frame_image: Option<Arc<RenderImage>>,
     pub(crate) last_mouse: Vec2,
-    pub(crate) navigation: Option<(MouseButton, bool)>,
+    pub(crate) navigation: Option<(MouseButton, crate::viewport::NavigationMode)>,
     pub(crate) trackpad_gesture: crate::viewport::TrackpadGesture,
     pub(crate) transform_drag: Option<TransformDrag>,
     #[cfg(target_os = "macos")]
@@ -666,9 +666,14 @@ impl Studio {
                 }
             }
             Command::FrameSelected => {
-                if let Some((center, radius)) = self.selected.and_then(|id| self.scene.bounds(id)) {
-                    self.scene.camera.frame(center, radius);
+                if let Some((center, radius)) = self.selection_frame() {
+                    let size = self.bounds.get().size;
+                    let aspect = f32::from(size.width) / f32::from(size.height).max(1.);
+                    self.scene.camera.frame_in_viewport(center, radius, aspect);
+                    self.status = "Selection focused".into();
                     self.invalidate(false, cx);
+                } else {
+                    self.status = "Select an object or face to focus".into();
                 }
             }
             Command::ViewFront
@@ -1744,7 +1749,9 @@ impl Studio {
                 "d" if mods.shift => Some(Command::Duplicate),
                 "a" if mods.shift => Some(Command::TogglePalette),
                 "backspace" | "delete" => Some(Command::Delete),
-                "f" => Some(Command::FrameSelected),
+                "f" | "`" | "." | "decimal" if !mods.alt && !mods.shift => {
+                    Some(Command::FrameSelected)
+                }
                 "1" => Some(Command::ViewFront),
                 "3" => Some(Command::ViewRight),
                 "7" => Some(Command::ViewTop),
@@ -1852,7 +1859,7 @@ pub(crate) fn palette_commands(query: &str) -> Vec<(&'static str, &'static str, 
         ("Export image…", "", Command::ExportImage),
         ("Duplicate selection", "⇧ D", Command::Duplicate),
         ("Delete selection", "⌫", Command::Delete),
-        ("Frame selected", "F", Command::FrameSelected),
+        ("Frame selected", "` / . / F", Command::FrameSelected),
         ("Subdivide mesh", "", Command::Subdivide),
         ("Extrude selected face", "E", Command::Extrude),
         (

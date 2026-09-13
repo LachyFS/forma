@@ -111,10 +111,20 @@ impl Camera {
     }
 
     pub fn frame(&mut self, center: Vec3, radius: f32) {
-        if center.is_finite() && radius.is_finite() {
+        self.frame_in_viewport(center, radius, 1.0);
+    }
+
+    /// Fit a bounding sphere with padding in both viewport dimensions.
+    pub fn frame_in_viewport(&mut self, center: Vec3, radius: f32, aspect: f32) {
+        if center.is_finite() && radius.is_finite() && aspect.is_finite() && aspect > 0.0 {
+            let half_angle = ((self.fov_y * 0.5).tan() * aspect.min(1.0)).atan();
+            let extent = if self.orthographic {
+                half_angle.tan()
+            } else {
+                half_angle.sin()
+            };
             self.target = center;
-            self.distance =
-                (radius.max(0.01) / (self.fov_y * 0.5).sin() * 1.2).clamp(0.02, 100_000.0);
+            self.distance = (radius.max(0.01) / extent * 1.2).clamp(0.02, 100_000.0);
         }
     }
 
@@ -148,6 +158,37 @@ mod navigation_tests {
                 let ndc = clip.truncate() / clip.w;
                 let displacement = Vec2::new(ndc.x * height * 1.5 * 0.5, -ndc.y * height * 0.5);
                 assert!(displacement.distance(delta) < 0.001);
+            }
+        }
+    }
+
+    #[test]
+    fn framing_fits_sphere_in_portrait_and_landscape_in_both_projections() {
+        for orthographic in [false, true] {
+            for aspect in [0.3, 1.0, 2.0] {
+                let mut camera = Camera {
+                    orthographic,
+                    ..Camera::default()
+                };
+                let center = Vec3::new(12., -3., 7.);
+                let radius = 2.5;
+                let orientation = (camera.yaw, camera.pitch);
+                camera.frame_in_viewport(center, radius, aspect);
+                assert_eq!(camera.target, center);
+                assert_eq!((camera.yaw, camera.pitch), orientation);
+                let matrix = camera.projection_matrix(aspect) * camera.view_matrix();
+                for latitude in -9..=9 {
+                    for longitude in 0..36 {
+                        let phi = latitude as f32 * std::f32::consts::PI / 18.;
+                        let theta = longitude as f32 * std::f32::consts::TAU / 36.;
+                        let offset =
+                            Vec3::new(phi.cos() * theta.cos(), phi.sin(), phi.cos() * theta.sin());
+                        let clip = matrix * (center + offset * radius).extend(1.);
+                        let ndc = clip.truncate() / clip.w;
+                        assert!(ndc.x.abs() < 1. && ndc.y.abs() < 1.);
+                        assert!((0. ..=1.).contains(&ndc.z));
+                    }
+                }
             }
         }
     }
