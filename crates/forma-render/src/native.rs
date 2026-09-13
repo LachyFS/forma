@@ -96,6 +96,7 @@ pub struct Renderer {
     checked_revision: Option<u64>,
     film: Option<Film>,
     accumulation_key: Option<u64>,
+    overlay_selection: Option<f32>,
     samples: u32,
     frame: Option<Frame>,
 }
@@ -192,6 +193,7 @@ impl Renderer {
                 checked_revision: None,
                 film: None,
                 accumulation_key: None,
+                overlay_selection: None,
                 samples: 0,
                 frame: None,
             })
@@ -357,8 +359,15 @@ impl Renderer {
         } else {
             1
         };
-        if self.samples >= limit {
-            return self.frame.clone().context("Missing completed frame");
+        // The overlay is composited over the tone mapped film rather than into
+        // it, so a film at its sample cap still redraws when the selection
+        // changes. That display pass costs no sample and keeps the estimator.
+        let refresh = self.samples >= limit;
+        if refresh {
+            if self.overlay_selection == Some(uniforms.settings[2]) {
+                return self.frame.clone().context("Missing completed frame");
+            }
+            uniforms.settings[3] = 1.0;
         }
         uniforms.image[2] = self.samples;
         let film = self.film.as_ref().context("Missing GPU film")?;
@@ -465,7 +474,10 @@ impl Renderer {
         // Keep CVMetalTexture wrappers alive until completion, retaining their
         // underlying IOSurface ownership across both command encoders.
         drop((y, uv));
-        self.samples += 1;
+        if !refresh {
+            self.samples += 1;
+        }
+        self.overlay_selection = Some(uniforms.settings[2]);
         let frame = Frame {
             shader_error: self.shader_error.clone(),
             surface,
@@ -483,7 +495,11 @@ impl Renderer {
             .as_ref()
             .filter(|_| self.frame.is_some())
             .context("Render an image before reading the linear film")?;
-        self.read_float_buffer(&film.accumulation)
+        Ok(self
+            .read_float_buffer(&film.accumulation)?
+            .iter()
+            .map(|value| crate::denoise::normalized(*value, value[3]))
+            .collect())
     }
 
     pub fn read_denoise_guides(&self) -> Result<crate::denoise::GuidePixels> {
@@ -492,10 +508,12 @@ impl Renderer {
             .as_ref()
             .filter(|f| f.has_guides && self.frame.is_some())
             .context("Render a path-traced image before reading denoising guides")?;
-        Ok((
-            self.read_float_buffer(&film.albedo)?,
-            self.read_float_buffer(&film.normal)?,
-        ))
+        Ok(self
+            .read_float_buffer(&film.albedo)?
+            .iter()
+            .zip(self.read_float_buffer(&film.normal)?)
+            .map(|(albedo, normal)| crate::denoise::normalized_guides(*albedo, normal))
+            .unzip())
     }
 
     fn read_float_buffer(&self, source: &BufferRef) -> Result<Vec<[f32; 4]>> {
@@ -521,13 +539,8 @@ impl Renderer {
                     (size / 16) as usize,
                 )
             };
-            Ok(values
-                .iter()
-                .map(|p| {
-                    let weight = p[3].max(1.0);
-                    [p[0] / weight, p[1] / weight, p[2] / weight, 1.0]
-                })
-                .collect())
+            // Sums stay unnormalized: only the caller knows which weight applies.
+            Ok(values.to_vec())
         })
     }
 

@@ -461,6 +461,7 @@ mod tests {
                 color: vec![],
                 albedo: vec![],
                 normal: vec![],
+                selection: vec![],
             },
         };
         queue.submit(job(1, 8));

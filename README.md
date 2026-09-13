@@ -115,7 +115,10 @@ Arrow keys highlight a mode and Return selects it. Escape or right click cancels
 | `Z`, then `4` | Wireframe | Blender-style X-ray original polygon edges (bright front, dimmed occluded); no triangulation diagonals. |
 | `Z`, then `6` or directly `X` | Solid | Neutral clay shading with studio lighting. |
 | `Z`, then `2` or directly `C` | Material Preview | Immediate metallic/roughness shading with HDR environment reflections and contact shading. |
-| `Z`, then `8` or directly `V` | Rendered | Progressive lighting from the scene world and emissive meshes, without film grid or selection outlines. |
+| `Z`, then `8` or directly `V` | Rendered | Progressive lighting from the scene world and emissive meshes, with a selection outline over the viewport. |
+
+All four modes show a thicker blue selection outline. It stays visible during
+path tracing and denoising, without entering the rendered film or image exports.
 
 The menu stays inside the viewport near its edges. Opening, hovering, cancelling,
 or choosing the current mode preserves progressive accumulation. During a

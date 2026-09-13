@@ -37,12 +37,18 @@ Hit preview_trace(Ray r, float limit, device const Triangle *triangles,
 #endif
 }
 
-float preview_selection_silhouette(float2 pixel, device const Triangle *triangles,
-                                   device const BvhNode *nodes, constant Uniforms &u PREVIEW_ACCEL_PARAM) {
-    const float2 offsets[4] = { float2(-1, 0), float2(1, 0), float2(0, -1), float2(0, 1) };
-    for (uint i = 0u; i < 4u; ++i) {
-        Hit neighbor = preview_trace(camera_ray(pixel + offsets[i], u), INFINITY, triangles, nodes, u PREVIEW_ACCEL_ARG);
-        if (!is_selected(neighbor, triangles, u)) return 1.0f;
+float preview_selection_coverage(float2 pixel, Hit hit, device const Triangle *triangles,
+                                 device const BvhNode *nodes, constant Uniforms &u PREVIEW_ACCEL_PARAM) {
+    if (!is_selected(hit, triangles, u)) return 0.0f;
+    const float2 offsets[8] = {
+        float2(-1, 0), float2(1, 0), float2(0, -1), float2(0, 1),
+        float2(-0.70710678f, -0.70710678f), float2(0.70710678f, -0.70710678f),
+        float2(-0.70710678f, 0.70710678f), float2(0.70710678f, 0.70710678f),
+    };
+    for (uint i = 0u; i < 8u; ++i) {
+        Hit neighbor = preview_trace(camera_ray(pixel + offsets[i] * SELECTION_WIDTH, u),
+                                     INFINITY, triangles, nodes, u PREVIEW_ACCEL_ARG);
+        if (!is_selected(neighbor, triangles, u)) return 0.92f;
     }
     return 0.0f;
 }
@@ -203,10 +209,8 @@ kernel void preview_main(device const Triangle *triangles [[buffer(0)]],
         }
         color += add_grid(sample, ray, hit, p, u) * 0.25f;
     }
-    if (is_selected(center_hit, triangles, u)) {
-        float edge = preview_selection_silhouette(pixel, triangles, nodes, u PREVIEW_ACCEL_ARG);
-        color = mix(color, float3(0.055f, 0.40f, 0.95f), edge * 0.92f);
-    }
     accumulation[gid.y * u.image.x + gid.x] = float4(color, 1.0f);
-    output.write(float4(display_transform(color, u.settings.x), 1.0f), gid);
+    float3 display = display_transform(color, u.settings.x);
+    float coverage = preview_selection_coverage(pixel, center_hit, triangles, nodes, u PREVIEW_ACCEL_ARG);
+    output.write(float4(composite_selection(display, coverage), 1.0f), gid);
 }

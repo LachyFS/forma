@@ -40,6 +40,10 @@ const NO_HIT: u32 = 0xffffffffu;
 // WGSL deliberately excludes infinity literals. This finite sentinel also
 // makes BVH traversal independent of the backend's infinity optimizations.
 const FAR: f32 = 3.402823466e38;
+// Scene-linear selection outline, and the inward band width in render pixels.
+// Both shaders, and the denoised viewport image, use the same values.
+const SELECTION_COLOR = vec3(0.055, 0.40, 0.95);
+const SELECTION_WIDTH: f32 = 3.0;
 
 fn hash_u32(input: u32) -> u32 {
     var x = input;
@@ -518,12 +522,23 @@ fn is_selected(hit: Hit) -> bool {
         && abs(triangles[hit.triangle].params.z - u.settings.z) < 0.25;
 }
 fn selection_silhouette(pixel: vec2<f32>) -> f32 {
-    let offsets = array<vec2<f32>, 4>(vec2(-1.0, 0.0), vec2(1.0, 0.0), vec2(0.0, -1.0), vec2(0.0, 1.0));
-    for (var i = 0u; i < 4u; i += 1u) {
-        let neighbor = trace(camera_ray(pixel + offsets[i]), FAR, false);
+    // Called only on visible selected pixels: an inward band cannot reveal
+    // hidden geometry. Comparing object IDs avoids tessellation edges, while
+    // retaining silhouettes around holes and occlusion boundaries. Eight
+    // directions keep the band as wide on diagonal edges as on axis-aligned ones.
+    let offsets = array<vec2<f32>, 8>(
+        vec2(-1.0, 0.0), vec2(1.0, 0.0), vec2(0.0, -1.0), vec2(0.0, 1.0),
+        vec2(-0.70710678, -0.70710678), vec2(0.70710678, -0.70710678),
+        vec2(-0.70710678, 0.70710678), vec2(0.70710678, 0.70710678));
+    for (var i = 0u; i < 8u; i += 1u) {
+        let neighbor = trace(camera_ray(pixel + offsets[i] * SELECTION_WIDTH), FAR, false);
         if !is_selected(neighbor) { return 1.0; }
     }
     return 0.0;
+}
+fn selection_coverage(pixel: vec2<f32>, hit: Hit) -> f32 {
+    if !is_selected(hit) { return 0.0; }
+    return selection_silhouette(pixel) * 0.92;
 }
 fn solid_shading(s: Surface, ray: Ray) -> vec3<f32> {
     let key = normalize(-u.cam_forward.xyz * 0.6 - u.cam_right.xyz * 0.45 + u.cam_up.xyz * 0.85);
@@ -580,6 +595,11 @@ fn display_transform(linear: vec3<f32>, exposure: f32) -> vec3<f32> {
     let mapped = clamp((x * (2.51 * x + vec3(0.03))) / (x * (2.43 * x + vec3(0.59)) + vec3(0.14)), vec3(0.0), vec3(1.0));
     return select(1.055 * pow(mapped, vec3(1.0 / 2.4)) - vec3(0.055), 12.92 * mapped, mapped <= vec3(0.0031308));
 }
+// Composited after the tone curve so exposure neither dims nor blows out the
+// overlay, and so the outline never enters the film the exports read.
+fn composite_selection(display: vec3<f32>, coverage: f32) -> vec3<f32> {
+    return mix(display, display_transform(SELECTION_COLOR, 0.0), coverage);
+}
 fn wireframe_shading(ray: Ray, pixel: vec2<f32>, primary: Hit) -> vec3<f32> {
     var color = viewport_background(ray) * 1.10;
     color = add_grid(color, ray, Hit(FAR, vec2(0.0), NO_HIT), pixel);
@@ -609,12 +629,18 @@ fn render_main(@builtin(global_invocation_id) global_id: vec3<u32>) {
     let index = gid.y * u.image.x + gid.x;
     var rng = hash_u32(index ^ hash_u32(u.image.z + 0x9e3779b9u));
     let progressive = u.image.w == 3u;
+    // A refresh redraws the overlay over a film that already reached its sample
+    // target. Selecting an object therefore costs neither a sample nor the film.
+    let refresh = u.settings.w > 0.5;
     var jitter = vec2(0.5);
-    if progressive { jitter = random_pair(&rng); }
+    if progressive && !refresh { jitter = random_pair(&rng); }
     let pixel = vec2<f32>(gid) + jitter;
     let ray = camera_ray(pixel); let primary = trace(ray, FAR, false);
     var color: vec3<f32>;
-    if progressive {
+    if refresh {
+        let total = accumulation[index];
+        color = total.xyz / max(1.0, total.w);
+    } else if progressive {
         // Use the beauty ray's jitter, hit and weight for antialiased OIDN guides.
         var albedo = vec4(1.0); // environment has no surface normal
         var normal = vec4(0.0, 0.0, 0.0, 1.0);
@@ -625,28 +651,34 @@ fn render_main(@builtin(global_invocation_id) global_id: vec3<u32>) {
         }
         if u.image.z != 0u {
             albedo += denoise_guides[index].albedo;
-            normal += denoise_guides[index].normal;
+            normal += vec4(denoise_guides[index].normal.xyz, 1.0);
         }
         denoise_guides[index].albedo = albedo;
         denoise_guides[index].normal = normal;
-        color = path_trace(ray, primary, &rng);
-    }
-    else if u.image.w == 0u { color = wireframe_shading(ray, pixel, primary); }
-    else if primary.triangle != NO_HIT { color = solid_shading(surface_at(ray, primary), ray); }
-    else { color = viewport_background(ray); }
-    if u.image.w == 1u {
-        color = add_grid(color, ray, primary, pixel);
-        if is_selected(primary) {
-            color = mix(color, vec3(0.055, 0.40, 0.95), selection_silhouette(pixel) * 0.92);
-        }
-    }
-    if progressive {
-        var total = vec4(color, 1.0);
+        var total = vec4(path_trace(ray, primary, &rng), 1.0);
         if u.image.z != 0u { total += accumulation[index]; }
         accumulation[index] = total;
         color = total.xyz / max(1.0, total.w);
-    } else { accumulation[index] = vec4(color, 1.0); }
-    textureStore(output, vec2<i32>(gid), vec4(display_transform(color, select(0.0, u.settings.x, progressive)), 1.0));
+    } else {
+        if u.image.w == 0u { color = wireframe_shading(ray, pixel, primary); }
+        else if primary.triangle != NO_HIT { color = solid_shading(surface_at(ray, primary), ray); }
+        else { color = viewport_background(ray); }
+        if u.image.w == 1u { color = add_grid(color, ray, primary, pixel); }
+        accumulation[index] = vec4(color, 1.0);
+    }
+    // Use a stable pixel-center ray so the overlay does not shimmer with path
+    // tracing jitter. The same silhouette band is visible in every mode.
+    let overlay_pixel = vec2<f32>(gid) + vec2(0.5);
+    var overlay_hit = primary;
+    if progressive && u.settings.z > 0.0 {
+        overlay_hit = trace(camera_ray(overlay_pixel), FAR, false);
+    }
+    let coverage = selection_coverage(overlay_pixel, overlay_hit);
+    // Denoising replaces every displayed pixel, so the overlay travels to it in
+    // the guide weight both guides share.
+    if progressive { denoise_guides[index].normal.w = coverage; }
+    let display = display_transform(color, select(0.0, u.settings.x, progressive));
+    textureStore(output, vec2<i32>(gid), vec4(composite_selection(display, coverage), 1.0));
 }
 
 // Explicit filtering supports HDR textures on adapters without FLOAT32_FILTERABLE.

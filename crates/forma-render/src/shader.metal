@@ -43,6 +43,10 @@ struct BsdfSample { float3 direction, value; float pdf; };
 constant float PI_F = 3.14159265358979323846f;
 constant float INV_PI_F = 0.31830988618379067154f;
 constant uint NO_HIT = 0xffffffffu;
+// Scene-linear selection outline, and the inward band width in render pixels.
+// Both shaders, and the denoised viewport image, use the same values.
+constant float3 SELECTION_COLOR = float3(0.055f, 0.40f, 0.95f);
+constant float SELECTION_WIDTH = 3.0f;
 
 uint hash_u32(uint x) {
     x ^= x >> 16; x *= 0x7feb352du;
@@ -465,15 +469,26 @@ bool is_selected(Hit hit, device const Triangle *triangles, constant Uniforms &u
 }
 float selection_silhouette(float2 pixel, device const Triangle *triangles,
                            device const BvhNode *nodes, constant Uniforms &u) {
-    // Called only on visible selected pixels: a one-pixel inward outline cannot
-    // reveal hidden geometry. Comparing object IDs avoids tessellation edges,
-    // while retaining silhouettes around holes and occlusion boundaries.
-    const float2 offsets[4] = { float2(-1, 0), float2(1, 0), float2(0, -1), float2(0, 1) };
-    for (uint i = 0u; i < 4u; ++i) {
-        Hit neighbor = trace(camera_ray(pixel + offsets[i], u), INFINITY, triangles, nodes, u);
+    // Called only on visible selected pixels: an inward band cannot reveal
+    // hidden geometry. Comparing object IDs avoids tessellation edges, while
+    // retaining silhouettes around holes and occlusion boundaries. Eight
+    // directions keep the band as wide on diagonal edges as on axis-aligned ones.
+    const float2 offsets[8] = {
+        float2(-1, 0), float2(1, 0), float2(0, -1), float2(0, 1),
+        float2(-0.70710678f, -0.70710678f), float2(0.70710678f, -0.70710678f),
+        float2(-0.70710678f, 0.70710678f), float2(0.70710678f, 0.70710678f),
+    };
+    for (uint i = 0u; i < 8u; ++i) {
+        Hit neighbor = trace(camera_ray(pixel + offsets[i] * SELECTION_WIDTH, u),
+                             INFINITY, triangles, nodes, u);
         if (!is_selected(neighbor, triangles, u)) return 1.0f;
     }
     return 0.0f;
+}
+float selection_coverage(float2 pixel, Hit hit, device const Triangle *triangles,
+                         device const BvhNode *nodes, constant Uniforms &u) {
+    if (!is_selected(hit, triangles, u)) return 0.0f;
+    return selection_silhouette(pixel, triangles, nodes, u) * 0.92f;
 }
 float3 solid_shading(Surface s, Ray ray, constant Uniforms &u) {
     float3 key = normalize(-u.cam_forward.xyz * 0.6f - u.cam_right.xyz * 0.45f + u.cam_up.xyz * 0.85f);
@@ -534,6 +549,11 @@ float3 display_transform(float3 linear, float exposure) {
     float3 mapped = clamp((x * (2.51f * x + 0.03f)) / (x * (2.43f * x + 0.59f) + 0.14f), 0.0f, 1.0f);
     return select(1.055f * pow(mapped, float3(1.0f / 2.4f)) - 0.055f, 12.92f * mapped, mapped <= 0.0031308f);
 }
+// Composited after the tone curve so exposure neither dims nor blows out the
+// overlay, and so the outline never enters the film the exports read.
+float3 composite_selection(float3 display, float coverage) {
+    return mix(display, display_transform(SELECTION_COLOR, 0.0f), coverage);
+}
 
 float3 wireframe_shading(Ray ray, float2 pixel, Hit primary, device const Triangle *triangles,
                           device const BvhNode *nodes, constant Uniforms &u) {
@@ -586,11 +606,17 @@ kernel void render_main(device const Triangle *triangles [[buffer(0)]],
     uint index = gid.y * u.image.x + gid.x;
     uint rng = hash_u32(index ^ hash_u32(u.image.z + 0x9e3779b9u));
     bool progressive = u.image.w == 3u;
-    float2 pixel = float2(gid) + (progressive ? random_pair(rng) : float2(0.5f));
+    // A refresh redraws the overlay over a film that already reached its sample
+    // target. Selecting an object therefore costs neither a sample nor the film.
+    bool refresh = u.settings.w > 0.5f;
+    float2 pixel = float2(gid) + (progressive && !refresh ? random_pair(rng) : float2(0.5f));
     Ray ray = camera_ray(pixel, u);
     Hit primary = trace(ray, INFINITY, triangles, nodes, u);
     float3 color;
-    if (progressive) {
+    if (refresh) {
+        float4 total = accumulation[index];
+        color = total.xyz / max(1.0f, total.w);
+    } else if (progressive) {
         float4 albedo = float4(1.0f);
         float4 normal = float4(0.0f, 0.0f, 0.0f, 1.0f);
         if (primary.triangle != NO_HIT) {
@@ -600,28 +626,34 @@ kernel void render_main(device const Triangle *triangles [[buffer(0)]],
         }
         if (u.image.z != 0u) {
             albedo += albedo_accumulation[index];
-            normal += normal_accumulation[index];
+            normal += float4(normal_accumulation[index].xyz, 1.0f);
         }
         albedo_accumulation[index] = albedo;
         normal_accumulation[index] = normal;
         color = path_trace(ray, primary, triangles, nodes, lights, u, rng, MATERIAL_PASS);
-    } else if (u.image.w == 0u) {
-        color = wireframe_shading(ray, pixel, primary, triangles, nodes, u);
-    } else if (primary.triangle != NO_HIT) {
-        Surface s = surface_at(ray, primary, triangles);
-        color = solid_shading(s, ray, u);
-    } else color = viewport_background(ray);
-    if (u.image.w == 1u) {
-        color = add_grid(color, ray, primary, pixel, u);
-        if (is_selected(primary, triangles, u)) {
-            float edge = selection_silhouette(pixel, triangles, nodes, u);
-            color = mix(color, float3(0.055f, 0.40f, 0.95f), edge * 0.92f);
-        }
-    }
-    if (progressive) {
         float4 total = u.image.z == 0u ? float4(color, 1.0f) : accumulation[index] + float4(color, 1.0f);
         accumulation[index] = total;
         color = total.xyz / max(1.0f, total.w);
-    } else accumulation[index] = float4(color, 1.0f);
-    output.write(float4(display_transform(color, progressive ? u.settings.x : 0.0f), 1.0f), gid);
+    } else {
+        if (u.image.w == 0u) {
+            color = wireframe_shading(ray, pixel, primary, triangles, nodes, u);
+        } else if (primary.triangle != NO_HIT) {
+            Surface s = surface_at(ray, primary, triangles);
+            color = solid_shading(s, ray, u);
+        } else color = viewport_background(ray);
+        if (u.image.w == 1u) color = add_grid(color, ray, primary, pixel, u);
+        accumulation[index] = float4(color, 1.0f);
+    }
+    // Pixel-center rays keep the outline stable as path tracing samples jitter.
+    float2 overlay_pixel = float2(gid) + float2(0.5f);
+    Hit overlay_hit = primary;
+    if (progressive && u.settings.z > 0.0f) {
+        overlay_hit = trace(camera_ray(overlay_pixel, u), INFINITY, triangles, nodes, u);
+    }
+    float coverage = selection_coverage(overlay_pixel, overlay_hit, triangles, nodes, u);
+    // Denoising replaces every displayed pixel, so the overlay travels to it in
+    // the guide weight both guides share.
+    if (progressive) normal_accumulation[index].w = coverage;
+    float3 display = display_transform(color, progressive ? u.settings.x : 0.0f);
+    output.write(float4(composite_selection(display, coverage), 1.0f), gid);
 }

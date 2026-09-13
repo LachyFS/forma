@@ -20,6 +20,7 @@ fn neural_filter_reduces_noise_preserves_edges_and_reuses_resized_buffers() {
             color: Vec::new(),
             albedo: Vec::new(),
             normal: Vec::new(),
+            selection: Vec::new(),
         };
         let mut reference = Vec::new();
         let mut rng = 17_u32;
@@ -111,6 +112,7 @@ fn neural_filter_reduces_noise_preserves_edges_and_reuses_resized_buffers() {
         color: vec![[0.0; 4]; 1024],
         albedo: vec![[0.5; 4]; 1024],
         normal: vec![[0.0, 1.0, 0.0, 1.0]; 1024],
+        selection: Vec::new(),
     };
     let output = denoiser
         .denoise(&black, DenoiseQuality::High, true)
