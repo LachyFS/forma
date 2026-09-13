@@ -21,8 +21,8 @@ described in [platform validation](PLATFORMS.md#validation-matrix).
 
 ## Toolchains and dependencies
 
-`rust-toolchain.toml` pins the compiler, rustfmt, and Clippy used locally and in
-CI. Install [rustup](https://rust-lang.github.io/rustup/installation/index.html),
+`rust-toolchain.toml` pins Rust 1.92.0, including rustfmt and Clippy, for local
+development and CI. Install [rustup](https://rust-lang.github.io/rustup/installation/index.html),
 then run `rustup toolchain install` from the repository. Update the toolchain file
 deliberately and validate all platforms when upgrading Rust. CI uses `--locked`
 so dependency changes must include the resulting `Cargo.lock`.
