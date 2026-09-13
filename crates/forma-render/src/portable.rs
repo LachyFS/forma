@@ -75,6 +75,7 @@ pub(crate) struct Renderer {
     checked_revision: Option<u64>,
     film: Option<Film>,
     accumulation_key: Option<u64>,
+    overlay_selection: Option<f32>,
     samples: u32,
     frame: Option<Frame>,
 }
@@ -176,6 +177,7 @@ impl Renderer {
             checked_revision: None,
             film: None,
             accumulation_key: None,
+            overlay_selection: None,
             samples: 0,
             frame: None,
         })
@@ -398,8 +400,15 @@ impl Renderer {
         } else {
             1
         };
-        if self.samples >= limit {
-            return self.frame.clone().context("Missing completed frame");
+        // The overlay is composited over the tone mapped film rather than into
+        // it, so a film at its sample cap still redraws when the selection
+        // changes. That display pass costs no sample and keeps the estimator.
+        let refresh = self.samples >= limit;
+        if refresh {
+            if self.overlay_selection == Some(uniforms.settings[2]) {
+                return self.frame.clone().context("Missing completed frame");
+            }
+            uniforms.settings[3] = 1.0;
         }
         uniforms.image[2] = self.samples;
         let film = self.film.as_ref().context("Missing GPU film")?;
@@ -507,7 +516,10 @@ impl Renderer {
             }
             Ok(pixels)
         })?;
-        self.samples += 1;
+        if !refresh {
+            self.samples += 1;
+        }
+        self.overlay_selection = Some(uniforms.settings[2]);
         let frame = Frame {
             width,
             height,
@@ -543,7 +555,11 @@ impl Renderer {
             .as_ref()
             .filter(|_| self.frame.is_some())
             .context("Render an image before reading pixels")?;
-        self.read_float_buffer(&film.accumulation)
+        Ok(self
+            .read_float_buffer(&film.accumulation)?
+            .iter()
+            .map(|value| crate::denoise::normalized(*value, value[3]))
+            .collect())
     }
 
     pub fn read_denoise_guides(&self) -> Result<crate::denoise::GuidePixels> {
@@ -557,7 +573,7 @@ impl Renderer {
             .as_chunks::<2>()
             .0
             .iter()
-            .map(|pair| (pair[0], pair[1]))
+            .map(|pair| crate::denoise::normalized_guides(pair[0], pair[1]))
             .unzip();
         Ok((albedo, normal))
     }
@@ -576,16 +592,13 @@ impl Renderer {
             encoder.copy_buffer_to_buffer(source, 0, &readback, 0, readback.size());
             self.queue.submit([encoder.finish()]);
             let bytes = read_buffer(&self.device, &readback)?;
-            // Read POD values without assuming Vec<u8> has float alignment.
+            // Read POD values without assuming Vec<u8> has float alignment. Sums
+            // stay unnormalized: only the caller knows which weight applies.
             Ok(bytes
                 .as_chunks::<16>()
                 .0
                 .iter()
-                .map(|bytes| {
-                    let value: [f32; 4] = bytemuck::pod_read_unaligned(bytes);
-                    let weight = value[3].max(1.0);
-                    [value[0] / weight, value[1] / weight, value[2] / weight, 1.0]
-                })
+                .map(|bytes| bytemuck::pod_read_unaligned::<[f32; 4]>(bytes))
                 .collect())
         })
     }

@@ -326,10 +326,18 @@ impl Renderer {
                 *value = value.clamp(0.0, 1.0);
             }
         }
+        // The normal guide's alpha carries the selection outline coverage of its
+        // pixel: the guides themselves are normalized by the weight they share.
+        let mut selection = Vec::with_capacity(normal.len());
         for pixel in &mut normal {
             for value in &mut pixel[..3] {
                 *value = value.clamp(-1.0, 1.0);
             }
+            selection.push(pixel[3].clamp(0.0, 1.0));
+            pixel[3] = 1.0;
+        }
+        if selection.iter().all(|coverage| *coverage == 0.0) {
+            selection.clear();
         }
         Ok(DenoiseInput {
             width: frame.width(),
@@ -339,6 +347,7 @@ impl Renderer {
             color,
             albedo,
             normal,
+            selection,
         })
     }
 

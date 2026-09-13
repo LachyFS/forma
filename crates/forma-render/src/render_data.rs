@@ -81,6 +81,8 @@ impl Uniforms {
                     .selected
                     .and_then(|id| scene.objects.iter().position(|object| object.id == id))
                     .map_or(0.0, |index| (index + 1) as f32),
+                // Display refresh flag, set by the renderer itself when only the
+                // selection overlay of a finished film has to be redrawn.
                 0.0,
             ],
             preview_lighting: if settings.mode == RenderMode::MaterialPreview {

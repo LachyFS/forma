@@ -116,9 +116,8 @@ fn preview_main(@builtin(global_invocation_id) global_id: vec3<u32>) {
         }
         color += add_grid(sample_color, ray, hit, p) * 0.25;
     }
-    if is_selected(center_hit) {
-        color = mix(color, vec3(0.055, 0.40, 0.95), selection_silhouette(pixel) * 0.92);
-    }
     accumulation[gid.y * u.image.x + gid.x] = vec4(color, 1.0);
-    textureStore(output, vec2<i32>(gid), vec4(display_transform(color, u.settings.x), 1.0));
+    let display = display_transform(color, u.settings.x);
+    let coverage = selection_coverage(pixel, center_hit);
+    textureStore(output, vec2<i32>(gid), vec4(composite_selection(display, coverage), 1.0));
 }

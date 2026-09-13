@@ -14,8 +14,25 @@ use std::{
 type Handle = *mut c_void;
 pub(crate) type GuidePixels = (Vec<[f32; 4]>, Vec<[f32; 4]>);
 
+/// Divide an accumulated film value by its sample weight, leaving alpha at 1.
+pub(crate) fn normalized(value: [f32; 4], weight: f32) -> [f32; 4] {
+    let weight = weight.max(1.0);
+    [value[0] / weight, value[1] / weight, value[2] / weight, 1.0]
+}
+
+/// Both guides are written once per sample, so albedo's alpha is the weight for
+/// the pair. That frees the normal's alpha to carry the selection outline
+/// coverage of the same pixel, which denoising must composite back afterwards.
+pub(crate) fn normalized_guides(albedo: [f32; 4], normal: [f32; 4]) -> ([f32; 4], [f32; 4]) {
+    let mut guide_normal = normalized(normal, albedo[3]);
+    guide_normal[3] = normal[3];
+    (normalized(albedo, albedo[3]), guide_normal)
+}
+
 /// An immutable, normalized snapshot. Guides use the same jitter and sample
 /// weights as beauty; normals stay in world space, including negative values.
+/// `selection` holds the viewport outline coverage, which is a display overlay
+/// and never part of the film, and is empty when nothing is selected.
 pub struct DenoiseInput {
     pub width: u32,
     pub height: u32,
@@ -24,6 +41,7 @@ pub struct DenoiseInput {
     pub color: Vec<[f32; 4]>,
     pub albedo: Vec<[f32; 4]>,
     pub normal: Vec<[f32; 4]>,
+    pub selection: Vec<f32>,
 }
 
 impl DenoiseInput {
@@ -51,6 +69,14 @@ impl DenoiseInput {
                 "Denoising {name} contains invalid values"
             );
         }
+        ensure!(
+            self.selection.is_empty() || self.selection.len() == count,
+            "Denoising selection overlay dimensions do not match"
+        );
+        ensure!(
+            self.selection.iter().all(|v| (0.0..=1.0).contains(v)),
+            "Denoising selection overlay contains invalid coverage"
+        );
         Ok(())
     }
 }
@@ -338,9 +364,11 @@ impl Denoiser {
         ensure!(exposure.is_finite(), "Exposure must be finite");
         let started = Instant::now();
         let pixels = self.denoise(input, quality, prefilter)?;
+        let mut rgba = display_pixels(&pixels, exposure);
+        composite_selection(&mut rgba, &input.selection);
         Ok(Frame::from_denoised(
             input,
-            display_pixels(&pixels, exposure),
+            rgba,
             self.device_name.clone(),
             started.elapsed().as_secs_f64() * 1000.0,
         ))
@@ -418,6 +446,19 @@ impl Denoiser {
 
 // Same ACES fit and sRGB OETF as both shaders. Use f64 intermediates to avoid
 // overflow for bright, valid HDR values. Denoising always precedes this transform.
+// Both shaders composite the selection outline over the tone mapped image at a
+// fixed exposure; a denoised frame replaces every displayed pixel and so has to
+// redraw the same overlay, from the same scene-linear color, to match them.
+fn composite_selection(rgba: &mut [u8], coverage: &[f32]) {
+    let outline = display_pixels(&[[0.055, 0.40, 0.95, 1.0]], 0.0);
+    for (pixel, coverage) in rgba.as_chunks_mut::<4>().0.iter_mut().zip(coverage) {
+        for (value, line) in pixel[..3].iter_mut().zip(&outline) {
+            *value = (f32::from(*value) + (f32::from(*line) - f32::from(*value)) * coverage).round()
+                as u8;
+        }
+    }
+}
+
 fn display_pixels(pixels: &[[f32; 4]], exposure: f32) -> Vec<u8> {
     let scale = 2.0_f64.powf(exposure.clamp(-20.0, 20.0) as f64);
     let mut rgba = Vec::with_capacity(pixels.len() * 4);
@@ -450,7 +491,14 @@ mod tests {
             color: vec![[1.0; 4]],
             albedo: vec![[0.5; 4]],
             normal: vec![[-1.0, 0.0, 0.0, 1.0]],
+            selection: vec![0.5],
         };
+        input.validate().unwrap();
+        input.selection[0] = 1.5;
+        assert!(input.validate().is_err());
+        input.selection = vec![0.5; 2];
+        assert!(input.validate().is_err());
+        input.selection.clear();
         input.validate().unwrap();
         input.normal[0][0] = -1.1;
         assert!(input.validate().is_err());
@@ -460,5 +508,17 @@ mod tests {
             display_pixels(&[[0.0, 1.0, f32::MAX, 1.0]], 0.0),
             [0, 232, 255, 255]
         );
+    }
+
+    /// The outline is opaque enough to read over any image, and pixels outside
+    /// it keep the denoised result exactly.
+    #[test]
+    fn overlay_composites_only_where_the_outline_covers() {
+        let outline = display_pixels(&[[0.055, 0.40, 0.95, 1.0]], 0.0);
+        let mut rgba = vec![10, 20, 30, 255, 10, 20, 30, 255];
+        composite_selection(&mut rgba, &[0.0, 1.0]);
+        assert_eq!(rgba[..4], [10, 20, 30, 255]);
+        assert_eq!(rgba[4..7], outline[..3]);
+        assert_eq!(rgba[7], 255);
     }
 }

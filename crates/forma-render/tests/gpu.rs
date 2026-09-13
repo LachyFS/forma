@@ -223,3 +223,139 @@ fn portable_frames_survive_resize_and_renderer_destruction() {
         expected
     );
 }
+
+/// The outline is a display overlay: it reaches Rendered mode and the denoised
+/// image without entering the film, and redrawing it costs no path traced sample.
+#[test]
+fn selection_outline_overlays_a_rendered_film_without_disturbing_it() {
+    let mut renderer = Renderer::new().unwrap();
+    let scene = Scene::default();
+    let mut settings = RenderSettings {
+        width: 64,
+        height: 48,
+        mode: RenderMode::Rendered,
+        max_samples: 2,
+        ..Default::default()
+    };
+    for samples in 1..=2 {
+        assert_eq!(
+            renderer.render(&scene, &settings, 1).unwrap().samples,
+            samples
+        );
+    }
+    let plain = pixels(&mut renderer);
+    let film = renderer.read_linear_pixels().unwrap();
+    assert!(renderer.read_denoise_input().unwrap().selection.is_empty());
+
+    settings.selected = scene.objects.first().map(|object| object.id);
+    let outlined = renderer.render(&scene, &settings, 1).unwrap();
+    assert_eq!(
+        outlined.samples, 2,
+        "Redrawing the overlay must not add a sample"
+    );
+    assert_ne!(
+        plain,
+        pixels(&mut renderer),
+        "Rendered mode must show the outline"
+    );
+    assert_eq!(film, renderer.read_linear_pixels().unwrap());
+    let coverage = renderer.read_denoise_input().unwrap().selection;
+    assert!(
+        coverage.iter().any(|value| *value > 0.5),
+        "Denoising has to composite the same overlay back"
+    );
+    assert!(coverage.iter().all(|value| (0.0..=1.0).contains(value)));
+
+    settings.selected = None;
+    assert_eq!(renderer.render(&scene, &settings, 1).unwrap().samples, 2);
+    assert_eq!(
+        plain,
+        pixels(&mut renderer),
+        "Deselecting must restore the film"
+    );
+    assert!(renderer.read_denoise_input().unwrap().selection.is_empty());
+}
+
+/// Every viewport mode draws a selection band wider than a single pixel.
+#[test]
+fn selection_outline_is_several_pixels_wide_in_every_mode() {
+    let mut renderer = Renderer::new().unwrap();
+    let scene = Scene::default();
+    let mut settings = RenderSettings {
+        width: 240,
+        height: 180,
+        max_samples: 1,
+        show_grid: false,
+        selected: scene.objects.first().map(|object| object.id),
+        ..Default::default()
+    };
+    for mode in [
+        RenderMode::Wireframe,
+        RenderMode::Solid,
+        RenderMode::MaterialPreview,
+        RenderMode::Rendered,
+    ] {
+        settings.mode = mode;
+        renderer.render(&scene, &settings, 1).unwrap();
+        let image = pixels(&mut renderer);
+        let outline = |x: usize, y: usize| {
+            let pixel = &image[(y * settings.width as usize + x) * 3..][..3];
+            // The tone mapped outline is a light blue no surface in the default
+            // scene reaches: far more blue than red, and bright.
+            pixel[2] > 180 && pixel[2] as i32 - pixel[0] as i32 > 100
+        };
+        let widest = (0..settings.width as usize)
+            .map(|x| {
+                let mut run = 0;
+                let mut widest = 0;
+                for y in 0..settings.height as usize {
+                    run = if outline(x, y) { run + 1 } else { 0 };
+                    widest = widest.max(run);
+                }
+                widest
+            })
+            .max()
+            .unwrap();
+        assert!(widest >= 2, "{mode:?} outline is only {widest} pixels wide");
+    }
+}
+
+#[test]
+fn rendered_outline_is_stable_across_samples_and_normal_guides_keep_their_weights() {
+    let mut renderer = Renderer::new().unwrap();
+    let scene = Scene::default();
+    let settings = RenderSettings {
+        width: 64,
+        height: 48,
+        mode: RenderMode::Rendered,
+        max_samples: 3,
+        selected: scene.objects.first().map(|object| object.id),
+        ..Default::default()
+    };
+    renderer.render(&scene, &settings, 1).unwrap();
+    let coverage = renderer.read_denoise_input().unwrap().selection;
+    for _ in 0..2 {
+        renderer.render(&scene, &settings, 1).unwrap();
+        let input = renderer.read_denoise_input().unwrap();
+        assert_eq!(
+            coverage, input.selection,
+            "Outline must not jitter between samples"
+        );
+        assert!(
+            input
+                .normal
+                .iter()
+                .all(|normal| normal[..3].iter().all(|v| (-1.0..=1.0).contains(v)))
+        );
+    }
+    let mut unselected = settings.clone();
+    unselected.selected = None;
+    let mut reference = Renderer::new().unwrap();
+    for _ in 0..3 {
+        reference.render(&scene, &unselected, 1).unwrap();
+    }
+    assert_eq!(
+        renderer.read_denoise_input().unwrap().normal,
+        reference.read_denoise_input().unwrap().normal
+    );
+}
