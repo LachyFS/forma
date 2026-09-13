@@ -210,7 +210,7 @@ kernel void preview_main(device const Triangle *triangles [[buffer(0)]],
         color += add_grid(sample, ray, hit, p, u) * 0.25f;
     }
     accumulation[gid.y * u.image.x + gid.x] = float4(color, 1.0f);
-    float3 display = display_transform(color, u.settings.x);
+    float3 display = composite_edit(display_transform(color, u.settings.x), center_ray, center_hit, pixel, triangles, u);
     float coverage = preview_selection_coverage(pixel, center_hit, triangles, nodes, u PREVIEW_ACCEL_ARG);
     output.write(float4(composite_selection(display, coverage), 1.0f), gid);
 }
