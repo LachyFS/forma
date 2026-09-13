@@ -170,7 +170,8 @@ The in-app command panel opens with
 | Select object / face | Left click; `Tab` toggles object and face modes |
 | Orbit | Two-finger trackpad drag, middle/right drag, `Option` + left drag, or `Option` + wheel |
 | Pan | `Shift` + two-finger drag, `Shift` + middle/right drag, or `Shift` + wheel |
-| Zoom / frame selection | Pinch, mouse wheel, or `Ctrl` / `⌘` + two-finger drag / `F` |
+| Zoom | Pinch, mouse wheel, `Ctrl` + middle drag, or `Ctrl` / `⌘` + two-finger drag |
+| Focus selection | Backtick (`` ` ``), `.` / numpad decimal, or `F`; focuses the selected face in edit mode |
 | Shading pie | `Z`; hold and flick, or tap then select |
 | Move / rotate / scale | `G` / `R` / `S` |
 | Constrain transform | `X`, `Y` or `Z` during a transform |
