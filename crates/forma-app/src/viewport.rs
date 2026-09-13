@@ -1,6 +1,6 @@
-use crate::app::{EditMode, Studio, Tool, TransformDrag};
+use crate::app::{EditMode, Studio, Tool};
 use forma_render::RenderMode;
-use glam::{Mat4, Quat, Vec2, Vec3};
+use glam::{Mat4, Vec2, Vec3};
 use gpui::{
     AnyElement, Bounds, Context, MouseButton, MouseDownEvent, MouseMoveEvent, PathBuilder, Pixels,
     Point, ScrollWheelEvent, Size, Window, canvas, div, fill, point, prelude::*, px, rgb, size,
@@ -60,7 +60,7 @@ impl TrackpadGesture {
     }
 }
 
-fn mouse_point(point: Point<Pixels>) -> Vec2 {
+pub(crate) fn mouse_point(point: Point<Pixels>) -> Vec2 {
     Vec2::new(point.x.into(), point.y.into())
 }
 
@@ -88,7 +88,7 @@ pub(crate) fn render_dimensions(
     (even(width, 2560), even(height, 1600))
 }
 
-fn project(world: Vec3, matrix: Mat4, bounds: Bounds<Pixels>) -> Option<Point<Pixels>> {
+pub(crate) fn project(world: Vec3, matrix: Mat4, bounds: Bounds<Pixels>) -> Option<Point<Pixels>> {
     let clip = matrix * world.extend(1.);
     if clip.w <= 0.00001 {
         return None;
@@ -117,9 +117,40 @@ fn line(window: &mut Window, points: &[Point<Pixels>], color: u32, width: f32) {
     }
 }
 
+fn rotation_ring(
+    center: Vec3,
+    basis: glam::Mat3,
+    axis: usize,
+    radius: f32,
+    matrix: Mat4,
+    bounds: Bounds<Pixels>,
+) -> Vec<Point<Pixels>> {
+    (0..=64)
+        .filter_map(|i| {
+            let angle = i as f32 / 64. * std::f32::consts::TAU;
+            project(
+                center
+                    + radius
+                        * (basis.col((axis + 1) % 3) * angle.cos()
+                            + basis.col((axis + 2) % 3) * angle.sin()),
+                matrix,
+                bounds,
+            )
+        })
+        .collect()
+}
+
 /// Test the surface depth at a projected point, including orthographic cameras.
+#[cfg(test)]
 fn visible_point(scene: &forma_core::Scene, point: Vec3) -> bool {
-    let camera = scene.camera;
+    visible_in_query(scene.camera, &forma_core::SurfaceQuery::new(scene), point)
+}
+
+fn visible_in_query(
+    camera: forma_core::Camera,
+    query: &forma_core::SurfaceQuery,
+    point: Vec3,
+) -> bool {
     let view_point = camera.view_matrix().transform_point3(point);
     if view_point.z >= 0. {
         return false;
@@ -130,12 +161,13 @@ fn visible_point(scene: &forma_core::Scene, point: Vec3) -> bool {
         camera.position()
     };
     let distance = point.distance(origin);
-    scene
-        .pick_surface(forma_core::Ray {
+    !query.occludes(
+        forma_core::Ray {
             origin,
             direction: (point - origin).normalize_or_zero(),
-        })
-        .is_none_or(|hit| hit.distance >= distance - (distance * 0.0001).max(0.0001))
+        },
+        distance - (distance * 0.0001).max(0.0001),
+    )
 }
 
 fn pick_component(
@@ -146,6 +178,7 @@ fn pick_component(
 ) -> Option<(u64, [u32; 2])> {
     let aspect = f32::from(bounds.size.width) / f32::from(bounds.size.height).max(1.);
     let matrix = scene.camera.projection_matrix(aspect) * scene.camera.view_matrix();
+    let query = forma_core::SurfaceQuery::new(scene);
     let mut closest = 10.0;
     let mut picked = None;
     for object in scene
@@ -176,7 +209,7 @@ fn pick_component(
             let wa = (matrix * a.extend(1.)).w;
             let wb = (matrix * b.extend(1.)).w;
             let world_t = t * wa / ((1. - t) * wb + t * wa);
-            if distance < closest && visible_point(scene, a.lerp(b, world_t)) {
+            if distance < closest && visible_in_query(scene.camera, &query, a.lerp(b, world_t)) {
                 closest = distance;
                 picked = Some((object.id, indices));
             }
@@ -185,7 +218,96 @@ fn pick_component(
     picked
 }
 
+#[derive(Default, Clone, Copy)]
+pub(crate) struct BoxSelection {
+    pub start: Option<Vec2>,
+    pub current: Vec2,
+    pub extend: bool,
+    pub subtract: bool,
+}
+
 impl Studio {
+    pub(crate) fn finish_box_select(&mut self, cx: &mut Context<Self>) {
+        let Some(selection) = self.box_select.take() else {
+            return;
+        };
+        let Some(start) = selection.start else {
+            return;
+        };
+        let bounds = self.bounds.get();
+        let aspect = f32::from(bounds.size.width) / f32::from(bounds.size.height).max(1.);
+        let matrix = self.scene.camera.projection_matrix(aspect) * self.scene.camera.view_matrix();
+        let low = start.min(selection.current);
+        let high = start.max(selection.current);
+        if self.edit_mode == EditMode::Object {
+            let mut ids = if selection.extend || selection.subtract {
+                self.selected_ids()
+            } else {
+                Default::default()
+            };
+            for object in self
+                .scene
+                .mesh_instances()
+                .filter(|o| o.selectable && self.scene.is_effectively_visible(o.id))
+            {
+                if let Some(p) = project(
+                    object.world_transform.transform_point3(Vec3::ZERO),
+                    matrix,
+                    bounds,
+                )
+                .map(mouse_point)
+                    && p.cmpge(low).all()
+                    && p.cmple(high).all()
+                {
+                    if selection.subtract {
+                        ids.remove(&object.id);
+                    } else {
+                        ids.insert(object.id);
+                    }
+                }
+            }
+            self.select_objects(ids, self.selected);
+            self.status = format!("{} objects selected", self.selected_ids().len());
+            self.invalidate(false, cx);
+            return;
+        }
+        let query = forma_core::SurfaceQuery::new(&self.scene);
+        let candidates = self.all_components();
+        let mut elements = if selection.extend || selection.subtract {
+            self.component_elements()
+        } else {
+            Default::default()
+        };
+        if let Some(object) = self.selected_object() {
+            for element in candidates {
+                let vertices = element.vertex_indices(object.mesh);
+                let center = vertices
+                    .iter()
+                    .map(|i| {
+                        object
+                            .world_transform
+                            .transform_point3(object.mesh.positions[*i as usize])
+                    })
+                    .sum::<Vec3>()
+                    / vertices.len() as f32;
+                if let Some(p) = project(center, matrix, bounds).map(mouse_point)
+                    && p.cmpge(low).all()
+                    && p.cmple(high).all()
+                    && visible_in_query(self.scene.camera, &query, center)
+                {
+                    if selection.subtract {
+                        elements.remove(&element);
+                    } else {
+                        elements.insert(element);
+                    }
+                }
+            }
+        }
+        self.set_components(elements);
+        self.status = format!("{} components selected", self.component_elements().len());
+        cx.notify();
+    }
+
     pub(crate) fn selection_frame(&self) -> Option<(Vec3, f32)> {
         let object = self.selected_object().filter(|object| object.visible)?;
         if self.edit_mode.is_component() {
@@ -204,38 +326,87 @@ impl Studio {
                 .fold(0.0_f32, f32::max);
             Some((center, radius))
         } else {
-            self.scene.bounds(object.id)
+            let bounds: Vec<_> = self
+                .selected_ids()
+                .iter()
+                .filter_map(|id| self.scene.bounds(*id))
+                .collect();
+            if bounds.is_empty() {
+                return None;
+            }
+            let low = bounds
+                .iter()
+                .fold(Vec3::splat(f32::INFINITY), |p, (center, radius)| {
+                    p.min(*center - Vec3::splat(*radius))
+                });
+            let high = bounds
+                .iter()
+                .fold(Vec3::splat(f32::NEG_INFINITY), |p, (center, radius)| {
+                    p.max(*center + Vec3::splat(*radius))
+                });
+            if bounds.len() == 1 {
+                Some(bounds[0])
+            } else {
+                Some(((low + high) * 0.5, (high - low).length() * 0.5))
+            }
         }
     }
 
     pub(crate) fn viewport(&self, cx: &mut Context<Self>) -> AnyElement {
         let t = self.theme_colors();
-        let geometry = self
-            .selection_center()
-            .filter(|_| {
-                self.selected
-                    .is_some_and(|id| self.scene.is_effectively_visible(id))
-            })
-            .map(|center| {
-                let object = self.selected_object().unwrap();
-                let points = self
-                    .component_vertices()
-                    .iter()
-                    .map(|i| {
-                        object
-                            .world_transform
-                            .transform_point3(object.mesh.positions[*i as usize])
+        let geometry = self.selection_center().filter(|_| {
+            self.selected
+                .is_some_and(|id| self.scene.is_effectively_visible(id))
+        });
+        let query = (!self.component_elements().is_empty() || self.selected_ids().len() > 1)
+            .then(|| forma_core::SurfaceQuery::new(&self.scene));
+        let mut highlights = self
+            .selected_object()
+            .map(|object| {
+                self.component_elements()
+                    .into_iter()
+                    .filter_map(|element| {
+                        let points = element
+                            .vertex_indices(object.mesh)
+                            .iter()
+                            .map(|i| {
+                                object
+                                    .world_transform
+                                    .transform_point3(object.mesh.positions[*i as usize])
+                            })
+                            .collect::<Vec<_>>();
+                        let center = points.iter().sum::<Vec3>() / points.len() as f32;
+                        query
+                            .as_ref()
+                            .is_some_and(|q| visible_in_query(self.scene.camera, q, center))
+                            .then_some(points)
                     })
-                    .collect::<Vec<_>>();
-                (
-                    center,
-                    if visible_point(&self.scene, center) {
-                        points
-                    } else {
-                        vec![]
-                    },
-                )
-            });
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        if self.edit_mode == EditMode::Object {
+            for id in self
+                .selected_ids()
+                .into_iter()
+                .filter(|id| Some(*id) != self.selected)
+            {
+                if let Some(object) = self.scene.mesh_instance(id) {
+                    for edge in object.mesh.edges() {
+                        let points = edge.map(|i| {
+                            object
+                                .world_transform
+                                .transform_point3(object.mesh.positions[i as usize])
+                        });
+                        if query.as_ref().is_some_and(|q| {
+                            visible_in_query(self.scene.camera, q, (points[0] + points[1]) * 0.5)
+                        }) {
+                            highlights.push(points.to_vec());
+                        }
+                    }
+                }
+            }
+        }
+        let box_selection = self.box_select;
         #[cfg(target_os = "macos")]
         let surface = self
             .frame
@@ -250,7 +421,19 @@ impl Studio {
         let presentation_studio = cx.weak_entity();
         let edit_mode = self.edit_mode;
         let tool = self.tool;
-        let axis = self.transform_drag.as_ref().and_then(|d| d.axis);
+        let constraint = self
+            .transform_drag
+            .as_ref()
+            .map(|d| d.constraint)
+            .unwrap_or_default();
+        let axis = constraint.axis;
+        let gizmo_basis = self
+            .transform_drag
+            .as_ref()
+            .filter(|d| d.constraint.orientation == crate::transform::Orientation::Local)
+            .map(|d| d.basis)
+            .unwrap_or(glam::Mat3::IDENTITY);
+        let transforming = self.transform_drag.is_some();
         let canvas = canvas(
             move |bounds, _, cx| {
                 if bounds_cell.replace(bounds).size != bounds.size {
@@ -283,38 +466,92 @@ impl Studio {
                 }
                 let aspect = f32::from(bounds.size.width) / f32::from(bounds.size.height).max(1.);
                 let matrix = camera.projection_matrix(aspect) * view;
-                if let Some((center, face)) = &geometry {
-                    if edit_mode.is_component() {
-                        let mut points: Vec<_> = face
-                            .iter()
-                            .filter_map(|v| project(*v, matrix, bounds))
-                            .collect();
-                        if points.len() == face.len() && !points.is_empty() {
-                            if edit_mode == EditMode::Face {
-                                points.push(points[0]);
-                            }
-                            line(window, &points, 0xf4c27a, 2.);
-                            for p in &points {
-                                window.paint_quad(fill(
-                                    Bounds::new(*p - point(px(3.), px(3.)), size(px(6.), px(6.))),
-                                    rgb(0xffdcaa),
-                                ));
-                            }
+                if let Some(selection) = box_selection
+                    && let Some(start) = selection.start
+                {
+                    let a = start.min(selection.current);
+                    let b = start.max(selection.current);
+                    let points = [a, Vec2::new(b.x, a.y), b, Vec2::new(a.x, b.y), a]
+                        .map(|p| point(px(p.x), px(p.y)));
+                    line(window, &points, 0x83bde8, 1.);
+                }
+                for face in &highlights {
+                    let mut points: Vec<_> = face
+                        .iter()
+                        .filter_map(|v| project(*v, matrix, bounds))
+                        .collect();
+                    if points.len() == face.len() && !points.is_empty() {
+                        if edit_mode == EditMode::Face {
+                            points.push(points[0]);
+                        }
+                        line(window, &points, 0xf4c27a, 2.);
+                        for p in points.iter().filter(|_| edit_mode.is_component()) {
+                            window.paint_quad(fill(
+                                Bounds::new(*p - point(px(3.), px(3.)), size(px(6.), px(6.))),
+                                rgb(0xffdcaa),
+                            ));
                         }
                     }
-                    if tool != Tool::Select {
-                        let length = camera.distance * 0.105;
-                        if let Some(origin) = project(*center, matrix, bounds) {
-                            for (i, color) in crate::ui::AXIS.into_iter().enumerate() {
-                                let mut end = *center;
-                                end[i] += length;
-                                if let Some(end) = project(end, matrix, bounds) {
-                                    line(
-                                        window,
-                                        &[origin, end],
-                                        if axis == Some(i) { 0xffffff } else { color },
-                                        2.3,
-                                    );
+                }
+                if let Some(center) = &geometry
+                    && tool != Tool::Select
+                {
+                    let depth = if camera.orthographic {
+                        camera.distance
+                    } else {
+                        -view.transform_point3(*center).z
+                    };
+                    let length = depth.max(0.001) * 0.105;
+                    if let Some(origin) = project(*center, matrix, bounds) {
+                        for (i, color) in crate::ui::AXIS.into_iter().enumerate() {
+                            let active = axis
+                                .is_some_and(|a| if constraint.plane { a != i } else { a == i });
+                            if transforming && active {
+                                let a = project(
+                                    *center - gizmo_basis.col(i) * camera.distance * 100.,
+                                    matrix,
+                                    bounds,
+                                );
+                                let b = project(
+                                    *center + gizmo_basis.col(i) * camera.distance * 100.,
+                                    matrix,
+                                    bounds,
+                                );
+                                if let (Some(a), Some(b)) = (a, b) {
+                                    line(window, &[a, b], color, 1.);
+                                }
+                            }
+                            if tool == Tool::Rotate {
+                                let ring =
+                                    rotation_ring(*center, gizmo_basis, i, length, matrix, bounds);
+                                line(
+                                    window,
+                                    &ring,
+                                    if active { 0xffffff } else { color },
+                                    if active { 2.8 } else { 1.7 },
+                                );
+                            } else if let Some(end) =
+                                project(*center + gizmo_basis.col(i) * length, matrix, bounds)
+                            {
+                                line(
+                                    window,
+                                    &[origin, end],
+                                    if active { 0xffffff } else { color },
+                                    2.3,
+                                );
+                                if tool == Tool::Move {
+                                    let direction = (mouse_point(end) - mouse_point(origin))
+                                        .normalize_or_zero();
+                                    let side = Vec2::new(-direction.y, direction.x);
+                                    let tip = mouse_point(end);
+                                    let arrow = [
+                                        tip - direction * 9. + side * 4.,
+                                        tip,
+                                        tip - direction * 9. - side * 4.,
+                                    ]
+                                    .map(|p| point(px(p.x), px(p.y)));
+                                    line(window, &arrow, color, 2.3);
+                                } else {
                                     window.paint_quad(fill(
                                         Bounds::new(
                                             end - point(px(3.), px(3.)),
@@ -324,11 +561,11 @@ impl Studio {
                                     ));
                                 }
                             }
-                            window.paint_quad(fill(
-                                Bounds::new(origin - point(px(3.), px(3.)), size(px(6.), px(6.))),
-                                rgb(0xe6eeee),
-                            ));
                         }
+                        window.paint_quad(fill(
+                            Bounds::new(origin - point(px(3.), px(3.)), size(px(6.), px(6.))),
+                            rgb(0xe6eeee),
+                        ));
                     }
                 }
                 // Compact world-space axis orientation indicator.
@@ -423,7 +660,8 @@ impl Studio {
             let text = format!(
                 "{:?}  {}  {}    ·    Click / Return to apply    Esc to cancel",
                 drag.tool,
-                drag.axis
+                drag.constraint
+                    .axis
                     .map(|axis| ["X", "Y", "Z"][axis])
                     .unwrap_or("Free"),
                 drag.numeric
@@ -527,6 +765,18 @@ impl Studio {
         window.focus(&self.focus);
         self.active_field = None;
         self.last_mouse = mouse_point(event.position);
+        if let Some(selection) = self.box_select.as_mut() {
+            if event.button == MouseButton::Left {
+                selection.start = Some(self.last_mouse);
+                selection.current = self.last_mouse;
+                selection.extend = event.modifiers.shift;
+                selection.subtract = event.modifiers.control;
+            } else {
+                self.box_select = None;
+            }
+            cx.notify();
+            return;
+        }
         if self.transform_drag.is_some() {
             self.finish_transform(event.button == MouseButton::Right, cx);
             return;
@@ -542,16 +792,44 @@ impl Studio {
         let aspect = f32::from(bounds.size.width) / f32::from(bounds.size.height).max(1.);
         let matrix = self.scene.camera.projection_matrix(aspect) * self.scene.camera.view_matrix();
         if self.tool != Tool::Select
+            && !event.modifiers.shift
             && let Some(center) = self.selection_center()
             && let Some(origin) = project(center, matrix, bounds)
         {
-            let axis = (0..3).find(|axis| {
-                let mut end = center;
-                end[*axis] += self.scene.camera.distance * 0.105;
-                project(end, matrix, bounds).is_some_and(|end| {
-                    segment_distance(self.last_mouse, mouse_point(origin), mouse_point(end)) < 8.
+            let depth = if self.scene.camera.orthographic {
+                self.scene.camera.distance
+            } else {
+                -self.scene.camera.view_matrix().transform_point3(center).z
+            };
+            let length = depth.max(0.001) * 0.105;
+            let axis = (0..3)
+                .filter_map(|axis| {
+                    let distance = if self.tool == Tool::Rotate {
+                        rotation_ring(center, glam::Mat3::IDENTITY, axis, length, matrix, bounds)
+                            .windows(2)
+                            .map(|p| {
+                                segment_distance(
+                                    self.last_mouse,
+                                    mouse_point(p[0]),
+                                    mouse_point(p[1]),
+                                )
+                            })
+                            .fold(f32::INFINITY, f32::min)
+                    } else {
+                        project(
+                            center + glam::Mat3::IDENTITY.col(axis) * length,
+                            matrix,
+                            bounds,
+                        )
+                        .map(|end| {
+                            segment_distance(self.last_mouse, mouse_point(origin), mouse_point(end))
+                        })
+                        .unwrap_or(f32::INFINITY)
+                    };
+                    (distance < 8.).then_some((axis, distance))
                 })
-            });
+                .min_by(|a, b| a.1.total_cmp(&b.1))
+                .map(|(axis, _)| axis);
             if axis.is_some() {
                 self.start_transform(self.tool, axis, false, cx);
                 return;
@@ -560,41 +838,67 @@ impl Studio {
         let uv = (self.last_mouse - mouse_point(bounds.origin))
             / Vec2::new(bounds.size.width.into(), bounds.size.height.into());
         let previous = (self.selected, self.component_vertices());
-        self.clear_components();
-        if matches!(self.edit_mode, EditMode::Edge | EditMode::Vertex) {
-            let picked = pick_component(&self.scene, self.edit_mode, self.last_mouse, bounds);
-            if let Some((id, indices)) = picked {
-                self.selected = Some(id);
-                if self.edit_mode == EditMode::Vertex {
-                    self.selected_vertex = Some(indices[0]);
+        let component = if matches!(self.edit_mode, EditMode::Edge | EditMode::Vertex) {
+            pick_component(&self.scene, self.edit_mode, self.last_mouse, bounds).map(
+                |(id, edge)| {
+                    (
+                        id,
+                        if self.edit_mode == EditMode::Vertex {
+                            forma_core::MeshElement::Vertex(edge[0])
+                        } else {
+                            forma_core::MeshElement::Edge(edge)
+                        },
+                    )
+                },
+            )
+        } else {
+            self.scene
+                .pick_surface(self.scene.camera.ray(uv, aspect))
+                .filter(|hit| {
+                    self.scene
+                        .object(hit.object_id)
+                        .is_some_and(|o| o.selectable)
+                })
+                .map(|hit| (hit.object_id, forma_core::MeshElement::Face(hit.face)))
+        };
+        if let Some((id, element)) = component {
+            if self.edit_mode.is_component() {
+                let mut elements = if event.modifiers.shift && self.selected == Some(id) {
+                    self.component_elements()
                 } else {
-                    self.selected_edge = Some([indices[0], indices[1]]);
+                    Default::default()
+                };
+                if !elements.insert(element) {
+                    elements.remove(&element);
                 }
+                self.selected = Some(id);
+                self.set_components(elements);
                 self.status = format!(
-                    "{} selected · G / R / S to transform",
-                    self.edit_mode.label()
+                    "{} components selected · G / R / S transform",
+                    self.component_elements().len()
                 );
-            }
-        } else if let Some(hit) = self
-            .scene
-            .pick_surface(self.scene.camera.ray(uv, aspect))
-            .filter(|hit| {
-                self.scene
-                    .object(hit.object_id)
-                    .is_some_and(|o| o.selectable)
-            })
-        {
-            self.selected = Some(hit.object_id);
-            self.selected_face = (self.edit_mode == EditMode::Face).then_some(hit.face);
-            self.status = if self.edit_mode.is_component() {
-                format!("Face {} selected · E to extrude", hit.face + 1)
             } else {
-                format!("Selected {}", self.selected_object().unwrap().name)
-            };
-        } else if self.edit_mode == EditMode::Object {
-            self.selected = None;
+                let mut ids = if event.modifiers.shift {
+                    self.selected_ids()
+                } else {
+                    Default::default()
+                };
+                if !ids.insert(id) {
+                    ids.remove(&id);
+                }
+                self.select_objects(ids, Some(id));
+                self.status = format!("{} objects selected", self.selected_ids().len());
+            }
+        } else if !event.modifiers.shift {
+            self.clear_components();
+            if self.edit_mode == EditMode::Object {
+                self.select_objects(Default::default(), None);
+            }
         }
-        if previous == (self.selected, self.component_vertices()) && self.tool != Tool::Select {
+        if !event.modifiers.shift
+            && previous == (self.selected, self.component_vertices())
+            && self.tool != Tool::Select
+        {
             self.start_transform(self.tool, None, false, cx);
         }
         self.invalidate(false, cx);
@@ -618,8 +922,14 @@ impl Studio {
             cx.stop_propagation();
             return;
         }
+        if let Some(selection) = self.box_select.as_mut() {
+            selection.current = position;
+            self.last_mouse = position;
+            cx.notify();
+            return;
+        }
         if self.transform_drag.is_some() {
-            self.update_transform(position, event.modifiers.shift, cx);
+            self.update_transform(position, event.modifiers.shift, event.modifiers.control, cx);
         } else if let Some((button, mode)) = self.navigation {
             if event.pressed_button != Some(button) {
                 self.navigation = None;
@@ -634,187 +944,6 @@ impl Studio {
             }
         }
         self.last_mouse = position;
-    }
-
-    pub(crate) fn start_transform(
-        &mut self,
-        tool: Tool,
-        axis: Option<usize>,
-        modal: bool,
-        cx: &mut Context<Self>,
-    ) {
-        let Some(original) = self
-            .selected_object()
-            .map(|instance| instance.object.clone())
-        else {
-            self.status = "Select an object first".into();
-            cx.notify();
-            return;
-        };
-        if self.edit_mode.is_component() && self.component_vertices().is_empty() {
-            self.status = "Select a component first".into();
-            cx.notify();
-            return;
-        }
-        self.tool = tool;
-        self.transform_drag = Some(TransformDrag {
-            tool,
-            axis,
-            start: self.last_mouse,
-            original,
-            before: self.scene.clone(),
-            numeric: String::new(),
-            modal,
-            changed: false,
-            vertices: self.component_vertices(),
-        });
-        self.status = format!("{tool:?} · X / Y / Z to constrain · Type a value · Return to apply");
-        cx.notify();
-    }
-
-    pub(crate) fn update_transform(
-        &mut self,
-        position: Vec2,
-        precise: bool,
-        cx: &mut Context<Self>,
-    ) {
-        let Some(drag) = &mut self.transform_drag else {
-            return;
-        };
-        let delta = (position - drag.start) * if precise { 0.1 } else { 1. };
-        let explicit = drag
-            .numeric
-            .parse::<f32>()
-            .ok()
-            .filter(|value| value.is_finite());
-        let original = &drag.original;
-        let mut edited_transform = original.transform;
-        let camera = self.scene.camera;
-        let inverse_view = camera.view_matrix().inverse();
-        let right = inverse_view.x_axis.truncate();
-        let up = inverse_view.y_axis.truncate();
-        let scale = camera.distance * (camera.fov_y * 0.5).tan() * 2.
-            / f32::from(self.bounds.get().size.height).max(1.);
-        let free_translation = (right * delta.x - up * delta.y) * scale;
-        let mut translation = free_translation;
-        if let Some(axis) = drag.axis {
-            let mut direction = Vec3::ZERO;
-            direction[axis] = 1.;
-            let projected = Vec2::new(direction.dot(right), -direction.dot(up));
-            let amount = if projected.length_squared() > 0.02 {
-                delta.dot(projected) / projected.length_squared() * scale
-            } else {
-                delta.x * scale
-            };
-            translation = direction * explicit.unwrap_or(amount).clamp(-100_000., 100_000.);
-        } else if let Some(value) = explicit {
-            translation = Vec3::X * value.clamp(-100_000., 100_000.);
-        }
-        let angle = explicit
-            .map(f32::to_radians)
-            .unwrap_or((delta.x - delta.y) * 0.01);
-        let factor = explicit
-            .unwrap_or(((delta.x - delta.y) * 0.007).exp())
-            .clamp(0.001, 1000.);
-        let rotation_axis = drag
-            .axis
-            .map(|a| {
-                let mut v = Vec3::ZERO;
-                v[a] = 1.;
-                v
-            })
-            .unwrap_or(inverse_view.z_axis.truncate());
-        if self.edit_mode.is_component() {
-            let original_mesh = drag.before.object_mesh(original.id);
-            if let Some(mesh) = original_mesh.filter(|_| !drag.vertices.is_empty()) {
-                let face = &drag.vertices;
-                let matrix = drag.before.world_transform(original.id).unwrap();
-                let center = face
-                    .iter()
-                    .map(|i| matrix.transform_point3(mesh.positions[*i as usize]))
-                    .sum::<Vec3>()
-                    / face.len() as f32;
-                let operation = match drag.tool {
-                    Tool::Move => Mat4::from_translation(translation),
-                    Tool::Rotate => {
-                        Mat4::from_translation(center)
-                            * Mat4::from_quat(Quat::from_axis_angle(rotation_axis, angle))
-                            * Mat4::from_translation(-center)
-                    }
-                    Tool::Scale => {
-                        let mut scaling = Vec3::splat(factor);
-                        if let Some(axis) = drag.axis {
-                            scaling = Vec3::ONE;
-                            scaling[axis] = factor;
-                        }
-                        Mat4::from_translation(center)
-                            * Mat4::from_scale(scaling)
-                            * Mat4::from_translation(-center)
-                    }
-                    Tool::Select => Mat4::IDENTITY,
-                };
-                if let Some(edited) = self.scene.object_mesh_mut(original.id) {
-                    for index in face {
-                        edited.positions[*index as usize] = mesh.positions[*index as usize];
-                    }
-                    edited.transform_vertices(face, matrix, operation);
-                }
-            }
-        } else {
-            match drag.tool {
-                Tool::Move => edited_transform.translation += translation,
-                Tool::Rotate => {
-                    let old = Quat::from_euler(
-                        glam::EulerRot::XYZ,
-                        original.transform.rotation.x,
-                        original.transform.rotation.y,
-                        original.transform.rotation.z,
-                    );
-                    let q = Quat::from_axis_angle(rotation_axis, angle) * old;
-                    let (x, y, z) = q.to_euler(glam::EulerRot::XYZ);
-                    edited_transform.rotation = Vec3::new(x, y, z);
-                }
-                Tool::Scale => {
-                    if let Some(axis) = drag.axis {
-                        edited_transform.scale[axis] =
-                            (edited_transform.scale[axis] * factor).clamp(0.001, 1000.);
-                    } else {
-                        edited_transform.scale = (edited_transform.scale * factor)
-                            .clamp(Vec3::splat(0.001), Vec3::splat(1000.));
-                    }
-                }
-                Tool::Select => {}
-            }
-        }
-        drag.changed = true;
-        if !self.edit_mode.is_component()
-            && let Some(object) = self.scene.object_mut(original.id)
-        {
-            object.transform = edited_transform;
-        }
-        self.invalidate(true, cx);
-    }
-
-    pub(crate) fn finish_transform(&mut self, cancel: bool, cx: &mut Context<Self>) {
-        let Some(drag) = self.transform_drag.take() else {
-            return;
-        };
-        if cancel {
-            self.scene = drag.before;
-            self.status = "Transform cancelled".into();
-            self.invalidate(true, cx);
-        } else if drag.changed {
-            if let Err(error) = self.scene.validate() {
-                self.scene = drag.before;
-                self.status = format!("Transform cancelled: {error}");
-                self.invalidate(true, cx);
-            } else {
-                self.history.checkpoint(&drag.before);
-                self.dirty = true;
-                self.status = format!("{:?} applied", drag.tool);
-                cx.notify();
-            }
-        }
     }
 }
 

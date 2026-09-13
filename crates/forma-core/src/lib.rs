@@ -8,6 +8,8 @@ mod material;
 mod mesh;
 mod obj;
 mod scene;
+mod surface_query;
+pub use surface_query::SurfaceQuery;
 
 pub use camera::{Camera, Ray};
 pub use edit::MeshElement;

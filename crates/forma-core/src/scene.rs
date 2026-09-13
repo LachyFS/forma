@@ -1644,7 +1644,13 @@ fn valid_color(value: Vec3, max: f32) -> bool {
     value.is_finite() && value.min_element() >= 0.0 && value.max_element() <= max
 }
 
-fn intersect_triangle(origin: Vec3, direction: Vec3, a: Vec3, b: Vec3, c: Vec3) -> Option<f32> {
+pub(crate) fn intersect_triangle(
+    origin: Vec3,
+    direction: Vec3,
+    a: Vec3,
+    b: Vec3,
+    c: Vec3,
+) -> Option<f32> {
     // Double precision and a scale-relative parallel threshold keep selection
     // reliable for very small imported parts and very large object transforms.
     let (origin, direction, a, b, c) = (
