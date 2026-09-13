@@ -76,9 +76,9 @@ cargo run --locked --release -p forma
 
 - Add cubes, spheres, cylinders, tori and planes; select objects in the viewport
   or outliner, duplicate, hide and delete them.
-- Move, rotate and scale objects, faces, edges or vertices with axis constraints,
+- Move, rotate and scale object groups and component selections with global/local axis and plane constraints,
   numerical input and viewport handles. Edit exact values in the inspector.
-- Extrude a selected face by 0.30 units, then transform it. Apply Catmull–Clark
+- Interactively extrude face regions or inset coplanar regions with exact thickness. Apply Catmull–Clark
   subdivision to the selected mesh.
 - Choose PBR, Glass or Custom surface shaders, select PNG/JPEG image textures,
   and edit Metal/WGSL surface code with compile diagnostics. Adjust roughness, IOR, metallic response, emission,
@@ -171,18 +171,23 @@ The in-app command panel opens with
 | Action | Input |
 | --- | --- |
 | Select object / component | Left click; toolbar selects Object, Face, Edge, or Vertex; `Tab` toggles Object and the last component mode |
+| Extend selection | `Shift` + click; works on objects and mesh components |
+| All / none / invert / linked | `A` / `Alt+A` / `⌘I` / `L` (linked selects connected mesh components) |
+| Box selection | `B`, then drag; `Shift` adds and `Ctrl` subtracts |
 | Vertex / edge / face mode | `1` / `2` / `3` while editing components |
 | Orbit | Two-finger trackpad drag, middle/right drag, `Option` + left drag, or `Option` + wheel |
 | Pan | `Shift` + two-finger drag, `Shift` + middle/right drag, or `Shift` + wheel |
 | Zoom | Pinch, mouse wheel, `Ctrl` + middle drag, or `Ctrl` / `⌘` + two-finger drag |
-| Focus selection | Backtick (`` ` ``), `.` / numpad decimal, or `F`; focuses the selected face in edit mode |
+| Focus selection | Backtick (`` ` ``), `.` / numpad decimal, or `F`; focuses the entire selection |
 | Shading pie | `Z`; hold and flick, or tap then select |
 | Move / rotate / scale | `G` / `R` / `S` |
-| Constrain transform | `X`, `Y` or `Z` during a transform |
-| Enter an exact transform | Type a value; angles are degrees, scale is a factor |
+| Constrain transform | `X`, `Y` or `Z`; repeat the same key for global → local → free |
+| Plane constraint | `Shift+X`, `Shift+Y` or `Shift+Z` excludes that axis |
+| Snap transform | Hold `Ctrl`; combine with `Shift` for finer increments |
+| Enter an exact transform | Type a value or arithmetic such as `1/8` or `2*3`; angles are degrees, scale is a factor |
 | Apply / cancel transform | Click or `Return` / `Esc` or right click |
 | Fine pointer movement | Hold `Shift` during a transform |
-| Extrude face | `E` in face mode with a selected face |
+| Extrude / inset region | `E` / `I`, move the pointer or type a distance, then confirm |
 | Duplicate / delete | `⌘D` or `Shift+D` / `Delete` or `Backspace` |
 | Front / right / top | `1` / `3` / `7` in Object mode (also available in the command panel) |
 | Toggle projection / reset perspective | `5` / `0` |
@@ -190,7 +195,9 @@ The in-app command panel opens with
 | Color theme picker | `⌘Shift+T` |
 | New / open / save / save as | `⌘N` / `⌘O` / `⌘S` / `⌘Shift+S` |
 
-Component edit modes show visible polygon edges on every mesh; Vertex mode also shows vertex markers. G/R/S transforms the selected face, edge, or vertex around its center. Delete removes a face, or an edge/vertex and its incident faces; deleting the last face requires Object mode. Editing overlays are excluded from exported images.
+Component edit modes show visible polygon edges on every mesh; Vertex mode also shows vertex markers. G/R/S transforms the selection around its median center. Rotation follows the pointer around the pivot; scaling follows pointer distance. Holding or releasing Shift preserves the current transform. Delete removes a face, or an edge/vertex and its incident faces; deleting the last face requires Object mode. Editing overlays are excluded from exported images.
+
+Extrude creates shared cap vertices and boundary walls for the selected region. Inset supports coplanar regions and keeps thickness even under object scaling. Duplicate starts a move operation immediately. Confirming creates one undo step; Escape restores the geometry and selection from before the operation. Invalid geometry or unfinished numeric input stays uncommitted.
 
 An unconstrained numeric move uses world X. Rotation without an axis constraint
 uses the viewing axis. Subdivision, imports, exports, primitives and material

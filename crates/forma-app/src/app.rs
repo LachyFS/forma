@@ -95,6 +95,12 @@ pub enum Command {
     SetEditMode(EditMode),
     Extrude,
     Subdivide,
+    Inset,
+    SelectAll,
+    DeselectAll,
+    InvertSelection,
+    SelectLinked,
+    BoxSelect,
     ToggleGrid,
     ToggleViewportDenoise,
     ToggleRenderDenoise,
@@ -120,9 +126,20 @@ pub enum Command {
 
 pub(crate) struct TransformDrag {
     pub tool: Tool,
-    pub axis: Option<usize>,
-    pub start: Vec2,
+    pub constraint: crate::transform::Constraint,
+    pub motion: crate::transform::PointerMotion,
+    pub pivot: Vec3,
+    pub basis: glam::Mat3,
+    pub mesh_tool: Option<crate::modelling::MeshTool>,
+    pub mesh_faces: std::collections::BTreeSet<usize>,
+    pub selection_before: std::collections::BTreeSet<forma_core::MeshElement>,
+    pub selection_object_before: Option<u64>,
+    pub selection_mode_before: EditMode,
+    pub history_before: Option<Scene>,
+    pub error: Option<String>,
     pub original: Object,
+    pub objects: Vec<Object>,
+    pub objects_before: std::collections::BTreeSet<u64>,
     pub before: Scene,
     pub numeric: String,
     pub modal: bool,
@@ -134,11 +151,14 @@ pub struct Studio {
     pub scene: Scene,
     pub history: History,
     pub selected: Option<u64>,
+    pub objects_selected: std::collections::BTreeSet<u64>,
     pub selected_face: Option<usize>,
     pub edit_mode: EditMode,
     last_edit_mode: EditMode,
     pub selected_edge: Option<[u32; 2]>,
     pub selected_vertex: Option<u32>,
+    pub components: std::collections::BTreeSet<forma_core::MeshElement>,
+    pub(crate) box_select: Option<crate::viewport::BoxSelection>,
     pub settings: RenderSettings,
     pub samples: u32,
     pub denoised_generation: Option<u64>,
@@ -254,11 +274,14 @@ impl Studio {
             scene,
             history: History::default(),
             selected,
+            objects_selected: Default::default(),
             selected_face: None,
             edit_mode: EditMode::Object,
             last_edit_mode: EditMode::Face,
             selected_edge: None,
             selected_vertex: None,
+            components: Default::default(),
+            box_select: None,
             settings: RenderSettings {
                 edit_wireframe: false,
                 edit_vertices: false,
@@ -365,7 +388,34 @@ impl Studio {
         cx.notify();
     }
 
+    pub(crate) fn selected_ids(&self) -> std::collections::BTreeSet<u64> {
+        let mut ids = if self.edit_mode == EditMode::Object {
+            self.objects_selected.clone()
+        } else {
+            Default::default()
+        };
+        ids.extend(self.selected);
+        ids.retain(|id| {
+            self.scene.object(*id).is_some_and(|o| o.selectable)
+                && self.scene.is_effectively_visible(*id)
+        });
+        ids
+    }
+
+    pub(crate) fn select_objects(
+        &mut self,
+        ids: std::collections::BTreeSet<u64>,
+        active: Option<u64>,
+    ) {
+        self.clear_components();
+        self.selected = active
+            .filter(|id| ids.contains(id))
+            .or_else(|| ids.last().copied());
+        self.objects_selected = ids;
+    }
+
     pub(crate) fn clear_components(&mut self) {
+        self.components.clear();
         self.selected_face = None;
         self.selected_edge = None;
         self.selected_vertex = None;
@@ -381,17 +431,104 @@ impl Studio {
         }
     }
 
+    pub(crate) fn component_elements(&self) -> std::collections::BTreeSet<forma_core::MeshElement> {
+        if !self.edit_mode.is_component() {
+            return Default::default();
+        }
+        let mut elements = self.components.clone();
+        elements.extend(self.selected_element());
+        elements
+    }
+
+    pub(crate) fn set_components(
+        &mut self,
+        elements: std::collections::BTreeSet<forma_core::MeshElement>,
+    ) {
+        self.clear_components();
+        if let Some(element) = elements.last() {
+            match *element {
+                forma_core::MeshElement::Face(i) => self.selected_face = Some(i),
+                forma_core::MeshElement::Edge(edge) => self.selected_edge = Some(edge),
+                forma_core::MeshElement::Vertex(i) => self.selected_vertex = Some(i),
+            }
+        }
+        self.components = elements;
+    }
+
+    pub(crate) fn all_components(&self) -> std::collections::BTreeSet<forma_core::MeshElement> {
+        use forma_core::MeshElement;
+        let Some(object) = self.selected_object() else {
+            return Default::default();
+        };
+        match self.edit_mode {
+            EditMode::Object => Default::default(),
+            EditMode::Vertex => (0..object.mesh.positions.len() as u32)
+                .map(MeshElement::Vertex)
+                .collect(),
+            EditMode::Edge => object
+                .mesh
+                .edges()
+                .into_iter()
+                .map(MeshElement::Edge)
+                .collect(),
+            EditMode::Face => (0..object.mesh.faces.len())
+                .map(MeshElement::Face)
+                .collect(),
+        }
+    }
+
+    pub(crate) fn selected_faces(&self) -> std::collections::BTreeSet<usize> {
+        let vertices: std::collections::BTreeSet<_> =
+            self.component_vertices().into_iter().collect();
+        if self.edit_mode == EditMode::Face {
+            self.component_elements()
+                .into_iter()
+                .filter_map(|e| {
+                    if let forma_core::MeshElement::Face(i) = e {
+                        Some(i)
+                    } else {
+                        None
+                    }
+                })
+                .collect()
+        } else {
+            self.selected_object()
+                .map(|o| {
+                    o.mesh
+                        .faces
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, f)| f.iter().all(|i| vertices.contains(i)))
+                        .map(|(i, _)| i)
+                        .collect()
+                })
+                .unwrap_or_default()
+        }
+    }
+
     pub(crate) fn component_vertices(&self) -> Vec<u32> {
-        self.selected_object()
-            .zip(self.selected_element())
-            .map(|(object, element)| element.vertices(object.mesh))
-            .unwrap_or_default()
+        let Some(object) = self.selected_object() else {
+            return vec![];
+        };
+        self.component_elements()
+            .iter()
+            .flat_map(|element| element.vertex_indices(object.mesh))
+            .collect::<std::collections::BTreeSet<_>>()
+            .into_iter()
+            .collect()
     }
 
     pub(crate) fn selection_center(&self) -> Option<Vec3> {
         let object = self.selected_object()?;
         if !self.edit_mode.is_component() {
-            return Some(object.world_transform.transform_point3(Vec3::ZERO));
+            let centers: Vec<_> = self
+                .selected_ids()
+                .iter()
+                .filter_map(|id| self.scene.world_transform(*id))
+                .map(|m| m.transform_point3(Vec3::ZERO))
+                .collect();
+            return (!centers.is_empty())
+                .then(|| centers.iter().sum::<Vec3>() / centers.len() as f32);
         }
         let vertices = self.component_vertices();
         if vertices.is_empty() {
@@ -620,7 +757,11 @@ impl Studio {
         }
         if self.transform_drag.is_some() {
             self.finish_transform(false, cx);
+            if self.transform_drag.is_some() {
+                return;
+            }
         }
+        self.box_select = None;
         self.active_field = None;
         if !matches!(command, Command::TogglePalette | Command::ToggleHelp) {
             self.palette_open = false;
@@ -670,15 +811,13 @@ impl Studio {
             Command::Add(primitive) => {
                 self.history.checkpoint(&self.scene);
                 let id = self.scene.add(primitive);
-                self.selected = Some(id);
-                self.clear_components();
+                self.select_objects([id].into_iter().collect(), Some(id));
                 self.dirty = true;
                 self.status = format!("Added {}", primitive.label());
                 self.invalidate(true, cx);
             }
             Command::Select(id) => {
-                self.selected = Some(id);
-                self.clear_components();
+                self.select_objects([id].into_iter().collect(), Some(id));
                 self.status = self
                     .scene
                     .object(id)
@@ -697,12 +836,13 @@ impl Studio {
             Command::Delete if self.edit_mode.is_component() => {
                 if let Some(id) = self.selected {
                     let before = self.scene.clone();
-                    if let Some(element) = self.selected_element() {
+                    if !self.component_elements().is_empty() {
+                        let elements = self.component_elements();
                         match self
                             .scene
                             .object_mesh_mut(id)
                             .unwrap()
-                            .delete_element(element)
+                            .delete_elements(&elements)
                         {
                             Ok(()) => {
                                 self.history.checkpoint(&before);
@@ -719,31 +859,84 @@ impl Studio {
                 }
             }
             Command::Delete => {
-                if let Some(id) = self.selected {
+                let ids = self.selected_ids();
+                if !ids.is_empty() {
                     self.history.checkpoint(&self.scene);
-                    self.scene.remove(id);
-                    self.selected = None;
-                    self.clear_components();
+                    for id in &ids {
+                        self.scene.remove(*id);
+                    }
+                    self.select_objects(Default::default(), None);
                     self.dirty = true;
-                    self.status = platform_shortcut(
-                        "Object deleted · ⌘Z to undo",
-                        "Object deleted · Ctrl+Z to undo",
-                    )
-                    .into();
+                    self.status = format!("{} objects deleted", ids.len());
                     self.invalidate(true, cx);
                 }
             }
-            Command::Duplicate if self.edit_mode.is_component() => {
-                self.status = "Switch to Object mode to duplicate an object".into();
-            }
             Command::Duplicate => {
                 if let Some(id) = self.selected {
-                    self.history.checkpoint(&self.scene);
-                    self.selected = self.scene.duplicate(id);
-                    self.clear_components();
-                    self.dirty = true;
-                    self.status = "Object duplicated".into();
-                    self.invalidate(true, cx);
+                    let before = self.scene.clone();
+                    let selection_before = self.component_elements();
+                    let mode_before = self.edit_mode;
+                    let objects_before = self.selected_ids();
+                    if self.edit_mode.is_component() {
+                        let faces = self.selected_faces();
+                        if faces.is_empty() {
+                            self.status = "Select faces to duplicate a mesh region".into();
+                        } else {
+                            match self
+                                .scene
+                                .object_mesh_mut(id)
+                                .unwrap()
+                                .duplicate_faces(&faces)
+                            {
+                                Ok(faces) => {
+                                    self.edit_mode = EditMode::Face;
+                                    self.set_components(
+                                        faces
+                                            .into_iter()
+                                            .map(forma_core::MeshElement::Face)
+                                            .collect(),
+                                    );
+                                    self.start_transform(Tool::Move, None, true, cx);
+                                }
+                                Err(error) => self.status = error.to_string(),
+                            }
+                        }
+                    } else {
+                        let mut copies = std::collections::BTreeMap::new();
+                        for original in &objects_before {
+                            if let Some(copy) = self.scene.duplicate(*original) {
+                                self.scene.object_mut(copy).unwrap().transform =
+                                    before.object(*original).unwrap().transform;
+                                copies.insert(*original, copy);
+                            }
+                        }
+                        for (&original, &copy) in &copies {
+                            if let Some(parent) = before
+                                .object(original)
+                                .and_then(|o| o.parent)
+                                .and_then(|p| copies.get(&p))
+                                .copied()
+                            {
+                                self.scene.object_mut(copy).unwrap().parent = Some(parent);
+                            }
+                        }
+                        self.select_objects(
+                            copies.values().copied().collect(),
+                            copies.get(&id).copied(),
+                        );
+                        self.start_transform(Tool::Move, None, true, cx);
+                    }
+                    if let Some(drag) = self.transform_drag.as_mut() {
+                        drag.history_before = Some(before);
+                        drag.selection_before = selection_before;
+                        drag.selection_mode_before = mode_before;
+                        drag.selection_object_before = Some(id);
+                        drag.objects_before = objects_before;
+                        drag.changed = true;
+                        self.status =
+                            "Duplicate · Move the copy · Enter confirm · Esc cancel".into();
+                        self.invalidate(true, cx);
+                    }
                 }
             }
             Command::Undo | Command::Redo => {
@@ -761,6 +954,7 @@ impl Studio {
                         self.selected = self.scene.objects.first().map(|o| o.id);
                     }
                     self.clear_components();
+                    self.objects_selected.clear();
                     self.dirty = true;
                     self.status = if command == Command::Undo {
                         "Undone"
@@ -827,6 +1021,24 @@ impl Studio {
                 self.status = format!("{tool:?} tool · Drag the selected object or an axis handle");
             }
             Command::ToggleEdit | Command::SetEditMode(_) => {
+                let previous_mode = if self.edit_mode == EditMode::Object {
+                    self.last_edit_mode
+                } else {
+                    self.edit_mode
+                };
+                let mut stored = self.components.clone();
+                stored.extend(self.selected_face.map(forma_core::MeshElement::Face));
+                stored.extend(self.selected_edge.map(forma_core::MeshElement::Edge));
+                stored.extend(self.selected_vertex.map(forma_core::MeshElement::Vertex));
+                let vertices: std::collections::BTreeSet<_> = self
+                    .selected_object()
+                    .map(|o| {
+                        stored
+                            .iter()
+                            .flat_map(|e| e.vertex_indices(o.mesh))
+                            .collect()
+                    })
+                    .unwrap_or_default();
                 self.edit_mode = match command {
                     Command::SetEditMode(mode) => mode,
                     _ if self.edit_mode.is_component() => EditMode::Object,
@@ -835,33 +1047,106 @@ impl Studio {
                 if self.edit_mode.is_component() {
                     self.last_edit_mode = self.edit_mode;
                 }
-                self.clear_components();
+                if previous_mode.is_component()
+                    && self.edit_mode.is_component()
+                    && previous_mode != self.edit_mode
+                {
+                    let object = self.selected_object();
+                    let elements = self
+                        .all_components()
+                        .into_iter()
+                        .filter(|e| {
+                            object.is_some_and(|o| {
+                                e.vertex_indices(o.mesh)
+                                    .iter()
+                                    .all(|i| vertices.contains(i))
+                            })
+                        })
+                        .collect();
+                    self.set_components(elements);
+                }
+                self.box_select = None;
                 self.status = format!(
-                    "{} mode · Click to select · G / R / S to transform",
+                    "{} mode · Shift-click extend · B box select · G / R / S transform",
                     self.edit_mode.label()
                 );
                 self.invalidate(false, cx);
             }
-            Command::Extrude => {
-                if let (Some(id), Some(face)) = (self.selected, self.selected_face) {
-                    let before = self.scene.clone();
-                    let result = self
-                        .scene
-                        .object_mesh_mut(id)
-                        .unwrap()
-                        .extrude_face(face, 0.3);
-                    match result {
-                        Ok(()) => {
-                            self.history.checkpoint(&before);
-                            self.dirty = true;
-                            self.status = "Face extruded 0.30 m · G to move the face".into();
-                            self.invalidate(true, cx);
+            Command::SelectAll
+            | Command::DeselectAll
+            | Command::InvertSelection
+            | Command::SelectLinked => {
+                if self.edit_mode.is_component() {
+                    let all = self.all_components();
+                    let selected = self.component_elements();
+                    let elements = match command {
+                        Command::SelectAll => all,
+                        Command::DeselectAll => Default::default(),
+                        Command::InvertSelection => all.difference(&selected).copied().collect(),
+                        _ => {
+                            let mut vertices: std::collections::BTreeSet<_> =
+                                self.component_vertices().into_iter().collect();
+                            if let Some(object) = self.selected_object() {
+                                loop {
+                                    let before = vertices.len();
+                                    for face in &object.mesh.faces {
+                                        if face.iter().any(|i| vertices.contains(i)) {
+                                            vertices.extend(face);
+                                        }
+                                    }
+                                    if vertices.len() == before {
+                                        break;
+                                    }
+                                }
+                                all.into_iter()
+                                    .filter(|e| {
+                                        e.vertex_indices(object.mesh)
+                                            .iter()
+                                            .all(|i| vertices.contains(i))
+                                    })
+                                    .collect()
+                            } else {
+                                Default::default()
+                            }
                         }
-                        Err(error) => self.status = format!("Extrusion: {error}"),
-                    }
+                    };
+                    self.set_components(elements);
+                    self.status =
+                        format!("{} components selected", self.component_elements().len());
+                    cx.notify();
                 } else {
-                    self.status = "Enter face mode (Tab), select a face, then extrude (E)".into();
+                    let all: std::collections::BTreeSet<_> = self
+                        .scene
+                        .mesh_instances()
+                        .filter(|o| o.selectable && self.scene.is_effectively_visible(o.id))
+                        .map(|o| o.id)
+                        .collect();
+                    let selected = self.selected_ids();
+                    let ids = match command {
+                        Command::SelectAll => all,
+                        Command::DeselectAll => Default::default(),
+                        Command::InvertSelection => all.difference(&selected).copied().collect(),
+                        _ => selected,
+                    };
+                    self.select_objects(ids, self.selected);
+                    self.status = format!("{} objects selected", self.selected_ids().len());
+                    self.invalidate(false, cx);
                 }
+            }
+            Command::BoxSelect => {
+                self.box_select = Some(crate::viewport::BoxSelection::default());
+                self.status =
+                    "Box select · Drag to select · Shift add · Ctrl subtract · Esc cancel".into();
+            }
+            Command::Extrude | Command::Inset => {
+                self.start_mesh_tool(
+                    if command == Command::Extrude {
+                        crate::modelling::MeshTool::Extrude
+                    } else {
+                        crate::modelling::MeshTool::Inset
+                    },
+                    cx,
+                );
             }
             Command::Subdivide => {
                 if let Some(id) = self.selected {
@@ -1026,6 +1311,7 @@ impl Studio {
         self.history = History::default();
         self.restore_render_preferences();
         self.selected = self.scene.objects.first().map(|o| o.id);
+        self.objects_selected.clear();
         self.clear_components();
         self.path = None;
         self.project_name = "Untitled".into();
@@ -1204,6 +1490,7 @@ impl Studio {
                         s.history.checkpoint(&s.scene);
                         s.scene = scene;
                         s.selected = Some(id);
+                        s.objects_selected.clear();
                         s.clear_components();
                         s.dirty = true;
                         s.navigation = None;
@@ -1216,6 +1503,7 @@ impl Studio {
                         s.restore_render_preferences();
                         s.history = History::default();
                         s.selected = s.scene.objects.first().map(|o| o.id);
+                        s.objects_selected.clear();
                         s.clear_components();
                         s.navigation = None;
                         s.path = Some(path.clone());
@@ -1786,33 +2074,45 @@ impl Studio {
             cx.stop_propagation();
             return;
         }
+        if self.box_select.is_some() {
+            if key == "escape" {
+                self.box_select = None;
+                self.status = "Box selection cancelled".into();
+                cx.notify();
+            }
+            cx.stop_propagation();
+            return;
+        }
         if self.transform_drag.is_some() {
             match key {
                 "escape" => self.finish_transform(true, cx),
                 "enter" => self.finish_transform(false, cx),
                 "x" | "y" | "z" => {
-                    self.transform_drag.as_mut().unwrap().axis = Some(match key {
-                        "x" => 0,
-                        "y" => 1,
-                        _ => 2,
-                    });
-                    self.update_transform(self.last_mouse, mods.shift, cx);
+                    self.transform_drag.as_mut().unwrap().constraint.cycle(
+                        match key {
+                            "x" => 0,
+                            "y" => 1,
+                            _ => 2,
+                        },
+                        mods.shift,
+                    );
+                    self.update_transform(self.last_mouse, mods.shift, mods.control, cx);
                 }
                 "backspace" => {
                     self.transform_drag.as_mut().unwrap().numeric.pop();
-                    self.update_transform(self.last_mouse, mods.shift, cx);
+                    self.update_transform(self.last_mouse, mods.shift, mods.control, cx);
                 }
                 _ => {
                     if let Some(chars) = &event.keystroke.key_char
                         && chars
                             .chars()
-                            .all(|c| c.is_ascii_digit() || ".-".contains(c))
+                            .all(|c| c.is_ascii_digit() || ".-+*/".contains(c))
                     {
                         let drag = self.transform_drag.as_mut().unwrap();
                         if drag.numeric.len() < 16 {
                             drag.numeric.push_str(chars);
                         }
-                        self.update_transform(self.last_mouse, mods.shift, cx);
+                        self.update_transform(self.last_mouse, mods.shift, mods.control, cx);
                     }
                 }
             }
@@ -1829,6 +2129,7 @@ impl Studio {
                 "z" => Some(Command::Undo),
                 "y" if cfg!(not(target_os = "macos")) => Some(Command::Redo),
                 "d" => Some(Command::Duplicate),
+                "i" => Some(Command::InvertSelection),
                 "k" => Some(Command::TogglePalette),
                 _ => None,
             }
@@ -1837,6 +2138,7 @@ impl Studio {
         } else {
             match key {
                 "escape" => {
+                    self.box_select = None;
                     self.palette_open = false;
                     self.help_open = false;
                     self.preview_open = false;
@@ -1859,7 +2161,12 @@ impl Studio {
                 "tab" => Some(Command::ToggleEdit),
                 "e" => Some(Command::Extrude),
                 "d" if mods.shift => Some(Command::Duplicate),
+                "a" if mods.alt => Some(Command::DeselectAll),
                 "a" if mods.shift => Some(Command::TogglePalette),
+                "a" => Some(Command::SelectAll),
+                "b" => Some(Command::BoxSelect),
+                "l" => Some(Command::SelectLinked),
+                "i" => Some(Command::Inset),
                 "backspace" | "delete" => Some(Command::Delete),
                 "f" | "`" | "." | "decimal" if !mods.alt && !mods.shift => {
                     Some(Command::FrameSelected)
@@ -1913,6 +2220,9 @@ impl Render for Studio {
                 cx.listener(|s, _, _, cx| {
                     if s.transform_drag.as_ref().is_some_and(|d| !d.modal) {
                         s.finish_transform(false, cx);
+                    }
+                    if s.box_select.as_ref().is_some_and(|b| b.start.is_some()) {
+                        s.finish_box_select(cx);
                     }
                     s.navigation = None;
                 }),
@@ -1978,7 +2288,17 @@ pub(crate) fn palette_commands(query: &str) -> Vec<(&'static str, &'static str, 
         ("Delete selection", "⌫", Command::Delete),
         ("Frame selected", "` / . / F", Command::FrameSelected),
         ("Subdivide mesh", "", Command::Subdivide),
-        ("Extrude selected face", "E", Command::Extrude),
+        ("Extrude face region", "E", Command::Extrude),
+        ("Inset face region", "I", Command::Inset),
+        ("Select all components", "A", Command::SelectAll),
+        ("Deselect all components", "Alt+A", Command::DeselectAll),
+        (
+            "Invert component selection",
+            "Ctrl+I",
+            Command::InvertSelection,
+        ),
+        ("Select linked components", "L", Command::SelectLinked),
+        ("Box select components", "B", Command::BoxSelect),
         (
             "Object edit mode",
             "",
