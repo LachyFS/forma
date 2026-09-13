@@ -463,6 +463,17 @@ float edge_coverage(Ray ray, Hit hit, device const Triangle &tri, constant Unifo
     if ((mask & 4u) != 0u) distance = min(distance, projected_edge_distance(position, tri.v0.xyz, tri.v1.xyz, u));
     return 1.0f - smoothstep(thickness * 0.45f, thickness * 1.45f, distance);
 }
+float3 composite_edit(float3 color, Ray ray, Hit hit, float2 pixel, device const Triangle *triangles, constant Uniforms &u) {
+    if (u.cam_origin.w < 0.5f || hit.triangle == NO_HIT) return color;
+    device const Triangle &tri = triangles[hit.triangle];
+    float3 result = mix(color, float3(0.10f, 0.13f, 0.16f), edge_coverage(ray, hit, tri, u, 1.0f) * 0.85f);
+    if (u.cam_origin.w > 1.5f) {
+        float2 marker_pixel(pixel.x - float(u.image.x) * 0.5f, float(u.image.y) * 0.5f - pixel.y);
+        float distance = min(length(marker_pixel - project_to_pixels(tri.v0.xyz, u)), min(length(marker_pixel - project_to_pixels(tri.v1.xyz, u)), length(marker_pixel - project_to_pixels(tri.v2.xyz, u))));
+        result = mix(result, float3(0.38f, 0.46f, 0.52f), 1.0f - smoothstep(2.0f, 3.0f, distance));
+    }
+    return result;
+}
 bool is_selected(Hit hit, device const Triangle *triangles, constant Uniforms &u) {
     return hit.triangle != NO_HIT && u.settings.z > 0.0f
         && abs(triangles[hit.triangle].params.z - u.settings.z) < 0.25f;
@@ -647,13 +658,13 @@ kernel void render_main(device const Triangle *triangles [[buffer(0)]],
     // Pixel-center rays keep the outline stable as path tracing samples jitter.
     float2 overlay_pixel = float2(gid) + float2(0.5f);
     Hit overlay_hit = primary;
-    if (progressive && u.settings.z > 0.0f) {
+    if (progressive && (u.settings.z > 0.0f || u.cam_origin.w > 0.0f)) {
         overlay_hit = trace(camera_ray(overlay_pixel, u), INFINITY, triangles, nodes, u);
     }
     float coverage = selection_coverage(overlay_pixel, overlay_hit, triangles, nodes, u);
     // Denoising replaces every displayed pixel, so the overlay travels to it in
     // the guide weight both guides share.
     if (progressive) normal_accumulation[index].w = coverage;
-    float3 display = display_transform(color, progressive ? u.settings.x : 0.0f);
+    float3 display = composite_edit(display_transform(color, progressive ? u.settings.x : 0.0f), camera_ray(overlay_pixel, u), overlay_hit, overlay_pixel, triangles, u);
     output.write(float4(composite_selection(display, coverage), 1.0f), gid);
 }

@@ -76,7 +76,7 @@ cargo run --locked --release -p forma
 
 - Add cubes, spheres, cylinders, tori and planes; select objects in the viewport
   or outliner, duplicate, hide and delete them.
-- Move, rotate and scale objects or selected faces with axis constraints,
+- Move, rotate and scale objects, faces, edges or vertices with axis constraints,
   numerical input and viewport handles. Edit exact values in the inspector.
 - Extrude a selected face by 0.30 units, then transform it. Apply Catmull–Clark
   subdivision to the selected mesh.
@@ -170,7 +170,8 @@ The in-app command panel opens with
 
 | Action | Input |
 | --- | --- |
-| Select object / face | Left click; `Tab` toggles object and face modes |
+| Select object / component | Left click; toolbar selects Object, Face, Edge, or Vertex; `Tab` toggles Object and the last component mode |
+| Vertex / edge / face mode | `1` / `2` / `3` while editing components |
 | Orbit | Two-finger trackpad drag, middle/right drag, `Option` + left drag, or `Option` + wheel |
 | Pan | `Shift` + two-finger drag, `Shift` + middle/right drag, or `Shift` + wheel |
 | Zoom | Pinch, mouse wheel, `Ctrl` + middle drag, or `Ctrl` / `⌘` + two-finger drag |
@@ -183,11 +184,13 @@ The in-app command panel opens with
 | Fine pointer movement | Hold `Shift` during a transform |
 | Extrude face | `E` in face mode with a selected face |
 | Duplicate / delete | `⌘D` or `Shift+D` / `Delete` or `Backspace` |
-| Front / right / top | `1` / `3` / `7` |
+| Front / right / top | `1` / `3` / `7` in Object mode (also available in the command panel) |
 | Toggle projection / reset perspective | `5` / `0` |
 | Undo / redo | `⌘Z` / `⌘Shift+Z` |
 | Color theme picker | `⌘Shift+T` |
 | New / open / save / save as | `⌘N` / `⌘O` / `⌘S` / `⌘Shift+S` |
+
+Component edit modes show visible polygon edges on every mesh; Vertex mode also shows vertex markers. G/R/S transforms the selected face, edge, or vertex around its center. Delete removes a face, or an edge/vertex and its incident faces; deleting the last face requires Object mode. Editing overlays are excluded from exported images.
 
 An unconstrained numeric move uses world X. Rotation without an axis constraint
 uses the viewing axis. Subdivision, imports, exports, primitives and material

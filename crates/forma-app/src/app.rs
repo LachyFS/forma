@@ -21,6 +21,28 @@ pub enum Tool {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EditMode {
+    Object,
+    Face,
+    Edge,
+    Vertex,
+}
+
+impl EditMode {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Object => "Object",
+            Self::Face => "Face",
+            Self::Edge => "Edge",
+            Self::Vertex => "Vertex",
+        }
+    }
+    pub fn is_component(self) -> bool {
+        self != Self::Object
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Field {
     Name,
     Color(usize),
@@ -70,6 +92,7 @@ pub enum Command {
     SetMode(RenderMode),
     SetTool(Tool),
     ToggleEdit,
+    SetEditMode(EditMode),
     Extrude,
     Subdivide,
     ToggleGrid,
@@ -104,6 +127,7 @@ pub(crate) struct TransformDrag {
     pub numeric: String,
     pub modal: bool,
     pub changed: bool,
+    pub vertices: Vec<u32>,
 }
 
 pub struct Studio {
@@ -111,7 +135,10 @@ pub struct Studio {
     pub history: History,
     pub selected: Option<u64>,
     pub selected_face: Option<usize>,
-    pub edit_mode: bool,
+    pub edit_mode: EditMode,
+    last_edit_mode: EditMode,
+    pub selected_edge: Option<[u32; 2]>,
+    pub selected_vertex: Option<u32>,
     pub settings: RenderSettings,
     pub samples: u32,
     pub denoised_generation: Option<u64>,
@@ -228,8 +255,13 @@ impl Studio {
             history: History::default(),
             selected,
             selected_face: None,
-            edit_mode: false,
+            edit_mode: EditMode::Object,
+            last_edit_mode: EditMode::Face,
+            selected_edge: None,
+            selected_vertex: None,
             settings: RenderSettings {
+                edit_wireframe: false,
+                edit_vertices: false,
                 mode: RenderMode::MaterialPreview,
                 width: 1000,
                 height: 760,
@@ -333,6 +365,51 @@ impl Studio {
         cx.notify();
     }
 
+    pub(crate) fn clear_components(&mut self) {
+        self.selected_face = None;
+        self.selected_edge = None;
+        self.selected_vertex = None;
+    }
+
+    pub(crate) fn selected_element(&self) -> Option<forma_core::MeshElement> {
+        use forma_core::MeshElement;
+        match self.edit_mode {
+            EditMode::Object => None,
+            EditMode::Face => self.selected_face.map(MeshElement::Face),
+            EditMode::Edge => self.selected_edge.map(MeshElement::Edge),
+            EditMode::Vertex => self.selected_vertex.map(MeshElement::Vertex),
+        }
+    }
+
+    pub(crate) fn component_vertices(&self) -> Vec<u32> {
+        self.selected_object()
+            .zip(self.selected_element())
+            .map(|(object, element)| element.vertices(object.mesh))
+            .unwrap_or_default()
+    }
+
+    pub(crate) fn selection_center(&self) -> Option<Vec3> {
+        let object = self.selected_object()?;
+        if !self.edit_mode.is_component() {
+            return Some(object.world_transform.transform_point3(Vec3::ZERO));
+        }
+        let vertices = self.component_vertices();
+        if vertices.is_empty() {
+            return None;
+        }
+        Some(
+            vertices
+                .iter()
+                .map(|i| {
+                    object
+                        .world_transform
+                        .transform_point3(object.mesh.positions[*i as usize])
+                })
+                .sum::<Vec3>()
+                / vertices.len() as f32,
+        )
+    }
+
     pub fn selected_object(&self) -> Option<MeshInstance<'_>> {
         self.selected.and_then(|id| self.scene.mesh_instance(id))
     }
@@ -387,6 +464,8 @@ impl Studio {
         self.denoised_generation = None;
         self.denoise_error = None;
         self.settings.selected = self.selected;
+        self.settings.edit_wireframe = self.edit_mode.is_component();
+        self.settings.edit_vertices = self.edit_mode == EditMode::Vertex;
         self.samples = 0;
         if !self.needs_render {
             self.needs_render = true;
@@ -592,14 +671,14 @@ impl Studio {
                 self.history.checkpoint(&self.scene);
                 let id = self.scene.add(primitive);
                 self.selected = Some(id);
-                self.selected_face = None;
+                self.clear_components();
                 self.dirty = true;
                 self.status = format!("Added {}", primitive.label());
                 self.invalidate(true, cx);
             }
             Command::Select(id) => {
                 self.selected = Some(id);
-                self.selected_face = None;
+                self.clear_components();
                 self.status = self
                     .scene
                     .object(id)
@@ -615,12 +694,36 @@ impl Studio {
                 self.dirty = true;
                 self.invalidate(true, cx);
             }
+            Command::Delete if self.edit_mode.is_component() => {
+                if let Some(id) = self.selected {
+                    let before = self.scene.clone();
+                    if let Some(element) = self.selected_element() {
+                        match self
+                            .scene
+                            .object_mesh_mut(id)
+                            .unwrap()
+                            .delete_element(element)
+                        {
+                            Ok(()) => {
+                                self.history.checkpoint(&before);
+                                self.clear_components();
+                                self.dirty = true;
+                                self.status = "Component deleted".into();
+                                self.invalidate(true, cx);
+                            }
+                            Err(error) => self.status = error.to_string(),
+                        }
+                    } else {
+                        self.status = "Select a component first".into();
+                    }
+                }
+            }
             Command::Delete => {
                 if let Some(id) = self.selected {
                     self.history.checkpoint(&self.scene);
                     self.scene.remove(id);
                     self.selected = None;
-                    self.selected_face = None;
+                    self.clear_components();
                     self.dirty = true;
                     self.status = platform_shortcut(
                         "Object deleted · ⌘Z to undo",
@@ -630,11 +733,14 @@ impl Studio {
                     self.invalidate(true, cx);
                 }
             }
+            Command::Duplicate if self.edit_mode.is_component() => {
+                self.status = "Switch to Object mode to duplicate an object".into();
+            }
             Command::Duplicate => {
                 if let Some(id) = self.selected {
                     self.history.checkpoint(&self.scene);
                     self.selected = self.scene.duplicate(id);
-                    self.selected_face = None;
+                    self.clear_components();
                     self.dirty = true;
                     self.status = "Object duplicated".into();
                     self.invalidate(true, cx);
@@ -654,7 +760,7 @@ impl Studio {
                     {
                         self.selected = self.scene.objects.first().map(|o| o.id);
                     }
-                    self.selected_face = None;
+                    self.clear_components();
                     self.dirty = true;
                     self.status = if command == Command::Undo {
                         "Undone"
@@ -720,15 +826,21 @@ impl Studio {
                 self.tool = tool;
                 self.status = format!("{tool:?} tool · Drag the selected object or an axis handle");
             }
-            Command::ToggleEdit => {
-                self.edit_mode = !self.edit_mode;
-                self.selected_face = None;
-                self.status = if self.edit_mode {
-                    "Face mode · Click a face, then E to extrude or G / R / S to transform"
-                } else {
-                    "Object mode"
+            Command::ToggleEdit | Command::SetEditMode(_) => {
+                self.edit_mode = match command {
+                    Command::SetEditMode(mode) => mode,
+                    _ if self.edit_mode.is_component() => EditMode::Object,
+                    _ => self.last_edit_mode,
+                };
+                if self.edit_mode.is_component() {
+                    self.last_edit_mode = self.edit_mode;
                 }
-                .into();
+                self.clear_components();
+                self.status = format!(
+                    "{} mode · Click to select · G / R / S to transform",
+                    self.edit_mode.label()
+                );
+                self.invalidate(false, cx);
             }
             Command::Extrude => {
                 if let (Some(id), Some(face)) = (self.selected, self.selected_face) {
@@ -760,7 +872,7 @@ impl Studio {
                         match self.scene.object_mesh_mut(id).unwrap().subdivide_checked() {
                             Ok(()) => {
                                 self.history.checkpoint(&before);
-                                self.selected_face = None;
+                                self.clear_components();
                                 self.dirty = true;
                                 self.status = "Catmull–Clark subdivision applied".into();
                                 self.invalidate(true, cx);
@@ -914,7 +1026,7 @@ impl Studio {
         self.history = History::default();
         self.restore_render_preferences();
         self.selected = self.scene.objects.first().map(|o| o.id);
-        self.selected_face = None;
+        self.clear_components();
         self.path = None;
         self.project_name = "Untitled".into();
         self.dirty = false;
@@ -1092,7 +1204,7 @@ impl Studio {
                         s.history.checkpoint(&s.scene);
                         s.scene = scene;
                         s.selected = Some(id);
-                        s.selected_face = None;
+                        s.clear_components();
                         s.dirty = true;
                         s.navigation = None;
                         s.status = format!("Imported {}", path.display());
@@ -1104,7 +1216,7 @@ impl Studio {
                         s.restore_render_preferences();
                         s.history = History::default();
                         s.selected = s.scene.objects.first().map(|o| o.id);
-                        s.selected_face = None;
+                        s.clear_components();
                         s.navigation = None;
                         s.path = Some(path.clone());
                         s.project_name = file_stem(&path);
@@ -1752,6 +1864,11 @@ impl Studio {
                 "f" | "`" | "." | "decimal" if !mods.alt && !mods.shift => {
                     Some(Command::FrameSelected)
                 }
+                "1" if self.edit_mode.is_component() => {
+                    Some(Command::SetEditMode(EditMode::Vertex))
+                }
+                "2" if self.edit_mode.is_component() => Some(Command::SetEditMode(EditMode::Edge)),
+                "3" if self.edit_mode.is_component() => Some(Command::SetEditMode(EditMode::Face)),
                 "1" => Some(Command::ViewFront),
                 "3" => Some(Command::ViewRight),
                 "7" => Some(Command::ViewTop),
@@ -1862,6 +1979,26 @@ pub(crate) fn palette_commands(query: &str) -> Vec<(&'static str, &'static str, 
         ("Frame selected", "` / . / F", Command::FrameSelected),
         ("Subdivide mesh", "", Command::Subdivide),
         ("Extrude selected face", "E", Command::Extrude),
+        (
+            "Object edit mode",
+            "",
+            Command::SetEditMode(EditMode::Object),
+        ),
+        (
+            "Face edit mode",
+            "3 in edit mode",
+            Command::SetEditMode(EditMode::Face),
+        ),
+        (
+            "Edge edit mode",
+            "2 in edit mode",
+            Command::SetEditMode(EditMode::Edge),
+        ),
+        (
+            "Vertex edit mode",
+            "1 in edit mode",
+            Command::SetEditMode(EditMode::Vertex),
+        ),
         (
             "Wireframe viewport",
             "Z, 4",

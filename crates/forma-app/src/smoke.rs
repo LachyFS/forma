@@ -1,5 +1,5 @@
 //! Opt-in runtime regression: exercises the real GPUI window, input dispatch and GPU worker.
-use crate::app::{Command, Field, Studio};
+use crate::app::{Command, EditMode, Field, Studio};
 use crate::platform_shortcut;
 use anyhow::{Result, ensure};
 use forma_core::{Primitive, Scene};
@@ -1206,6 +1206,69 @@ async fn run(window: WindowHandle<Studio>, output: PathBuf, cx: &mut AsyncApp) -
         );
         Ok(())
     })??;
+    // Exercise every component transform through real keyboard dispatch, including
+    // repeated numeric updates, mode switching and history.
+    for mode in [EditMode::Vertex, EditMode::Edge, EditMode::Face] {
+        let (before, selected, transform) = window.update(cx, |s, w, cx| {
+            s.execute(Command::SetEditMode(mode), w, cx);
+            match mode {
+                EditMode::Vertex => s.selected_vertex = Some(0),
+                EditMode::Edge => s.selected_edge = Some([0, 1]),
+                EditMode::Face => s.selected_face = Some(0),
+                EditMode::Object => unreachable!(),
+            }
+            (
+                s.scene.object_mesh(id).unwrap().clone(),
+                s.component_vertices(),
+                s.scene.object(id).unwrap().transform,
+            )
+        })?;
+        keys(window, &["g", "x", ".", "2", "5", "enter"], cx).await?;
+        window.update(cx, |s, _, _| -> Result<()> {
+            ensure!(
+                s.scene.object(id).unwrap().transform == transform,
+                "component move changed object transform"
+            );
+            let mesh = s.scene.object_mesh(id).unwrap();
+            for (i, p) in mesh.positions.iter().enumerate() {
+                let delta = if selected.contains(&(i as u32)) {
+                    glam::Vec3::X * 0.25
+                } else {
+                    glam::Vec3::ZERO
+                };
+                ensure!(
+                    p.distance(before.positions[i] + delta) < 0.001,
+                    "{mode:?} moved the wrong vertices"
+                );
+            }
+            Ok(())
+        })??;
+        keys(window, &[platform_shortcut("cmd-z", "ctrl-z")], cx).await?;
+        window.update(cx, |s, w, cx| -> Result<()> {
+            ensure!(
+                *s.scene.object_mesh(id).unwrap() == before,
+                "component undo did not restore mesh"
+            );
+            ensure!(
+                s.component_vertices().is_empty(),
+                "undo left stale components"
+            );
+            s.execute(Command::ToggleEdit, w, cx);
+            ensure!(
+                s.edit_mode == EditMode::Object && !s.settings.edit_wireframe,
+                "Object mode retained wireframe"
+            );
+            s.execute(Command::ToggleEdit, w, cx);
+            ensure!(
+                s.edit_mode == mode && s.settings.edit_wireframe,
+                "Tab did not restore component mode"
+            );
+            Ok(())
+        })??;
+    }
+    window.update(cx, |s, w, cx| {
+        s.execute(Command::SetEditMode(EditMode::Object), w, cx)
+    })?;
     keys(window, &["tab"], cx).await?;
     window.update(cx, |s, _, _| {
         s.selected_face = Some(0);

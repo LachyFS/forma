@@ -105,6 +105,10 @@ pub struct RenderSettings {
     pub exposure: f32,
     pub show_grid: bool,
     pub selected: Option<u64>,
+    /// Draw visible polygon edges on every mesh while editing components.
+    pub edit_wireframe: bool,
+    /// Draw visible vertex markers as well as polygon edges.
+    pub edit_vertices: bool,
     pub preview: PreviewSettings,
     pub denoise: DenoiseSettings,
 }
@@ -120,6 +124,8 @@ impl Default for RenderSettings {
             exposure: 0.0,
             show_grid: true,
             selected: None,
+            edit_wireframe: false,
+            edit_vertices: false,
             preview: PreviewSettings::default(),
             denoise: DenoiseSettings::default(),
         }
