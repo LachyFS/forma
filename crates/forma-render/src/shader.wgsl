@@ -517,6 +517,17 @@ fn edge_coverage(ray: Ray, hit: Hit, tri: Triangle, thickness: f32) -> f32 {
     if (mask & 4u) != 0u { distance = min(distance, projected_edge_distance(position, tri.v0.xyz, tri.v1.xyz)); }
     return 1.0 - smoothstep(thickness * 0.45, thickness * 1.45, distance);
 }
+fn composite_edit(color: vec3<f32>, ray: Ray, hit: Hit, pixel: vec2<f32>) -> vec3<f32> {
+    if u.cam_origin.w < 0.5 || hit.triangle == NO_HIT { return color; }
+    let tri = triangles[hit.triangle];
+    var result = mix(color, vec3(0.10, 0.13, 0.16), edge_coverage(ray, hit, tri, 1.0) * 0.85);
+    if u.cam_origin.w > 1.5 {
+        let marker_pixel = vec2(pixel.x - f32(u.image.x) * 0.5, f32(u.image.y) * 0.5 - pixel.y);
+        let distance = min(length(marker_pixel - project_to_pixels(tri.v0.xyz)), min(length(marker_pixel - project_to_pixels(tri.v1.xyz)), length(marker_pixel - project_to_pixels(tri.v2.xyz))));
+        result = mix(result, vec3(0.38, 0.46, 0.52), 1.0 - smoothstep(2.0, 3.0, distance));
+    }
+    return result;
+}
 fn is_selected(hit: Hit) -> bool {
     return hit.triangle != NO_HIT && u.settings.z > 0.0
         && abs(triangles[hit.triangle].params.z - u.settings.z) < 0.25;
@@ -670,14 +681,14 @@ fn render_main(@builtin(global_invocation_id) global_id: vec3<u32>) {
     // tracing jitter. The same silhouette band is visible in every mode.
     let overlay_pixel = vec2<f32>(gid) + vec2(0.5);
     var overlay_hit = primary;
-    if progressive && u.settings.z > 0.0 {
+    if progressive && (u.settings.z > 0.0 || u.cam_origin.w > 0.0) {
         overlay_hit = trace(camera_ray(overlay_pixel), FAR, false);
     }
     let coverage = selection_coverage(overlay_pixel, overlay_hit);
     // Denoising replaces every displayed pixel, so the overlay travels to it in
     // the guide weight both guides share.
     if progressive { denoise_guides[index].normal.w = coverage; }
-    let display = display_transform(color, select(0.0, u.settings.x, progressive));
+    let display = composite_edit(display_transform(color, select(0.0, u.settings.x, progressive)), camera_ray(overlay_pixel), overlay_hit, overlay_pixel);
     textureStore(output, vec2<i32>(gid), vec4(composite_selection(display, coverage), 1.0));
 }
 

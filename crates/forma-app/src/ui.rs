@@ -1,5 +1,5 @@
 //! Native workspace chrome. Rendering and interaction state live in `Studio`.
-use crate::app::{Command, Field, Studio, Tool};
+use crate::app::{Command, EditMode, Field, Studio, Tool};
 use crate::platform_shortcut;
 use crate::shading_pie::{CARD_HALF_SIZE, CHOICES};
 use crate::theme::{Colors, Theme};
@@ -127,8 +127,17 @@ fn command_hint(command: Command) -> &'static str {
         Command::SetTool(Tool::Move) => "Move · G",
         Command::SetTool(Tool::Rotate) => "Rotate · R",
         Command::SetTool(Tool::Scale) => "Scale · S",
-        Command::ToggleEdit => "Toggle object / face edit · Tab",
-        Command::Extrude => "Extrude selected face · E",
+        Command::SetEditMode(_) => "Select object, face, edge, or vertex mode",
+        Command::ToggleEdit => "Toggle object / component edit · Tab",
+        Command::Inset => "Inset face region · I",
+        Command::SelectAll => "Select all · A",
+        Command::DeselectAll => "Deselect all · Alt+A",
+        Command::InvertSelection => {
+            platform_shortcut("Invert selection · ⌘I", "Invert selection · Ctrl+I")
+        }
+        Command::SelectLinked => "Select connected components · L",
+        Command::BoxSelect => "Box select · B",
+        Command::Extrude => "Extrude face region · E",
         Command::Subdivide => "Subdivide selected mesh",
         Command::ToggleGrid => "Toggle ground grid",
         Command::ToggleViewportDenoise => "AI denoising for the Rendered viewport",
@@ -731,6 +740,7 @@ fn mode_segment(
     id: &'static str,
     label: &'static str,
     active: bool,
+    mode: EditMode,
     cx: &mut Context<Studio>,
 ) -> Stateful<Div> {
     row()
@@ -749,9 +759,9 @@ fn mode_segment(
                     cx.new(|_| Tooltip(command_hint(Command::ToggleEdit), t))
                         .into()
                 })
-                .on_click(cx.listener(|s, _, window, cx| {
+                .on_click(cx.listener(move |s, _, window, cx| {
                     cx.stop_propagation();
-                    s.execute(Command::ToggleEdit, window, cx);
+                    s.execute(Command::SetEditMode(mode), window, cx);
                 }))
         })
 }
@@ -764,8 +774,38 @@ fn toolbar(t: Colors, s: &Studio, cx: &mut Context<Studio>) -> AnyElement {
         .child(icon(Icon::Cube, t.muted, 14.))
         .child(
             segmented(t)
-                .child(mode_segment(t, "mode-object", "Object", !s.edit_mode, cx))
-                .child(mode_segment(t, "mode-face", "Face", s.edit_mode, cx)),
+                .child(mode_segment(
+                    t,
+                    "mode-object",
+                    "Object",
+                    s.edit_mode == EditMode::Object,
+                    EditMode::Object,
+                    cx,
+                ))
+                .child(mode_segment(
+                    t,
+                    "mode-face",
+                    "Face",
+                    s.edit_mode == EditMode::Face,
+                    EditMode::Face,
+                    cx,
+                ))
+                .child(mode_segment(
+                    t,
+                    "mode-edge",
+                    "Edge",
+                    s.edit_mode == EditMode::Edge,
+                    EditMode::Edge,
+                    cx,
+                ))
+                .child(mode_segment(
+                    t,
+                    "mode-vertex",
+                    "Vertex",
+                    s.edit_mode == EditMode::Vertex,
+                    EditMode::Vertex,
+                    cx,
+                )),
         )
         .child(divider(t))
         .child(
@@ -835,6 +875,7 @@ fn toolbar(t: Colors, s: &Studio, cx: &mut Context<Studio>) -> AnyElement {
 }
 
 fn outliner(t: Colors, s: &Studio, cx: &mut Context<Studio>) -> AnyElement {
+    let selected_ids = s.selected_ids();
     let objects =
         s.scene
             .objects
@@ -842,7 +883,7 @@ fn outliner(t: Colors, s: &Studio, cx: &mut Context<Studio>) -> AnyElement {
             .enumerate()
             .map(|(index, object)| {
                 let id = object.id;
-                let selected = s.selected == Some(id);
+                let selected = selected_ids.contains(&id);
                 let ink = if !object.visible { t.faint } else { t.text };
                 row()
                     .id(SharedString::from(format!("object-{id}")))
@@ -899,7 +940,24 @@ fn outliner(t: Colors, s: &Studio, cx: &mut Context<Studio>) -> AnyElement {
                         20.,
                         cx,
                     ))
-                    .on_click(cx.listener(move |s, _, w, cx| s.execute(Command::Select(id), w, cx)))
+                    .on_click(cx.listener(move |s, event: &ClickEvent, w, cx| {
+                        if event.modifiers().shift && s.edit_mode == EditMode::Object {
+                            if s.transform_drag.is_some() {
+                                s.finish_transform(false, cx);
+                            }
+                            if s.transform_drag.is_some() {
+                                return;
+                            }
+                            let mut ids = s.selected_ids();
+                            if !ids.insert(id) {
+                                ids.remove(&id);
+                            }
+                            s.select_objects(ids, Some(id));
+                            s.invalidate(false, cx);
+                        } else {
+                            s.execute(Command::Select(id), w, cx);
+                        }
+                    }))
             })
             .collect::<Vec<_>>();
     editor(t)
@@ -1764,6 +1822,20 @@ fn inspector(t: Colors, s: &Studio, cx: &mut Context<Studio>) -> AnyElement {
                         .flex_1()
                         .justify_center()
                         .bg(rgb(t.raised)),
+                    )
+                    .child(
+                        button(
+                            t,
+                            "inset",
+                            "Inset",
+                            Some(Icon::Grid),
+                            Command::Inset,
+                            false,
+                            cx,
+                        )
+                        .flex_1()
+                        .justify_center()
+                        .bg(rgb(t.raised)),
                     ),
             );
         contents = contents.child(panel_card(
@@ -1804,7 +1876,7 @@ fn inspector(t: Colors, s: &Studio, cx: &mut Context<Studio>) -> AnyElement {
                 .child(icon(Icon::Scale, t.muted, 13.))
                 .child(div().font_weight(FontWeight::MEDIUM).child("Properties"))
                 .child(div().flex_1())
-                .child(caption(t, if s.edit_mode { "Face" } else { "Object" })),
+                .child(caption(t, s.edit_mode.label())),
         )
         .child(
             row()
@@ -1848,10 +1920,16 @@ fn inspector(t: Colors, s: &Studio, cx: &mut Context<Studio>) -> AnyElement {
 }
 
 fn footer(t: Colors, s: &Studio, cx: &mut Context<Studio>) -> AnyElement {
-    let face = s.edit_mode.then(|| {
-        s.selected_face
-            .map(|face| format!("Face {}", face + 1))
-            .unwrap_or_else(|| "Click a face".to_owned())
+    let face = s.edit_mode.is_component().then(|| {
+        if s.component_vertices().is_empty() {
+            format!("Click a {}", s.edit_mode.label().to_lowercase())
+        } else {
+            format!(
+                "{} {} selected",
+                s.component_elements().len(),
+                s.edit_mode.label().to_lowercase()
+            )
+        }
     });
     row()
         .h(px(22.))
@@ -2679,10 +2757,15 @@ fn help_overlay(t: Colors, cx: &mut Context<Studio>) -> AnyElement {
                 vec![
                     ("Q", "Select tool"),
                     ("G / R / S", "Move / rotate / scale"),
-                    ("X / Y / Z", "Constrain a transform"),
+                    ("X / Y / Z", "Global / local / free constraint"),
+                    ("Shift + X/Y/Z", "Constrain to a plane"),
+                    ("Ctrl / Shift", "Snap / precision movement"),
+                    ("A / Alt+A / B", "Select all / none / box"),
+                    ("Shift + click", "Extend component selection"),
                     ("Enter / Escape", "Confirm / cancel"),
-                    ("Tab", "Object / face edit"),
-                    ("E", "Extrude selected face"),
+                    ("Tab", "Object / component edit"),
+                    ("1 / 2 / 3", "Vertex / edge / face in edit mode"),
+                    ("E / I", "Extrude / inset region"),
                     ("Shift + D", "Duplicate object"),
                 ],
             ),

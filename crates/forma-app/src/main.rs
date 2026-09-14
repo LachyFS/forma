@@ -1,11 +1,13 @@
 mod app;
 mod code_editor;
+mod modelling;
 mod render_worker;
 mod shading_pie;
 mod smoke;
 mod theme;
 #[cfg(target_os = "macos")]
 mod trackpad;
+mod transform;
 mod ui;
 mod viewport;
 
