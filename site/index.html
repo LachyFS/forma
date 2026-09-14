@@ -9,15 +9,15 @@
     <meta property="og:title" content="Forma — A native 3D modelling workspace.">
     <meta property="og:description" content="A focused, native 3D editor. Shape geometry, explore materials, and find your next idea.">
     <meta property="og:url" content="https://lachyfs.github.io/forma/">
-    <meta property="og:image" content="https://lachyfs.github.io/forma/assets/social-engine.png">
+    <meta property="og:image" content="https://lachyfs.github.io/forma/assets/social-editing.png">
     <meta property="og:image:width" content="1200">
     <meta property="og:image:height" content="630">
-    <meta property="og:image:alt" content="Forma’s native 3D editor displaying a detailed V8 engine mesh study.">
+    <meta property="og:image:alt" content="A shaded and wireframe comparison of an exploded V8 engine being edited in Forma.">
     <meta name="twitter:card" content="summary_large_image">
     <meta name="twitter:title" content="Forma — A native 3D modelling workspace.">
     <meta name="twitter:description" content="A focused, native 3D editor. Shape geometry, explore materials, and find your next idea.">
-    <meta name="twitter:image" content="https://lachyfs.github.io/forma/assets/social-engine.png">
-    <meta name="twitter:image:alt" content="Forma’s native 3D editor displaying a detailed V8 engine mesh study.">
+    <meta name="twitter:image" content="https://lachyfs.github.io/forma/assets/social-editing.png">
+    <meta name="twitter:image:alt" content="A shaded and wireframe comparison of an exploded V8 engine being edited in Forma.">
     <title>Forma — A native 3D modelling workspace.</title>
     <link rel="canonical" href="https://lachyfs.github.io/forma/">
     <link rel="icon" type="image/png" href="./assets/favicon.png">
@@ -38,14 +38,22 @@
     </header>
     <main id="main">
       <section class="hero page-width" aria-labelledby="hero-title">
-        <div class="hero-heading"><p class="eyebrow"><span class="status-dot" aria-hidden="true"></span> NATIVE TO YOUR DESKTOP. OPEN BY DESIGN.</p><h1 id="hero-title">Model the details.<br><span>See the whole picture.</span></h1></div>
-        <div class="hero-copy"><p class="hero-description">Direct mesh editing. Materials and lighting. <br>A native, open-source 3D workspace for taking<br class="desktop-break"> an idea from its first face to its final form.</p><div class="hero-actions"><a class="button button-primary" href="#download">Download Forma <span aria-hidden="true">↓</span></a><a class="text-link" href="https://github.com/LachyFS/forma#readme">Documentation ↗</a></div><p class="hero-note">Free &amp; open source · macOS, Windows, Linux</p></div>
+        <div class="hero-app"><img src="./assets/icon.png" width="72" height="72" alt="Forma app icon"><span>FORMA</span></div>
+        <div class="hero-heading"><h1 id="hero-title">Model the details. <br><span>See the whole picture.</span></h1></div>
+        <div class="hero-copy"><p class="hero-description">A native, open-source workspace for 3D modelling. <br>Shape geometry. Explore materials. Work in the details.</p><a class="button button-primary hero-download" href="#download">Download for macOS <span aria-hidden="true">↓</span></a><p class="hero-note">Free &amp; open source</p><div class="hero-platforms"><a href="https://github.com/LachyFS/forma/blob/main/docs/PLATFORMS.md">Windows &amp; Linux builds ↗</a><span aria-hidden="true">·</span><a href="https://github.com/LachyFS/forma#readme">Documentation ↗</a></div></div>
       </section>
-      <section class="workspace page-width" id="workspace" aria-label="The Forma editor with a V8 engine study">
-        <div class="preview-toolbar"><div class="scene-file"><span class="file-cube" aria-hidden="true">◇</span> v8-engine.forma <span class="file-tag">MESH STUDY</span></div><div class="preview-switcher" role="group" aria-label="Choose an engine screenshot" hidden><button type="button" data-preview="workspace" aria-pressed="true" aria-controls="workspace-image">Material preview</button><button type="button" data-preview="solid" aria-pressed="false" aria-controls="workspace-image">Solid</button><button type="button" data-preview="wireframe" aria-pressed="false" aria-controls="workspace-image">Wireframe</button></div></div>
-        <figure class="app-preview"><img id="workspace-image" src="./assets/engine-workspace.webp" width="1918" height="1118" fetchpriority="high" alt="Forma's actual editor displaying a detailed V8 engine with eight intake stacks, teal ribbed cam covers, metallic exhaust headers, pulleys, and fasteners. The scene outliner and material inspector are visible."><figcaption class="visually-hidden">An original V8 engine mesh study open in Forma's Material Preview viewport.</figcaption></figure>
-        <div class="preview-caption"><p id="preview-description">V8 engine study · 276 mesh objects · Material preview</p><a id="preview-full" href="./assets/engine-workspace.webp" target="_blank" rel="noopener">Open screenshot <span aria-hidden="true">↗</span></a></div>
-        <p class="capture-note">Captured in Forma. An illustrative mesh study open in the native editor.</p>
+      <section class="workspace page-width" id="workspace" aria-label="Compare shaded and wireframe views of an engine being edited in Forma">
+        <div class="preview-toolbar"><div class="scene-file"><span class="file-cube" aria-hidden="true">◇</span> v8-engine-exploded.forma <span class="file-tag">EDITING STUDY</span></div><span class="comparison-note">SCREENSHOT COMPARISON</span></div>
+        <div class="comparison-labels"><span>Material preview</span><span>Wireframe</span></div>
+        <figure class="app-preview comparison" style="--split:54%">
+          <img id="workspace-image" src="./assets/engine-editing-shaded.webp" width="1918" height="1118" fetchpriority="high" alt="Forma editing an exploded V8 engine assembly in Material Preview. A cam-cover face is selected, with mesh edges and the move gizmo visible.">
+          <div class="comparison-wireframe"><img src="./assets/engine-editing-wireframe.webp" width="1918" height="1118" alt="The identical exploded engine and editing selection in Forma's Wireframe view, showing the mesh topology."></div>
+          <div class="comparison-divider" aria-hidden="true"><span>↔</span></div>
+          <input class="comparison-range" id="comparison-range" type="range" min="0" max="100" value="54" aria-label="Shaded and wireframe screenshot split" aria-describedby="comparison-help" hidden>
+          <figcaption class="visually-hidden">Two real captures of the same editing session in Forma: shaded on the left, wireframe on the right.</figcaption>
+        </figure>
+        <div class="preview-caption"><span>Exploded V8 · Face editing · 276 mesh objects</span><span id="comparison-help">Material preview / Wireframe</span></div>
+        <div class="capture-links"><p class="capture-note">Two captures of the same scene in Forma.</p><div><a href="./assets/engine-editing-shaded.webp" target="_blank" rel="noopener">Open shaded capture ↗</a><a href="./assets/engine-editing-wireframe.webp" target="_blank" rel="noopener">Open wireframe capture ↗</a></div></div>
       </section>
       <section class="features" id="features" aria-labelledby="features-title">
         <div class="page-width features-layout">
