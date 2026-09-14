@@ -44,7 +44,7 @@ Serve `.mjs` files with a JavaScript MIME type.
 The canonical and social metadata target `https://lachyfs.github.io/forma/`.
 When publishing under another domain, update the canonical URL,
 `og:url`, `og:image`, and `twitter:image` in `index.html` to that domain.
-The social image is `assets/social-engine.png`.
+The social image is `assets/social-editing.png`.
 The custom social card is 1200 × 630. Do not use a local preview URL in public
 metadata.
 
@@ -96,22 +96,28 @@ The site follows the editor's Forma Dark theme: charcoal shell `#1d1e20`,
 panels `#292a2d`, text `#e1e2e4`, and mint accent `#96d5c2`. The screenshot is
 presented square to the page with compact controls and technical typography.
 
-The hero shows real, full-window Forma screenshots of an original V8 engine
-mesh study in Material Preview, Solid, and Wireframe modes. The scene contains
-276 mesh objects and is included at `docs/scenes/v8-engine.forma`. Its generator
-is `scripts/create-engine-study.py`; see `docs/scenes/README.md` for provenance
-and capture details. The screenshots use the existing native UI and renderer;
-no engine image or editor controls were composited into them.
+The hero centres the app icon and a prominent **Download for macOS** action.
+Without an available packaged release it opens the download details; when the
+release API returns a Mac asset it links directly to that selected download.
+Windows/Linux build instructions and documentation sit alongside it.
 
-The app icon comes from `assets/` in this repository. WebP screenshots preserve
-the captured 1918 × 1118 window dimensions. `assets/social-engine.png` is a
-1200 × 630 browser-rendered link preview with the actual engine screenshot.
+The screenshot comparison shows the same exploded V8 engine in Material Preview
+and Wireframe, with Face mode, a selected cam-cover face, and the Move tool active.
+Both are real full-window captures from Forma. The draggable divider is a website
+comparison control, not an editor split-viewport feature. Its native range input
+also supports arrow keys, Home, and End, with an accessible percentage value.
+With JavaScript disabled, the static split and full-size image links still work.
+
+The assembled and exploded scenes are included in `docs/scenes/`; reproduce them
+with `scripts/create-engine-study.py` and its `--exploded` option. See the scene
+README for capture provenance. Images preserve the captured 1918 × 1118 window
+size. `assets/social-editing.png` is a 1200 × 630 link preview using those captures.
 
 IBM Plex Sans and Mono are self-hosted as compact Latin WOFF2 fonts.
 Their SIL Open Font License files are included in `assets/fonts/`; the page
 makes no font requests to an external service.
 
 The page includes native FAQ disclosures, keyboard-operable screenshot
-controls, visible focus states, a skip link, responsive layouts, and reduced
+comparison, visible focus states, a skip link, responsive layouts, and reduced
 motion support. All primary navigation and release links work without
 JavaScript.

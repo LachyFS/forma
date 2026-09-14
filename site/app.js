@@ -1,51 +1,19 @@
 // Progressive enhancements. All primary links also work without JavaScript.
 import { fetchLatestRelease, RELEASES_URL } from "./releases.mjs";
 
-const previews = {
-  workspace: {
-    src: "./assets/engine-workspace.webp",
-    alt: "Forma's actual editor showing the V8 engine study in Material Preview, with teal cam covers, polished intake stacks, exhaust headers, and the scene outliner and material inspector.",
-    caption: "V8 engine study · 276 mesh objects · Material preview",
-  },
-  solid: {
-    src: "./assets/engine-solid.webp",
-    alt: "The same V8 engine open in Forma's Solid viewport, showing the geometry in neutral clay shading with the engine block selected.",
-    caption: "V8 engine study · 276 mesh objects · Solid shading",
-  },
-  wireframe: {
-    src: "./assets/engine-wireframe.webp",
-    alt: "The V8 engine in Forma's Wireframe viewport, exposing the mesh edges of the intake stacks, engine block, exhaust runners, and pulleys.",
-    caption: "V8 engine study · 276 mesh objects · Wireframe",
-  },
-};
+const comparison = document.querySelector(".comparison");
+const comparisonRange = document.querySelector("#comparison-range");
 
-const previewButtons = [...document.querySelectorAll("[data-preview]")];
-const previewImage = document.querySelector("#workspace-image");
-const previewDescription = document.querySelector("#preview-description");
-let previewRequest = 0;
+function updateComparison() {
+  const shaded = Number(comparisonRange.value);
+  comparison.style.setProperty("--split", `${shaded}%`);
+  comparisonRange.setAttribute("aria-valuetext", `${shaded}% shaded, ${100 - shaded}% wireframe`);
+}
 
-previewButtons.forEach((button) => {
-  button.addEventListener("click", async () => {
-    const preview = previews[button.dataset.preview];
-    const request = ++previewRequest;
-    const nextImage = new Image();
-    nextImage.src = preview.src;
-    try {
-      await nextImage.decode();
-    } catch {
-      // Leave the working image and selected button intact if an asset fails.
-      return;
-    }
-    if (request !== previewRequest) return;
-    previewImage.src = preview.src;
-    previewImage.alt = preview.alt;
-    document.querySelector("#preview-full").href = preview.src;
-    previewImage.closest("figure").querySelector("figcaption").textContent = preview.alt;
-    previewDescription.textContent = preview.caption;
-    previewButtons.forEach((item) => item.setAttribute("aria-pressed", String(item === button)));
-  });
-});
-document.querySelector(".preview-switcher").hidden = false;
+comparisonRange.addEventListener("input", updateComparison);
+comparisonRange.hidden = false;
+document.querySelector("#comparison-help").textContent = "Drag the divider or use the arrow keys to compare.";
+updateComparison();
 
 const downloadLink = document.querySelector("#release-download");
 const downloadLabel = document.querySelector("#download-label");
@@ -53,6 +21,7 @@ const downloadStatus = document.querySelector("#download-status");
 
 function selectDownload(download) {
   downloadLink.href = download.url;
+  document.querySelector(".hero-download").href = download.url;
   downloadLabel.textContent = `Download for ${download.architecture === "Universal" ? "Mac · Universal" : download.architecture}`;
   document.querySelector("#download-arrow").textContent = "↓";
   downloadStatus.textContent = `${download.name}${download.size ? ` · ${download.size}` : ""}. See release notes for installation and system requirements.`;
