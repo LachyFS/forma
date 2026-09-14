@@ -4,6 +4,7 @@
 Uses only Python's standard library. This is modelling artwork, not a dimensioned
 or mechanically validated engine. Open docs/scenes/v8-engine.forma in Forma.
 """
+import argparse
 import json
 import math
 from pathlib import Path
@@ -189,7 +190,42 @@ for side in [-1,1]:
     add('Engine mount bush',cylinder(.14,.16),rubber,(side*1.64,.66,.6))
 
 scene={'objects':objects,'meshes':meshes,'materials':materials,'collections':[{'id':1,'name':'V8 engine study','parent':None,'visible':True}],'root_collection':1,'camera':{'target':[0,1.25,0],'yaw':.68,'pitch':.4,'distance':11.7,'fov_y':.67,'orthographic':False},'world':{'color':[.48,.58,.72],'strength':.35},'render':{'exposure':0,'max_samples':128,'max_bounces':8},'next_id':serial+1}
-path=Path(__file__).resolve().parents[1]/'docs/scenes/v8-engine.forma'
+parser = argparse.ArgumentParser(description=__doc__)
+parser.add_argument('--exploded', action='store_true', help='Separate the assemblies for an editing study')
+args = parser.parse_args()
+if args.exploded:
+    mesh_by_id = {m['id']: m['mesh'] for m in meshes}
+    for obj in objects:
+        name = obj['name']
+        origin = obj['transform']['translation']
+        vertices = mesh_by_id[obj['data']['mesh']]['positions']
+        center_x = origin[0] + sum(p[0] for p in vertices) / len(vertices)
+        side = -1 if center_x < 0 else 1
+        offset = [0,0,0]
+        if name.startswith(('Cam cover', 'Cover hex', 'Oil filler')):
+            offset = [side*.8, .9, 0]
+        elif name.startswith('Cylinder head'):
+            offset = [side*.25, .24, 0]
+        elif name == 'Head gasket':
+            offset = [side*.47, .54, 0]
+        elif name.startswith(('Velocity stack', 'Intake', 'Throttle', 'Fuel rail', 'Injector', 'Rail fitting')):
+            offset = [0, .85, 0]
+        elif name.startswith(('Tubular exhaust', 'Exhaust', 'Collector')):
+            offset = [side*.95, 0, 0]
+        elif name.startswith(('Crank pulley', 'Water pump', 'Alternator', 'Idler', 'Drive belt')):
+            offset = [0, 0, .8]
+        elif name.startswith(('Timing housing', 'Timing cover')):
+            offset = [0, 0, .35]
+        elif name in ['Oil sump', 'Sump cooling rib']:
+            offset = [0, -.65, 0]
+        elif name == 'Sump flange':
+            offset = [0, -.2, 0]
+        obj['transform']['translation'] = [round(origin[i]+offset[i],5) for i in range(3)]
+    objects.sort(key=lambda obj: not (obj['name'] == 'Cam cover / petrol enamel' and obj['transform']['translation'][0] > 0))
+    scene['camera'].update(target=[0,1.45,0], distance=13.5, pitch=.38)
+    scene['collections'][0]['name'] = 'V8 exploded study'
+filename = 'v8-engine-exploded.forma' if args.exploded else 'v8-engine.forma'
+path=Path(__file__).resolve().parents[1]/'docs/scenes'/filename
 path.parent.mkdir(parents=True,exist_ok=True)
 path.write_text(json.dumps({'format':'forma','version':3,'scene':scene},separators=(',',':'))+'\n')
 print(f'{path}: {len(objects)} objects, {sum(len(m["mesh"]["positions"]) for m in meshes):,} vertices, {path.stat().st_size:,} bytes')
