@@ -41,7 +41,17 @@ impl Uniforms {
         };
         let position = camera.position();
         Self {
-            cam_origin: [position.x, position.y, position.z, 0.0],
+            // The spare camera-origin lane carries component overlay mode.
+            cam_origin: [
+                position.x,
+                position.y,
+                position.z,
+                if settings.edit_vertices {
+                    2.0
+                } else {
+                    u32::from(settings.edit_wireframe) as f32
+                },
+            ],
             cam_right: vector(Vec3::X),
             cam_up: vector(Vec3::Y),
             cam_forward: vector(Vec3::NEG_Z),

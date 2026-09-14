@@ -44,7 +44,7 @@ Serve `.mjs` files with a JavaScript MIME type.
 The canonical and social metadata target `https://lachyfs.github.io/forma/`.
 When publishing under another domain, update the canonical URL,
 `og:url`, `og:image`, and `twitter:image` in `index.html` to that domain.
-The social image is `assets/social-studio.png`.
+The social image is `assets/social-engine.png`.
 The custom social card is 1200 × 630. Do not use a local preview URL in public
 metadata.
 
@@ -92,15 +92,20 @@ releases, source-only releases, and network/API failures.
 
 ## Assets and accessibility
 
-Forma's visual identity uses a warm paper background, deep green typography,
-and a bright green accent. The asymmetric composition puts the real app
-workspace beside a large sans-serif headline. Feature descriptions reflect
-existing app capabilities; there are no simulated editor controls or demos.
+The site follows the editor's Forma Dark theme: charcoal shell `#1d1e20`,
+panels `#292a2d`, text `#e1e2e4`, and mint accent `#96d5c2`. The screenshot is
+presented square to the page with compact controls and technical typography.
 
-The app icon and screenshots come from `assets/` and `docs/images/` in this
-repository. WebP screenshots are resized for the page. `assets/social-studio.png`
-is a 1200 × 630 browser-rendered social card with the site's typography,
-colors, and actual Forma workspace image.
+The hero shows real, full-window Forma screenshots of an original V8 engine
+mesh study in Material Preview, Solid, and Wireframe modes. The scene contains
+276 mesh objects and is included at `docs/scenes/v8-engine.forma`. Its generator
+is `scripts/create-engine-study.py`; see `docs/scenes/README.md` for provenance
+and capture details. The screenshots use the existing native UI and renderer;
+no engine image or editor controls were composited into them.
+
+The app icon comes from `assets/` in this repository. WebP screenshots preserve
+the captured 1918 × 1118 window dimensions. `assets/social-engine.png` is a
+1200 × 630 browser-rendered link preview with the actual engine screenshot.
 
 IBM Plex Sans and Mono are self-hosted as compact Latin WOFF2 fonts.
 Their SIL Open Font License files are included in `assets/fonts/`; the page

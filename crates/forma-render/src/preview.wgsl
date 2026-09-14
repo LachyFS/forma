@@ -117,7 +117,7 @@ fn preview_main(@builtin(global_invocation_id) global_id: vec3<u32>) {
         color += add_grid(sample_color, ray, hit, p) * 0.25;
     }
     accumulation[gid.y * u.image.x + gid.x] = vec4(color, 1.0);
-    let display = display_transform(color, u.settings.x);
+    let display = composite_edit(display_transform(color, u.settings.x), center_ray, center_hit, pixel);
     let coverage = selection_coverage(pixel, center_hit);
     textureStore(output, vec2<i32>(gid), vec4(composite_selection(display, coverage), 1.0));
 }

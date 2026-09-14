@@ -2,13 +2,17 @@
 //! Coordinates are right handed, +Y is up, and material colors are linear RGB.
 
 mod camera;
+mod edit;
 mod history;
 mod material;
 mod mesh;
 mod obj;
 mod scene;
+mod surface_query;
+pub use surface_query::SurfaceQuery;
 
 pub use camera::{Camera, Ray};
+pub use edit::MeshElement;
 pub use glam::{Mat4, Vec2, Vec3};
 pub use history::History;
 pub use mesh::{Mesh, Primitive};

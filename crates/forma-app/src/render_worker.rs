@@ -160,6 +160,9 @@ impl RenderWorker {
                                 output.render_error = None;
                             });
                             if request.settings.mode.progressive()
+                                // Component overlays are composed after the clean film. Keep the
+                                // interactive display until returning to Object mode.
+                                && !request.settings.edit_wireframe
                                 && request.settings.denoise.viewport
                                 && denoise_due(
                                     samples,
@@ -227,6 +230,8 @@ impl RenderWorker {
     /// Exports use a separate renderer and immutable scene snapshot. Editing can continue.
     pub fn export(&self, mut request: Request, path: PathBuf) {
         request.settings.selected = None;
+        request.settings.edit_wireframe = false;
+        request.settings.edit_vertices = false;
         request.settings.show_grid = false;
         let output = self.output.clone();
         let backend = self.backend;

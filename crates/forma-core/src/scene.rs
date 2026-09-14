@@ -1097,6 +1097,15 @@ impl Scene {
     }
 
     pub fn pick(&self, ray: Ray) -> Option<Hit> {
+        self.pick_filtered(ray, true)
+    }
+
+    /// Closest visible surface, including objects locked against selection.
+    pub fn pick_surface(&self, ray: Ray) -> Option<Hit> {
+        self.pick_filtered(ray, false)
+    }
+
+    fn pick_filtered(&self, ray: Ray, selectable_only: bool) -> Option<Hit> {
         if !ray.origin.is_finite() || !ray.direction.is_finite() {
             return None;
         }
@@ -1105,10 +1114,9 @@ impl Scene {
             return None;
         }
         let mut closest: Option<Hit> = None;
-        for instance in self
-            .mesh_instances()
-            .filter(|instance| instance.selectable && self.is_effectively_visible(instance.id))
-        {
+        for instance in self.mesh_instances().filter(|instance| {
+            (!selectable_only || instance.selectable) && self.is_effectively_visible(instance.id)
+        }) {
             let object = instance.object;
             let matrix = instance.world_transform;
             if !matrix.is_finite() || matrix.determinant() == 0.0 {
@@ -1636,7 +1644,13 @@ fn valid_color(value: Vec3, max: f32) -> bool {
     value.is_finite() && value.min_element() >= 0.0 && value.max_element() <= max
 }
 
-fn intersect_triangle(origin: Vec3, direction: Vec3, a: Vec3, b: Vec3, c: Vec3) -> Option<f32> {
+pub(crate) fn intersect_triangle(
+    origin: Vec3,
+    direction: Vec3,
+    a: Vec3,
+    b: Vec3,
+    c: Vec3,
+) -> Option<f32> {
     // Double precision and a scale-relative parallel threshold keep selection
     // reliable for very small imported parts and very large object transforms.
     let (origin, direction, a, b, c) = (

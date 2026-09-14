@@ -1,5 +1,5 @@
 //! Opt-in runtime regression: exercises the real GPUI window, input dispatch and GPU worker.
-use crate::app::{Command, Field, Studio};
+use crate::app::{Command, EditMode, Field, Studio};
 use crate::platform_shortcut;
 use anyhow::{Result, ensure};
 use forma_core::{Primitive, Scene};
@@ -1152,6 +1152,7 @@ async fn run(window: WindowHandle<Studio>, output: PathBuf, cx: &mut AsyncApp) -
         Ok(())
     })??;
     println!("trackpad_navigation_pass");
+    check_modelling_workflow(window, cx).await?;
     keys(window, &["0"], cx).await?;
     let (id, before_x) = window.update(cx, |s, w, cx| {
         s.execute(Command::Add(Primitive::Cube), w, cx);
@@ -1165,7 +1166,7 @@ async fn run(window: WindowHandle<Studio>, output: PathBuf, cx: &mut AsyncApp) -
             s.shading_pie.is_none()
                 && s.transform_drag
                     .as_ref()
-                    .is_some_and(|drag| drag.axis == Some(2)),
+                    .is_some_and(|drag| drag.constraint.axis == Some(2)),
             "Z opened shading instead of constraining the active transform"
         );
         Ok(())
@@ -1206,11 +1207,74 @@ async fn run(window: WindowHandle<Studio>, output: PathBuf, cx: &mut AsyncApp) -
         );
         Ok(())
     })??;
+    // Exercise every component transform through real keyboard dispatch, including
+    // repeated numeric updates, mode switching and history.
+    for mode in [EditMode::Vertex, EditMode::Edge, EditMode::Face] {
+        let (before, selected, transform) = window.update(cx, |s, w, cx| {
+            s.execute(Command::SetEditMode(mode), w, cx);
+            match mode {
+                EditMode::Vertex => s.selected_vertex = Some(0),
+                EditMode::Edge => s.selected_edge = Some([0, 1]),
+                EditMode::Face => s.selected_face = Some(0),
+                EditMode::Object => unreachable!(),
+            }
+            (
+                s.scene.object_mesh(id).unwrap().clone(),
+                s.component_vertices(),
+                s.scene.object(id).unwrap().transform,
+            )
+        })?;
+        keys(window, &["g", "x", ".", "2", "5", "enter"], cx).await?;
+        window.update(cx, |s, _, _| -> Result<()> {
+            ensure!(
+                s.scene.object(id).unwrap().transform == transform,
+                "component move changed object transform"
+            );
+            let mesh = s.scene.object_mesh(id).unwrap();
+            for (i, p) in mesh.positions.iter().enumerate() {
+                let delta = if selected.contains(&(i as u32)) {
+                    glam::Vec3::X * 0.25
+                } else {
+                    glam::Vec3::ZERO
+                };
+                ensure!(
+                    p.distance(before.positions[i] + delta) < 0.001,
+                    "{mode:?} moved the wrong vertices"
+                );
+            }
+            Ok(())
+        })??;
+        keys(window, &[platform_shortcut("cmd-z", "ctrl-z")], cx).await?;
+        window.update(cx, |s, w, cx| -> Result<()> {
+            ensure!(
+                *s.scene.object_mesh(id).unwrap() == before,
+                "component undo did not restore mesh"
+            );
+            ensure!(
+                s.component_vertices().is_empty(),
+                "undo left stale components"
+            );
+            s.execute(Command::ToggleEdit, w, cx);
+            ensure!(
+                s.edit_mode == EditMode::Object && !s.settings.edit_wireframe,
+                "Object mode retained wireframe"
+            );
+            s.execute(Command::ToggleEdit, w, cx);
+            ensure!(
+                s.edit_mode == mode && s.settings.edit_wireframe,
+                "Tab did not restore component mode"
+            );
+            Ok(())
+        })??;
+    }
+    window.update(cx, |s, w, cx| {
+        s.execute(Command::SetEditMode(EditMode::Object), w, cx)
+    })?;
     keys(window, &["tab"], cx).await?;
     window.update(cx, |s, _, _| {
         s.selected_face = Some(0);
     })?;
-    keys(window, &["e"], cx).await?;
+    keys(window, &["e", ".", "3", "enter"], cx).await?;
     window.update(cx, |s, w, cx| -> Result<()> {
         ensure!(
             s.scene.object_mesh(id).unwrap().faces.len() == 10,
@@ -1627,6 +1691,327 @@ fn capture_window(studio: &Studio, _window: &gpui::Window, path: &std::path::Pat
     println!(
         "viewport_capture={} (full-window capture is available on macOS)",
         path.display()
+    );
+    Ok(())
+}
+
+async fn check_modelling_workflow(window: WindowHandle<Studio>, cx: &mut AsyncApp) -> Result<()> {
+    use crate::app::Tool;
+    use glam::Vec3;
+    let saved = window.update(cx, |s, w, cx| {
+        let saved = (
+            s.scene.clone(),
+            std::mem::take(&mut s.history),
+            s.selected,
+            s.edit_mode,
+            s.component_elements(),
+            s.settings.clone(),
+            s.tool,
+            s.dirty,
+            s.objects_selected.clone(),
+        );
+        s.scene = Scene::empty();
+        s.objects_selected.clear();
+        s.selected = Some(s.scene.add(Primitive::Cube));
+        s.clear_components();
+        s.scene.camera.target = Vec3::ZERO;
+        s.scene.camera.yaw = 0.;
+        s.scene.camera.pitch = 0.;
+        s.scene.camera.distance = 6.;
+        s.scene.camera.orthographic = true;
+        s.settings.mode = RenderMode::Solid;
+        s.tool = Tool::Select;
+        s.execute(Command::SetEditMode(EditMode::Vertex), w, cx);
+        saved
+    })?;
+    let original = window.update(cx, |s, _, _| s.scene.clone())?;
+    let id = original.objects[0].id;
+    window.update(cx, |s, w, cx| -> Result<()> {
+        let bounds = s.bounds.get();
+        let matrix = s
+            .scene
+            .camera
+            .projection_matrix(f32::from(bounds.size.width) / f32::from(bounds.size.height))
+            * s.scene.camera.view_matrix();
+        let projected = |p: Vec3| {
+            let p = matrix * p.extend(1.);
+            let p = p.truncate() / p.w;
+            bounds.origin
+                + point(
+                    bounds.size.width * (p.x * 0.5 + 0.5),
+                    bounds.size.height * (0.5 - p.y * 0.5),
+                )
+        };
+        for (p, shift) in [(Vec3::new(-1., 1., 1.), false), (Vec3::ONE, true)] {
+            s.mouse_down(
+                &MouseDownEvent {
+                    button: MouseButton::Left,
+                    position: projected(p),
+                    modifiers: gpui::Modifiers {
+                        shift,
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                },
+                w,
+                cx,
+            );
+        }
+        ensure!(
+            s.component_vertices().len() == 2,
+            "Shift-click did not extend selection"
+        );
+        s.mouse_down(
+            &MouseDownEvent {
+                button: MouseButton::Left,
+                position: projected(Vec3::ONE),
+                modifiers: gpui::Modifiers {
+                    shift: true,
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+            w,
+            cx,
+        );
+        ensure!(
+            s.component_vertices().len() == 1,
+            "Shift-click did not toggle selected vertex"
+        );
+        Ok(())
+    })??;
+    keys(window, &["g", "x", "1", "/", "4", "enter"], cx).await?;
+    window.update(cx, |s, w, cx| -> Result<()> {
+        let mesh = s.scene.object_mesh(id).unwrap();
+        ensure!(
+            mesh.positions
+                .iter()
+                .any(|p| p.distance(Vec3::new(-0.75, 1., 1.)) < 1e-5),
+            "arithmetic transform failed"
+        );
+        s.execute(Command::Undo, w, cx);
+        ensure!(s.scene == original, "component move undo failed");
+        Ok(())
+    })??;
+    keys(window, &["a"], cx).await?;
+    window.update(cx, |s, _, _| -> Result<()> {
+        ensure!(s.component_vertices().len() == 8, "Select all failed");
+        Ok(())
+    })??;
+    keys(window, &["alt-a", "b"], cx).await?;
+    window.update(cx, |s, w, cx| -> Result<()> {
+        ensure!(s.component_vertices().is_empty(), "Deselect all failed");
+        let bounds = s.bounds.get();
+        s.mouse_down(
+            &MouseDownEvent {
+                button: MouseButton::Left,
+                position: bounds.origin + point(px(1.), px(1.)),
+                ..Default::default()
+            },
+            w,
+            cx,
+        );
+        s.mouse_move(
+            &MouseMoveEvent {
+                position: bounds.origin
+                    + point(bounds.size.width - px(1.), bounds.size.height - px(1.)),
+                pressed_button: Some(MouseButton::Left),
+                ..Default::default()
+            },
+            w,
+            cx,
+        );
+        s.finish_box_select(cx);
+        ensure!(
+            s.component_vertices().len() == 4,
+            "Box selection included hidden vertices or missed front vertices"
+        );
+        Ok(())
+    })??;
+    keys(window, &["2"], cx).await?;
+    window.update(cx, |s, _, _| -> Result<()> {
+        ensure!(
+            s.component_elements().len() == 4,
+            "Vertex to edge conversion lost selection"
+        );
+        Ok(())
+    })??;
+    keys(window, &["3", "e", ".", "2", "escape"], cx).await?;
+    window.update(cx, |s, _, _| -> Result<()> {
+        ensure!(
+            s.scene == original,
+            "Cancelled extrusion left topology behind"
+        );
+        ensure!(
+            s.component_elements().len() == 1,
+            "Cancelled extrusion lost selection"
+        );
+        Ok(())
+    })??;
+    keys(window, &["e", ".", "2", "enter"], cx).await?;
+    window.update(cx, |s, w, cx| -> Result<()> {
+        ensure!(
+            s.scene.object_mesh(id).unwrap().faces.len() == 10,
+            "Interactive extrusion failed"
+        );
+        s.execute(Command::Undo, w, cx);
+        ensure!(s.scene == original, "Extrusion was not one undo step");
+        s.set_components([forma_core::MeshElement::Face(0)].into_iter().collect());
+        Ok(())
+    })??;
+    keys(window, &["i", ".", "2", "enter"], cx).await?;
+    window.update(cx, |s, w, cx| -> Result<()> {
+        ensure!(
+            s.scene.object_mesh(id).unwrap().faces.len() == 10,
+            "Interactive inset failed"
+        );
+        s.execute(Command::Undo, w, cx);
+        ensure!(s.scene == original, "Inset was not one undo step");
+        s.set_components([forma_core::MeshElement::Face(0)].into_iter().collect());
+        Ok(())
+    })??;
+    keys(window, &["i", "9", "enter"], cx).await?;
+    window.update(cx, |s, _, _| -> Result<()> {
+        ensure!(s.transform_drag.is_some(), "Invalid inset was committed");
+        Ok(())
+    })??;
+    keys(window, &["escape", "shift-d", "x", ".", "5", "enter"], cx).await?;
+    window.update(cx, |s, w, cx| -> Result<()> {
+        ensure!(
+            s.scene.object_mesh(id).unwrap().faces.len() == 7,
+            "Component duplicate failed"
+        );
+        s.execute(Command::Undo, w, cx);
+        ensure!(
+            s.scene == original,
+            "Duplicate and move were not one undo step"
+        );
+        s.execute(Command::SetEditMode(EditMode::Object), w, cx);
+        s.scene.object_mut(id).unwrap().transform.rotation.z = std::f32::consts::FRAC_PI_2;
+        Ok(())
+    })??;
+    keys(window, &["g", "x", "x", "1", "enter"], cx).await?;
+    window.update(cx, |s, w, cx| -> Result<()> {
+        ensure!(
+            s.scene
+                .object(id)
+                .unwrap()
+                .transform
+                .translation
+                .distance(Vec3::Y)
+                < 1e-5,
+            "Local axis translation failed"
+        );
+        s.execute(Command::Undo, w, cx);
+        Ok(())
+    })??;
+    keys(window, &["g", "shift-z", "1", "enter"], cx).await?;
+    window.update(cx, |s, w, cx| -> Result<()> {
+        ensure!(
+            s.scene
+                .object(id)
+                .unwrap()
+                .transform
+                .translation
+                .distance(Vec3::new(1., 1., 0.))
+                < 1e-5,
+            "Plane constraint failed"
+        );
+        s.execute(Command::Undo, w, cx);
+        Ok(())
+    })??;
+    keys(window, &["g", "x", "1", "/", "enter"], cx).await?;
+    window.update(cx, |s, _, _| -> Result<()> {
+        ensure!(
+            s.transform_drag.is_some(),
+            "Incomplete numeric input was committed"
+        );
+        Ok(())
+    })??;
+    keys(window, &["escape", "shift-d", "escape"], cx).await?;
+    let child = window.update(cx, |s, _, _| -> Result<_> {
+        ensure!(
+            s.scene.objects.len() == 1 && s.selected == Some(id),
+            "Cancelled duplicate lost original selection"
+        );
+        s.scene.object_mut(id).unwrap().transform = Default::default();
+        let child = s.scene.add(Primitive::Cube);
+        s.scene.object_mut(child).unwrap().parent = Some(id);
+        s.scene.object_mut(child).unwrap().transform.translation.x = 3.;
+        s.select_objects([id, child].into_iter().collect(), Some(id));
+        Ok(child)
+    })??;
+    keys(window, &["g", "z", "1", "enter"], cx).await?;
+    window.update(cx, |s, w, cx| -> Result<()> {
+        ensure!(
+            s.scene
+                .world_transform(id)
+                .unwrap()
+                .transform_point3(Vec3::ZERO)
+                .distance(Vec3::Z)
+                < 1e-5,
+            "Group move missed parent"
+        );
+        ensure!(
+            s.scene
+                .world_transform(child)
+                .unwrap()
+                .transform_point3(Vec3::ZERO)
+                .distance(Vec3::new(3., 0., 1.))
+                < 1e-5,
+            "Group move transformed child twice"
+        );
+        s.execute(Command::Undo, w, cx);
+        s.select_objects([id, child].into_iter().collect(), Some(id));
+        Ok(())
+    })??;
+    keys(window, &["shift-d", "x", "2", "enter"], cx).await?;
+    window.update(cx, |s, _, cx| -> Result<()> {
+        ensure!(
+            s.scene.objects.len() == 4 && s.selected_ids().len() == 2,
+            "Group duplicate lost selection"
+        );
+        let positions: Vec<_> = s
+            .selected_ids()
+            .iter()
+            .map(|id| {
+                s.scene
+                    .world_transform(*id)
+                    .unwrap()
+                    .transform_point3(Vec3::ZERO)
+            })
+            .collect();
+        ensure!(
+            positions.iter().any(|p| p.distance(Vec3::X * 2.) < 1e-5)
+                && positions.iter().any(|p| p.distance(Vec3::X * 5.) < 1e-5),
+            "Duplicating parent and child changed their relative positions"
+        );
+        (
+            s.scene,
+            s.history,
+            s.selected,
+            s.edit_mode,
+            _,
+            s.settings,
+            s.tool,
+            s.dirty,
+        ) = (
+            saved.0,
+            saved.1,
+            saved.2,
+            saved.3,
+            (),
+            saved.5,
+            saved.6,
+            saved.7,
+        );
+        s.set_components(saved.4);
+        s.objects_selected = saved.8;
+        s.invalidate(true, cx);
+        Ok(())
+    })??;
+    println!(
+        "modelling_workflow=multi_select,box,mode_conversion,arithmetic,local_axes,plane_constraints,extrude,inset,duplicate,cancel,undo PASS"
     );
     Ok(())
 }
