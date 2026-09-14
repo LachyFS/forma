@@ -3,19 +3,19 @@ import { fetchLatestRelease, RELEASES_URL } from "./releases.mjs";
 
 const previews = {
   workspace: {
-    src: "./assets/workspace.webp",
-    alt: "Forma's native workspace with a teal torus, metallic sphere, and rounded cube on a studio plinth, surrounded by the scene outliner and material inspector.",
-    caption: "From a first primitive to a finished perspective.",
+    src: "./assets/engine-workspace.webp",
+    alt: "Forma's actual editor showing the V8 engine study in Material Preview, with teal cam covers, polished intake stacks, exhaust headers, and the scene outliner and material inspector.",
+    caption: "V8 engine study · 276 mesh objects · Material preview",
   },
-  lighting: {
-    src: "./assets/lighting.webp",
-    alt: "The same Forma scene lit by the Courtyard HDR environment, with controls for lighting rotation, strength, background blur, and contact shading.",
-    caption: "Change the atmosphere. See your idea in a new light.",
+  solid: {
+    src: "./assets/engine-solid.webp",
+    alt: "The same V8 engine open in Forma's Solid viewport, showing the geometry in neutral clay shading with the engine block selected.",
+    caption: "V8 engine study · 276 mesh objects · Solid shading",
   },
-  commands: {
-    src: "./assets/commands.webp",
-    alt: "Forma's command palette open over the studio scene, searching for the Wireframe viewport command.",
-    caption: "A command away from whatever comes next.",
+  wireframe: {
+    src: "./assets/engine-wireframe.webp",
+    alt: "The V8 engine in Forma's Wireframe viewport, exposing the mesh edges of the intake stacks, engine block, exhaust runners, and pulleys.",
+    caption: "V8 engine study · 276 mesh objects · Wireframe",
   },
 };
 
@@ -39,6 +39,7 @@ previewButtons.forEach((button) => {
     if (request !== previewRequest) return;
     previewImage.src = preview.src;
     previewImage.alt = preview.alt;
+    document.querySelector("#preview-full").href = preview.src;
     previewImage.closest("figure").querySelector("figcaption").textContent = preview.alt;
     previewDescription.textContent = preview.caption;
     previewButtons.forEach((item) => item.setAttribute("aria-pressed", String(item === button)));
