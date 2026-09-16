@@ -1844,7 +1844,7 @@ dependencies = [
  "metal 0.29.0",
  "naga 27.0.3",
  "objc",
- "pollster 0.4.0",
+ "pollster 1.0.1",
  "wgpu",
 ]
 
@@ -3964,9 +3964,9 @@ checksum = "5da3b0203fd7ee5720aa0b5e790b591aa5d3f41c3ed2c34a3a393382198af2f7"
 
 [[package]]
 name = "pollster"
-version = "0.4.0"
+version = "1.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2f3a9f18d041e6d0e102a0a46750538147e5e8992d3b4873aaafee2520b00ce3"
+checksum = "bc6355899e1c9462875b6757c79f3caa011a1fdae12bbb1a2e72dd1f234f8336"
 
 [[package]]
 name = "portable-atomic"

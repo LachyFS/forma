@@ -11,7 +11,7 @@ glam.workspace = true
 bytemuck.workspace = true
 image.workspace = true
 wgpu = { version = "27.0.1", default-features = false, features = ["std", "parking_lot", "wgsl", "vulkan", "metal", "dx12"] }
-pollster = "0.4"
+pollster = "1.0"
 libloading = "0.8"
 
 [dev-dependencies]
