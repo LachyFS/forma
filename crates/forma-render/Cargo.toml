@@ -15,7 +15,7 @@ pollster = "0.4"
 libloading = "0.8"
 
 [dev-dependencies]
-naga = { version = "27", features = ["wgsl-in", "spv-out", "msl-out", "hlsl-out"] }
+naga = { version = "30", features = ["wgsl-in", "spv-out", "msl-out", "hlsl-out"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 metal = "0.29"
