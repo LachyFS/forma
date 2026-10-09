@@ -9,7 +9,13 @@ rounded cube, plinth and emissive area light.
 
 ![Forma native GPUI workspace](docs/images/workspace.png)
 
-## Download website
+## Downloads and releases
+
+Get platform packages from [GitHub Releases](https://github.com/lachyfs/forma/releases).
+Tagged releases include macOS Apple silicon/Intel, Windows x64, and Linux x86_64
+archives with the AI denoiser and SHA-256 checksums. See
+[releasing Forma](docs/RELEASING.md) for publishing and testing the pipeline.
+
 
 The standalone [download site](site/README.md) lives in `site/`. It can be served
 by any static host without a build step and automatically discovers the latest
