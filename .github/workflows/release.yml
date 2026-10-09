@@ -96,8 +96,7 @@ jobs:
           bash scripts/bundle-macos.sh release
           # Ad-hoc signing supports local execution on Apple silicon; this is
           # not Developer ID signing or notarization.
-          codesign --force --deep --sign - target/release/Forma.app
-          codesign --verify --deep --strict target/release/Forma.app
+          bash scripts/sign-macos.sh target/release/Forma.app
           mkdir -p dist
           ditto -c -k --sequesterRsrc --keepParent target/release/Forma.app "dist/Forma-$RELEASE_TAG-$RELEASE_PLATFORM.zip"
       - name: Package Linux application

@@ -155,6 +155,12 @@ fn runtime_candidates() -> Vec<PathBuf> {
     if let Ok(exe) = std::env::current_exe()
         && let Some(dir) = exe.parent()
     {
+        #[cfg(target_os = "macos")]
+        if dir.file_name().is_some_and(|name| name == "MacOS")
+            && let Some(contents) = dir.parent()
+        {
+            paths.push(contents.join("Frameworks/oidn/lib").join(name));
+        }
         paths.push(dir.join("oidn").join(library_dir).join(name));
         // Cargo integration test / example executables live one level down.
         if matches!(

@@ -38,6 +38,11 @@ and `<executable-dir>/oidn/bin` on Windows. Preserve these directory names when
 moving the runtime: upstream libraries depend on their relative paths. Tests in
 Cargo's `deps` directory also find the parent profile's runtime.
 
+macOS application bundles keep the runtime in `Contents/Frameworks/oidn/lib`
+and its notices and documentation in `Contents/Resources/oidn`, so code signing
+can validate code separately from data. CMake and pkg-config development metadata
+is excluded from the bundle; the native libraries are signed before the app.
+
 A custom OIDN 2.4+ installation can be selected with `FORMA_OIDN_LIBRARY`, set to
 the **full path to the main library**, including its filename. The override is
 strict; a broken override does not silently load another runtime. Supported

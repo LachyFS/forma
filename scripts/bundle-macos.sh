@@ -73,9 +73,13 @@ cleanup() {
 }
 trap cleanup EXIT
 
-mkdir -p -- "$staging/Contents/MacOS" "$staging/Contents/Resources"
+mkdir -p -- "$staging/Contents/MacOS" "$staging/Contents/Resources" "$staging/Contents/Frameworks/oidn"
 install -m 755 "$executable" "$staging/Contents/MacOS/forma"
-python3 scripts/setup-denoiser.py --output-dir "$staging/Contents/MacOS/oidn"
+python3 scripts/setup-denoiser.py --output-dir "$staging/Contents/Resources/oidn"
+# Keep native code in Frameworks and notices/docs in Resources. The upstream
+# CMake package contains a dotted directory that codesign mistakes for a bundle.
+mv -- "$staging/Contents/Resources/oidn/lib" "$staging/Contents/Frameworks/oidn/lib"
+rm -rf -- "$staging/Contents/Frameworks/oidn/lib/cmake" "$staging/Contents/Frameworks/oidn/lib/pkgconfig"
 install -m 644 "$icon" "$staging/Contents/Resources/Forma.icns"
 cat > "$staging/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
