@@ -18,6 +18,10 @@ env:
   CARGO_INCREMENTAL: '0'
 
 jobs:
+  security:
+    name: Release security audit
+    uses: ./.github/workflows/security.yml
+
   version:
     name: Validate release version
     runs-on: ubuntu-24.04
@@ -43,7 +47,7 @@ jobs:
 
   build:
     name: Package (${{ matrix.platform }})
-    needs: version
+    needs: [version, security]
     strategy:
       fail-fast: false
       matrix:
@@ -119,7 +123,7 @@ jobs:
 
   publish:
     name: Assemble and publish release
-    needs: [version, build]
+    needs: [version, security, build]
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:

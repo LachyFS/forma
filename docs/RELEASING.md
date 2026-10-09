@@ -3,9 +3,10 @@
 The [Release workflow](../.github/workflows/release.yml) builds native optimized
 packages for macOS Apple silicon, macOS Intel, Windows x64, and Linux x86_64.
 Every package includes the pinned, checksum-verified Open Image Denoise runtime.
-All four builds and their core/application/shader tests must succeed before
-publication. Generated GitHub release notes include merged pull requests and
-installation instructions. Packages are not Developer ID signed, notarized, or
+The release commit must pass the same RustSec dependency audit used by branch CI
+before any packages are built. All four builds and their core/application/shader
+tests must also succeed before publication. Generated GitHub release notes include
+merged pull requests and installation instructions. Packages are not Developer ID signed, notarized, or
 Authenticode signed; macOS bundles receive an ad-hoc signature.
 
 ## Test the pipeline
