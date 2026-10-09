@@ -1,0 +1,173 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+  # Build and inspect packages from any branch without publishing a release.
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: '0'
+
+jobs:
+  version:
+    name: Validate release version
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      tag: ${{ steps.version.outputs.tag }}
+      prerelease: ${{ steps.version.outputs.prerelease }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Validate tag against Cargo.toml
+        id: version
+        env:
+          EVENT: ${{ github.event_name }}
+        run: |
+          tag="$GITHUB_REF_NAME"
+          if [[ "$EVENT" == workflow_dispatch ]]; then
+            tag="$(python3 -c 'import tomllib; print("v" + tomllib.load(open("Cargo.toml", "rb"))["workspace"]["package"]["version"])')"
+          fi
+          python3 scripts/release.py "$tag" >> "$GITHUB_OUTPUT"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+  build:
+    name: Package (${{ matrix.platform }})
+    needs: version
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-14
+            platform: macos-arm64
+          - os: macos-15-intel
+            platform: macos-x86_64
+          - os: windows-2025
+            platform: windows-x64
+          - os: ubuntu-24.04
+            platform: linux-x86_64
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    env:
+      RELEASE_TAG: ${{ needs.version.outputs.tag }}
+      RELEASE_PLATFORM: ${{ matrix.platform }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.12'
+      - name: Install repository Rust toolchain
+        run: rustup toolchain install --no-self-update
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          key: release-${{ matrix.platform }}
+          save-if: false
+      - name: Linux build dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y \
+            build-essential clang libclang-dev cmake pkg-config libssl-dev \
+            libzstd-dev libasound2-dev libfontconfig1-dev libwayland-dev \
+            libxkbcommon-dev libxkbcommon-x11-dev libx11-xcb-dev libvulkan-dev
+      - name: Test core and application
+        run: cargo test --locked -p forma-core -p forma
+      - name: Validate shaders
+        run: cargo test --locked -p forma-render --test shaders
+      - name: Package macOS application
+        if: runner.os == 'macOS'
+        run: |
+          bash scripts/bundle-macos.sh release
+          # Ad-hoc signing supports local execution on Apple silicon; this is
+          # not Developer ID signing or notarization.
+          codesign --force --deep --sign - target/release/Forma.app
+          codesign --verify --deep --strict target/release/Forma.app
+          mkdir -p dist
+          ditto -c -k --sequesterRsrc --keepParent target/release/Forma.app "dist/Forma-$RELEASE_TAG-$RELEASE_PLATFORM.zip"
+      - name: Package Linux application
+        if: runner.os == 'Linux'
+        run: |
+          bash scripts/bundle-linux.sh release
+          mkdir -p dist
+          cp target/release/forma-linux-x86_64.tar.gz "dist/Forma-$RELEASE_TAG-$RELEASE_PLATFORM.tar.gz"
+      - name: Package Windows application
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          ./scripts/bundle-windows.ps1 -Profile release
+          New-Item -ItemType Directory -Force dist | Out-Null
+          Copy-Item target/release/forma-windows-x64.zip "dist/Forma-$env:RELEASE_TAG-$env:RELEASE_PLATFORM.zip"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-${{ matrix.platform }}
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 14
+          overwrite: true
+
+  publish:
+    name: Assemble and publish release
+    needs: [version, build]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      actions: read
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      RELEASE_TAG: ${{ needs.version.outputs.tag }}
+      PRERELEASE: ${{ needs.version.outputs.prerelease }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Download and validate all four packages
+        run: |
+          mkdir -p dist
+          gh run download "$GITHUB_RUN_ID" --pattern 'release-macos-*' --pattern 'release-windows-*' --pattern 'release-linux-*' --dir downloaded
+          find downloaded -type f -exec mv -t dist -- {} +
+          python3 scripts/release.py "$RELEASE_TAG" --assets dist
+          (cd dist && sha256sum --check SHA256SUMS)
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-complete
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 14
+          overwrite: true
+      - name: Publish complete GitHub release
+        if: github.event_name == 'push'
+        run: |
+          # Retry a failed upload only while the release is still a draft.
+          # Never replace assets on a published release.
+          if gh release view "$RELEASE_TAG" --json isDraft > release.json; then
+            jq -e '.isDraft == true' release.json > /dev/null || {
+              echo 'This release is already published; create a new version.' >&2
+              exit 1
+            }
+          else
+            gh release create "$RELEASE_TAG" --verify-tag --draft \
+              --title "Forma $RELEASE_TAG" --generate-notes \
+              --notes-file .github/release-notes.md --prerelease="$PRERELEASE"
+          fi
+          gh release upload "$RELEASE_TAG" dist/* --clobber
+          # Leave latest selection to GitHub for stable releases, including
+          # backports; prereleases must never become the latest stable release.
+          if [[ "$PRERELEASE" == true ]]; then
+            gh release edit "$RELEASE_TAG" --draft=false --prerelease --latest=false
+          else
+            gh release edit "$RELEASE_TAG" --draft=false --prerelease=false
+          fi

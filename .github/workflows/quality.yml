@@ -52,6 +52,8 @@ jobs:
           tar -xzf "$archive" -C "$RUNNER_TEMP" actionlint
           "$RUNNER_TEMP/actionlint" -color
       - run: shellcheck scripts/*.sh
+      - name: Test release validation
+        run: python3 -m unittest discover -s scripts/tests -p 'test_*.py'
 
   website:
     name: Website tests
