@@ -369,29 +369,42 @@ mod tests {
 
     #[test]
     fn preferences_follow_platform_config_directories() {
+        // PathBuf uses the host's path rules even when exercising another OS's
+        // preference convention. A Unix "/config" path is not absolute on Windows.
+        let root = std::env::current_dir().unwrap().join("preference-fixture");
+        let home = root.join("users/test");
+        let config = root.join("config");
+        let appdata = home.join("AppData/Roaming");
         let env = |key: &str| match key {
-            "APPDATA" => Some(PathBuf::from("C:/Users/test/AppData/Roaming")),
-            "HOME" => Some(PathBuf::from("/users/test")),
-            "XDG_CONFIG_HOME" => Some(PathBuf::from("/config")),
+            "APPDATA" => Some(appdata.clone()),
+            "HOME" => Some(home.clone()),
+            "XDG_CONFIG_HOME" => Some(config.clone()),
             _ => None,
         };
         assert_eq!(
             preference_path_for("windows", env).unwrap(),
-            PathBuf::from("C:/Users/test/AppData/Roaming/forma/color-theme")
+            appdata.join("forma/color-theme")
         );
         assert_eq!(
             preference_path_for("macos", env).unwrap(),
-            PathBuf::from("/users/test/Library/Application Support/forma/color-theme")
+            home.join("Library/Application Support/forma/color-theme")
         );
         assert_eq!(
             preference_path_for("linux", env).unwrap(),
-            PathBuf::from("/config/forma/color-theme")
+            config.join("forma/color-theme")
         );
         assert_eq!(
-            preference_path_for("linux", |key| (key == "HOME")
-                .then(|| PathBuf::from("/users/test")))
+            preference_path_for("linux", |key| (key == "HOME").then(|| home.clone())).unwrap(),
+            home.join(".config/forma/color-theme")
+        );
+        assert_eq!(
+            preference_path_for("linux", |key| match key {
+                "HOME" => Some(home.clone()),
+                "XDG_CONFIG_HOME" => Some(PathBuf::from("relative/config")),
+                _ => None,
+            })
             .unwrap(),
-            PathBuf::from("/users/test/.config/forma/color-theme")
+            home.join(".config/forma/color-theme")
         );
         assert!(preference_path_for("linux", |_| None).is_none());
     }

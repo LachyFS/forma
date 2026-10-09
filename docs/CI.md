@@ -7,7 +7,7 @@ checked when a PR is opened, avoiding duplicate push and PR builds.
 
 | Workflow | Checks |
 | --- | --- |
-| Quality | Rust formatting; actionlint validation of every workflow; ShellCheck on packaging scripts; JavaScript syntax and offline website tests. |
+| Quality | Rust formatting; actionlint validation of every workflow; ShellCheck on packaging scripts; JavaScript syntax and offline website tests; macOS bundle signing and relocated denoiser loading; Windows preference path tests. |
 | Platforms | Strict Clippy on every workspace target, executable builds, core/application tests, and shader validation on Ubuntu 24.04, Windows 2025, and macOS 14. Linux also runs renderer tests serially through Mesa software Vulkan and renders all four viewport modes. |
 | Release | On version tags, requires a passing Security audit, tests and packages four native platforms, then publishes archives, checksums, and generated notes. Manual runs audit and build artifacts without publishing. See [releasing](RELEASING.md). |
 | Security | Audits `Cargo.lock` against the current RustSec database on each change and daily at 03:23 UTC. No application build or GPU is needed. |

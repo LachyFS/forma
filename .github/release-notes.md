@@ -4,4 +4,4 @@ Download the archive for your operating system and processor below. `SHA256SUMS`
 - **Windows x64:** Extract the entire ZIP and run `forma.exe` inside the extracted directory. These builds are unsigned and may trigger SmartScreen. A DirectX 12 GPU/driver is required.
 - **Linux x86_64:** Extract the archive and run `bin/forma` inside the extracted directory. Built on Ubuntu 24.04; requires glibc 2.39+, desktop runtime libraries, an X11/Wayland session, and a Vulkan GPU/driver. This is a portable application directory, not a fully static build.
 
-Keep the bundled `oidn` directory beside the executable. See the repository README for controls, platform dependencies, and current limitations.
+Keep all files in the extracted app or application directory together. See the repository README for controls, platform dependencies, and current limitations.

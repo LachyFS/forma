@@ -15,6 +15,38 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  macos-bundle:
+    name: macOS bundle signing
+    runs-on: macos-14
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.12'
+      - name: Verify bundle layout, signatures, and denoiser loading
+        run: bash scripts/test-macos-bundle.sh
+
+  windows-preferences:
+    name: Windows preference paths
+    runs-on: windows-2025
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install repository Rust toolchain
+        run: rustup toolchain install --no-self-update
+      - name: Exercise native path semantics without a full application build
+        shell: pwsh
+        run: |
+          rustc --edition=2024 --test crates/forma-app/src/theme.rs -o "$env:RUNNER_TEMP/forma-theme-tests.exe"
+          if ($LASTEXITCODE -ne 0) { throw "Theme test compilation failed" }
+          & "$env:RUNNER_TEMP/forma-theme-tests.exe"
+          if ($LASTEXITCODE -ne 0) { throw "Theme tests failed" }
+
   formatting:
     name: Rust formatting
     runs-on: ubuntu-24.04
