@@ -981,6 +981,10 @@ async fn check_panel_resize(window: WindowHandle<Studio>, cx: &mut AsyncApp) -> 
                 cx,
             );
         })?;
+        wait_for(window, cx, |s| {
+            (f32::from(s.bounds.get().size.width - initial_width) - (292. - expected)).abs() < 1.
+        })
+        .await?;
         settle(window, cx).await?;
         window.update(cx, |s, w, _| -> Result<()> {
             ensure!(
@@ -990,7 +994,9 @@ async fn check_panel_resize(window: WindowHandle<Studio>, cx: &mut AsyncApp) -> 
             ensure!(
                 (f32::from(s.bounds.get().size.width - initial_width) - (292. - expected)).abs()
                     < 1.,
-                "viewport layout did not follow the sidebar width"
+                "viewport layout did not follow the sidebar width: initial {}, actual {}, sidebar {expected}",
+                f32::from(initial_width),
+                f32::from(s.bounds.get().size.width),
             );
             Ok(())
         })??;
@@ -1049,6 +1055,10 @@ async fn check_panel_resize(window: WindowHandle<Studio>, cx: &mut AsyncApp) -> 
             cx,
         );
     })?;
+    wait_for(window, cx, |s| {
+        f32::from(s.bounds.get().size.width - initial_width).abs() < 1.
+    })
+    .await?;
     settle(window, cx).await?;
     window.update(cx, |s, _, _| -> Result<()> {
         ensure!(
