@@ -261,6 +261,9 @@ impl Studio {
         cx.observe_window_activation(window, |s, w, cx| {
             if !w.is_window_active() {
                 s.close_shading_pie(cx);
+                if s.panels.finish_sidebar_resize() {
+                    cx.notify();
+                }
             }
         })
         .detach();
@@ -2206,9 +2209,9 @@ impl Studio {
 }
 
 impl Render for Studio {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let viewport = self.viewport(cx);
-        let chrome = crate::ui::render(self, viewport, cx);
+        let chrome = crate::ui::render(self, viewport, window, cx);
         div()
             .id("forma-root")
             .size_full()

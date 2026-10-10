@@ -7,7 +7,8 @@ use forma_render::{PreviewSettings, RenderMode, StudioLight};
 use glam::Vec2;
 use gpui::{
     AnyWindowHandle, App, AsyncApp, EntityInputHandler, KeyDownEvent, KeyUpEvent, Keystroke,
-    MouseButton, MouseDownEvent, MouseMoveEvent, Timer, WindowHandle, point, px, size,
+    MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Timer, WindowHandle, point, px,
+    size,
 };
 use std::{
     path::PathBuf,
@@ -941,6 +942,143 @@ async fn check_theme_workflow(
     Ok(())
 }
 
+async fn check_panel_resize(window: WindowHandle<Studio>, cx: &mut AsyncApp) -> Result<()> {
+    let (scene, selected, dirty, undo, redo, initial_width) = window.update(cx, |s, _, _| {
+        (
+            s.scene.clone(),
+            s.selected,
+            s.dirty,
+            s.history.can_undo(),
+            s.history.can_redo(),
+            s.bounds.get().size.width,
+        )
+    })?;
+    // Exercise the same pointer handlers as the divider, including large jumps
+    // beyond its bounds and a release outside the window.
+    for (delta, expected) in [(-120., 412.), (140., 272.), (-2000., 560.), (2000., 240.)] {
+        let start = window.update(cx, |s, _, _| {
+            point(s.bounds.get().right() + px(4.), px(120.))
+        })?;
+        let end = point(start.x + px(delta), start.y);
+        window.update(cx, |s, w, cx| {
+            s.begin_sidebar_resize(
+                &MouseDownEvent {
+                    button: MouseButton::Left,
+                    position: start,
+                    click_count: 1,
+                    ..Default::default()
+                },
+                w,
+                cx,
+            );
+            s.move_sidebar_resize(
+                &MouseMoveEvent {
+                    position: end,
+                    pressed_button: Some(MouseButton::Left),
+                    ..Default::default()
+                },
+                w,
+                cx,
+            );
+        })?;
+        wait_for(window, cx, |s| {
+            (f32::from(s.bounds.get().size.width - initial_width) - (292. - expected)).abs() < 1.
+        })
+        .await?;
+        settle(window, cx).await?;
+        window.update(cx, |s, w, _| -> Result<()> {
+            ensure!(
+                (s.panels.sidebar_width(w.viewport_size().width.into()) - expected).abs() < 1.,
+                "panel drag did not produce the expected sidebar width {expected}"
+            );
+            ensure!(
+                (f32::from(s.bounds.get().size.width - initial_width) - (292. - expected)).abs()
+                    < 1.,
+                "viewport layout did not follow the sidebar width: initial {}, actual {}, sidebar {expected}",
+                f32::from(initial_width),
+                f32::from(s.bounds.get().size.width),
+            );
+            Ok(())
+        })??;
+        window.update(cx, |s, w, cx| {
+            s.end_sidebar_resize(
+                &MouseUpEvent {
+                    button: MouseButton::Left,
+                    position: point(px(-20.), px(-20.)),
+                    ..Default::default()
+                },
+                w,
+                cx,
+            );
+            s.move_sidebar_resize(
+                &MouseMoveEvent {
+                    position: start,
+                    ..Default::default()
+                },
+                w,
+                cx,
+            );
+        })?;
+        window.update(cx, |s, w, _| -> Result<()> {
+            ensure!(
+                !s.panels.finish_sidebar_resize()
+                    && (s.panels.sidebar_width(w.viewport_size().width.into()) - expected).abs()
+                        < 1.,
+                "releasing outside the window left panel resizing active"
+            );
+            Ok(())
+        })??;
+        Timer::after(Duration::from_millis(60)).await;
+    }
+    let divider = window.update(cx, |s, _, _| {
+        point(s.bounds.get().right() + px(4.), px(120.))
+    })?;
+    window.update(cx, |s, w, cx| {
+        s.begin_sidebar_resize(
+            &MouseDownEvent {
+                button: MouseButton::Left,
+                position: divider,
+                click_count: 2,
+                ..Default::default()
+            },
+            w,
+            cx,
+        );
+        s.end_sidebar_resize(
+            &MouseUpEvent {
+                button: MouseButton::Left,
+                position: divider,
+                click_count: 2,
+                ..Default::default()
+            },
+            w,
+            cx,
+        );
+    })?;
+    wait_for(window, cx, |s| {
+        f32::from(s.bounds.get().size.width - initial_width).abs() < 1.
+    })
+    .await?;
+    settle(window, cx).await?;
+    window.update(cx, |s, _, _| -> Result<()> {
+        ensure!(
+            (f32::from(s.bounds.get().size.width - initial_width)).abs() < 1.,
+            "double-click did not restore the original panel widths"
+        );
+        ensure!(
+            s.scene == scene
+                && s.selected == selected
+                && s.dirty == dirty
+                && s.history.can_undo() == undo
+                && s.history.can_redo() == redo,
+            "panel resizing changed the scene, selection or undo history"
+        );
+        Ok(())
+    })??;
+    println!("panel_resize=drag_limits_viewport_release_reset_document_isolation_pass");
+    Ok(())
+}
+
 async fn run(window: WindowHandle<Studio>, output: PathBuf, cx: &mut AsyncApp) -> Result<()> {
     std::fs::create_dir_all(&output)?;
     settle(window, cx).await?;
@@ -954,6 +1092,7 @@ async fn run(window: WindowHandle<Studio>, output: PathBuf, cx: &mut AsyncApp) -
             Err(error) => println!("workspace_capture=unavailable ({error:#})"),
         }
     })?;
+    check_panel_resize(window, cx).await?;
     check_theme_workflow(window, &output, cx).await?;
     check_preview_workflow(window, &output, cx).await?;
     check_shader_workflow(window, cx).await?;
