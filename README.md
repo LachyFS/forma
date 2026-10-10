@@ -103,6 +103,9 @@ cargo run --locked --release -p forma
   Escape or clicking outside cancels. The theme is remembered across launches.
 - Search commands with `⌘K`, type a name, then use arrows and Return to execute.
   Native menus and the command panel expose the same editor operations.
+- Drag the divider between the viewport and the Scene Collection/inspector to
+  adjust their widths. Double-click the divider to reset the sidebar width.
+  Panel widths are kept for the session and do not change the project.
 
 OBJ import combines groups into one object. Texture coordinates, supplied normals
 and MTL materials are not retained; normals are generated from the editable

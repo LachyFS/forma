@@ -48,10 +48,25 @@ impl PanelSection {
     }
 }
 
-/// Workspace disclosure state is independent of the document and undo history.
+const SIDEBAR_DEFAULT_WIDTH: f32 = 292.;
+const SIDEBAR_MIN_WIDTH: f32 = 240.;
+const SIDEBAR_MAX_WIDTH: f32 = 560.;
+const VIEWPORT_MIN_WIDTH: f32 = 220.;
+const WORKSPACE_PADDING: f32 = 4.;
+const SIDEBAR_DIVIDER_WIDTH: f32 = 6.;
+
+#[derive(Clone, Copy)]
+struct SidebarResize {
+    pointer_x: f32,
+    width: f32,
+}
+
+/// Workspace layout and disclosure state never enter the document or undo history.
 pub(crate) struct PanelState {
     open: [bool; 5],
     collection_open: bool,
+    sidebar_width: f32,
+    sidebar_resize: Option<SidebarResize>,
 }
 
 impl Default for PanelState {
@@ -59,8 +74,124 @@ impl Default for PanelState {
         Self {
             open: [true, true, false, true, false],
             collection_open: true,
+            sidebar_width: SIDEBAR_DEFAULT_WIDTH,
+            sidebar_resize: None,
         }
     }
+}
+
+impl PanelState {
+    fn clamp_sidebar_width(width: f32, window_width: f32) -> f32 {
+        let maximum =
+            (window_width - 2. * WORKSPACE_PADDING - SIDEBAR_DIVIDER_WIDTH - VIEWPORT_MIN_WIDTH)
+                .clamp(0., SIDEBAR_MAX_WIDTH);
+        width.clamp(SIDEBAR_MIN_WIDTH.min(maximum), maximum)
+    }
+
+    pub(crate) fn sidebar_width(&self, window_width: f32) -> f32 {
+        Self::clamp_sidebar_width(self.sidebar_width, window_width)
+    }
+
+    pub(crate) fn finish_sidebar_resize(&mut self) -> bool {
+        self.sidebar_resize.take().is_some()
+    }
+}
+
+impl Studio {
+    pub(crate) fn begin_sidebar_resize(
+        &mut self,
+        event: &MouseDownEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if event.click_count == 2 {
+            self.panels.sidebar_width = SIDEBAR_DEFAULT_WIDTH;
+            self.panels.finish_sidebar_resize();
+        } else {
+            self.panels.sidebar_resize = Some(SidebarResize {
+                pointer_x: event.position.x.into(),
+                width: self
+                    .panels
+                    .sidebar_width(window.viewport_size().width.into()),
+            });
+        }
+        cx.notify();
+        cx.stop_propagation();
+    }
+
+    pub(crate) fn move_sidebar_resize(
+        &mut self,
+        event: &MouseMoveEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(resize) = self.panels.sidebar_resize else {
+            return;
+        };
+        if event.pressed_button == Some(MouseButton::Left) {
+            self.panels.sidebar_width = PanelState::clamp_sidebar_width(
+                resize.width + resize.pointer_x - f32::from(event.position.x),
+                window.viewport_size().width.into(),
+            );
+        } else {
+            self.panels.finish_sidebar_resize();
+        }
+        cx.notify();
+        cx.stop_propagation();
+    }
+
+    pub(crate) fn end_sidebar_resize(
+        &mut self,
+        event: &MouseUpEvent,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if event.button == MouseButton::Left && self.panels.finish_sidebar_resize() {
+            cx.notify();
+            cx.stop_propagation();
+        }
+    }
+}
+
+/// Capture across the window so fast drags and releases outside the divider
+/// still work, without sending the same gesture to the viewport tools.
+fn sidebar_resize_events(cx: &mut Context<Studio>) -> impl IntoElement {
+    let on_move = cx.listener(Studio::move_sidebar_resize);
+    let on_up = cx.listener(Studio::end_sidebar_resize);
+    canvas(
+        |_, _, _| (),
+        move |_, _, window, _| {
+            window.on_mouse_event(move |event: &MouseMoveEvent, phase, window, cx| {
+                if phase == DispatchPhase::Capture {
+                    on_move(event, window, cx);
+                }
+            });
+            window.on_mouse_event(move |event: &MouseUpEvent, phase, window, cx| {
+                if phase == DispatchPhase::Capture {
+                    on_up(event, window, cx);
+                }
+            });
+        },
+    )
+    .absolute()
+    .size_full()
+}
+
+fn sidebar_divider(t: Colors, s: &Studio, cx: &mut Context<Studio>) -> impl IntoElement {
+    div()
+        .id("sidebar-resize")
+        .w(px(SIDEBAR_DIVIDER_WIDTH))
+        .h_full()
+        .flex_shrink_0()
+        .cursor(CursorStyle::ResizeLeftRight)
+        .rounded(px(3.))
+        .when(s.panels.sidebar_resize.is_some(), |d| d.bg(rgb(t.accent)))
+        .hover(move |d| d.bg(rgb(t.accent_line)))
+        .tooltip(move |_, cx| {
+            cx.new(|_| Tooltip("Drag to resize panels · Double-click to reset", t))
+                .into()
+        })
+        .on_mouse_down(MouseButton::Left, cx.listener(Studio::begin_sidebar_resize))
 }
 
 /// Surface presets: swatch color, name, and the linear base color they apply.
@@ -1097,7 +1228,7 @@ fn viewport_panel(
 ) -> AnyElement {
     editor(t)
         .flex_1()
-        .min_w(px(220.))
+        .min_w(px(VIEWPORT_MIN_WIDTH))
         .h_full()
         .child(toolbar(t, s, cx))
         .child(
@@ -3063,7 +3194,12 @@ fn shading_overlay(t: Colors, s: &Studio, cx: &mut Context<Studio>) -> AnyElemen
         .into_any_element()
 }
 
-pub fn render(studio: &Studio, viewport: AnyElement, cx: &mut Context<Studio>) -> AnyElement {
+pub fn render(
+    studio: &Studio,
+    viewport: AnyElement,
+    window: &Window,
+    cx: &mut Context<Studio>,
+) -> AnyElement {
     let t = studio.theme_colors();
     col()
         .relative()
@@ -3073,6 +3209,7 @@ pub fn render(studio: &Studio, viewport: AnyElement, cx: &mut Context<Studio>) -
         .text_color(rgb(t.text))
         .text_size(px(11.))
         .font_family(".SystemUIFont")
+        .child(sidebar_resize_events(cx))
         .child(titlebar(t, studio, cx))
         .child(
             row()
@@ -3080,12 +3217,14 @@ pub fn render(studio: &Studio, viewport: AnyElement, cx: &mut Context<Studio>) -
                 .min_h(px(0.))
                 .w_full()
                 .overflow_hidden()
-                .p(px(4.))
-                .gap(px(4.))
+                .p(px(WORKSPACE_PADDING))
                 .child(viewport_panel(t, studio, viewport, cx))
+                .child(sidebar_divider(t, studio, cx))
                 .child(
                     col()
-                        .w(px(292.))
+                        .w(px(studio
+                            .panels
+                            .sidebar_width(window.viewport_size().width.into())))
                         .h_full()
                         .flex_shrink_0()
                         .gap(px(4.))
@@ -3109,6 +3248,15 @@ pub fn render(studio: &Studio, viewport: AnyElement, cx: &mut Context<Studio>) -
         })
         .when(studio.shading_pie.is_some(), |d| {
             d.child(shading_overlay(t, studio, cx))
+        })
+        .when(studio.panels.sidebar_resize.is_some(), |d| {
+            d.child(
+                div()
+                    .absolute()
+                    .inset_0()
+                    .occlude()
+                    .cursor(CursorStyle::ResizeLeftRight),
+            )
         })
         .into_any_element()
 }
