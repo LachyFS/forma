@@ -141,7 +141,8 @@ fn main() -> Result<()> {
                     titlebar: Some(gpui::TitlebarOptions {
                         title: Some("Forma".into()),
                         appears_transparent: true,
-                        ..Default::default()
+                        // Center the 12-pixel macOS controls in our 36-pixel title bar.
+                        traffic_light_position: Some(gpui::point(px(8.), px(12.))),
                     }),
                     ..Default::default()
                 },
