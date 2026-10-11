@@ -128,8 +128,8 @@ bool triangle_hit(Ray ray, device const Triangle &tri, thread Hit &hit, uint ind
     hit.distance = distance; hit.bary = float2(u, v); hit.triangle = index;
     return true;
 }
-Hit trace(Ray ray, float limit, device const Triangle *triangles,
-          device const BvhNode *nodes, constant Uniforms &u, bool any_hit = false) {
+Hit trace_scene(Ray ray, float limit, device const Triangle *triangles,
+                device const BvhNode *nodes, constant Uniforms &u, bool any_hit, bool selected_only) {
     Hit hit = { limit, float2(0), NO_HIT };
     if (u.scene.x == 0u || u.scene.y == 0u) return hit;
     float3 inverse_dir(inverse_component(ray.direction.x), inverse_component(ray.direction.y), inverse_component(ray.direction.z));
@@ -143,6 +143,7 @@ Hit trace(Ray ray, float limit, device const Triangle *triangles,
         if (node.data.z != 0u) {
             uint end = min(u.scene.x, node.data.x + node.data.y);
             for (uint i = node.data.x; i < end; ++i) {
+                if (selected_only && abs(triangles[i].params.z - u.settings.z) >= 0.25f) continue;
                 if (triangle_hit(ray, triangles[i], hit, i) && any_hit) return hit;
             }
         } else {
@@ -159,10 +160,16 @@ Hit trace(Ray ray, float limit, device const Triangle *triangles,
     }
     // A pathological imported BVH must not silently drop visible geometry.
     if (overflow) {
-        for (uint i = 0u; i < u.scene.x; ++i)
+        for (uint i = 0u; i < u.scene.x; ++i) {
+            if (selected_only && abs(triangles[i].params.z - u.settings.z) >= 0.25f) continue;
             if (triangle_hit(ray, triangles[i], hit, i) && any_hit) break;
+        }
     }
     return hit;
+}
+Hit trace(Ray ray, float limit, device const Triangle *triangles,
+          device const BvhNode *nodes, constant Uniforms &u, bool any_hit = false) {
+    return trace_scene(ray, limit, triangles, nodes, u, any_hit, false);
 }
 Surface surface_at(Ray ray, Hit hit, device const Triangle *triangles) {
     device const Triangle &tri = triangles[hit.triangle];
@@ -480,25 +487,28 @@ bool is_selected(Hit hit, device const Triangle *triangles, constant Uniforms &u
 }
 float selection_silhouette(float2 pixel, device const Triangle *triangles,
                            device const BvhNode *nodes, constant Uniforms &u) {
-    // Called only on visible selected pixels: an inward band cannot reveal
-    // hidden geometry. Comparing object IDs avoids tessellation edges, while
-    // retaining silhouettes around holes and occlusion boundaries. Eight
-    // directions keep the band as wide on diagonal edges as on axis-aligned ones.
+    // Trace only the selected object so its silhouette and holes continue
+    // through occluders without outlining the occluders themselves. Eight
+    // directions keep the inward band equally wide along diagonal edges.
     const float2 offsets[8] = {
         float2(-1, 0), float2(1, 0), float2(0, -1), float2(0, 1),
         float2(-0.70710678f, -0.70710678f), float2(0.70710678f, -0.70710678f),
         float2(-0.70710678f, 0.70710678f), float2(0.70710678f, 0.70710678f),
     };
     for (uint i = 0u; i < 8u; ++i) {
-        Hit neighbor = trace(camera_ray(pixel + offsets[i] * SELECTION_WIDTH, u),
-                             INFINITY, triangles, nodes, u);
-        if (!is_selected(neighbor, triangles, u)) return 1.0f;
+        Hit neighbor = trace_scene(camera_ray(pixel + offsets[i] * SELECTION_WIDTH, u),
+                                   INFINITY, triangles, nodes, u, true, true);
+        if (neighbor.triangle == NO_HIT) return 1.0f;
     }
     return 0.0f;
 }
 float selection_coverage(float2 pixel, Hit hit, device const Triangle *triangles,
                          device const BvhNode *nodes, constant Uniforms &u) {
-    if (!is_selected(hit, triangles, u)) return 0.0f;
+    if (u.settings.z <= 0.0f || hit.triangle == NO_HIT) return 0.0f;
+    if (!is_selected(hit, triangles, u)) {
+        Hit selected = trace_scene(camera_ray(pixel, u), INFINITY, triangles, nodes, u, true, true);
+        if (selected.triangle == NO_HIT) return 0.0f;
+    }
     return selection_silhouette(pixel, triangles, nodes, u) * 0.92f;
 }
 float3 solid_shading(Surface s, Ray ray, constant Uniforms &u) {

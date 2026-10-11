@@ -37,22 +37,6 @@ Hit preview_trace(Ray r, float limit, device const Triangle *triangles,
 #endif
 }
 
-float preview_selection_coverage(float2 pixel, Hit hit, device const Triangle *triangles,
-                                 device const BvhNode *nodes, constant Uniforms &u PREVIEW_ACCEL_PARAM) {
-    if (!is_selected(hit, triangles, u)) return 0.0f;
-    const float2 offsets[8] = {
-        float2(-1, 0), float2(1, 0), float2(0, -1), float2(0, 1),
-        float2(-0.70710678f, -0.70710678f), float2(0.70710678f, -0.70710678f),
-        float2(-0.70710678f, 0.70710678f), float2(0.70710678f, 0.70710678f),
-    };
-    for (uint i = 0u; i < 8u; ++i) {
-        Hit neighbor = preview_trace(camera_ray(pixel + offsets[i] * SELECTION_WIDTH, u),
-                                     INFINITY, triangles, nodes, u PREVIEW_ACCEL_ARG);
-        if (!is_selected(neighbor, triangles, u)) return 0.92f;
-    }
-    return 0.0f;
-}
-
 constant sampler preview_env_sampler(coord::normalized, s_address::repeat,
                                       t_address::clamp_to_edge, filter::linear,
                                       mip_filter::linear);
@@ -211,6 +195,7 @@ kernel void preview_main(device const Triangle *triangles [[buffer(0)]],
     }
     accumulation[gid.y * u.image.x + gid.x] = float4(color, 1.0f);
     float3 display = composite_edit(display_transform(color, u.settings.x), center_ray, center_hit, pixel, triangles, u);
-    float coverage = preview_selection_coverage(pixel, center_hit, triangles, nodes, u PREVIEW_ACCEL_ARG);
+    // Selection uses the shared object-filtered BVH, including in hardware preview.
+    float coverage = selection_coverage(pixel, center_hit, triangles, nodes, u);
     output.write(float4(composite_selection(display, coverage), 1.0f), gid);
 }

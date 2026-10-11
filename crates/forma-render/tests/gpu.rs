@@ -359,3 +359,115 @@ fn rendered_outline_is_stable_across_samples_and_normal_guides_keep_their_weight
         reference.read_denoise_input().unwrap().normal
     );
 }
+
+/// Occluders must neither cut the selection outline nor add their own contours.
+#[test]
+fn selection_outline_ignores_occluders_in_every_mode() {
+    let mut renderer = Renderer::new().unwrap();
+    let mut scene = Scene::empty();
+    let selected = scene.add(Primitive::Cube);
+    scene.object_mut(selected).unwrap().transform.scale.z = 0.25;
+    let occluder = scene.add(Primitive::Cube);
+    scene.object_mut(occluder).unwrap().transform.translation = Vec3::new(0.3, 0.0, 1.0);
+    scene.camera.target = Vec3::ZERO;
+    scene.camera.yaw = 0.0;
+    scene.camera.pitch = 0.0;
+    scene.camera.distance = 6.0;
+    scene.camera.orthographic = true;
+    let mut settings = RenderSettings {
+        width: 128,
+        height: 96,
+        max_samples: 1,
+        show_grid: false,
+        selected: Some(selected),
+        ..Default::default()
+    };
+    let outline = |renderer: &mut Renderer| -> Vec<bool> {
+        pixels(renderer)
+            .chunks_exact(3)
+            .map(|p| p[2] > 180 && p[2] as i32 - p[0] as i32 > 100)
+            .collect()
+    };
+    let mut revision = 0;
+    for mode in [
+        RenderMode::Wireframe,
+        RenderMode::Solid,
+        RenderMode::MaterialPreview,
+        RenderMode::Rendered,
+    ] {
+        settings.mode = mode;
+        scene.object_mut(occluder).unwrap().visible = false;
+        revision += 1;
+        renderer.render(&scene, &settings, revision).unwrap();
+        let expected = outline(&mut renderer);
+        assert!(expected.iter().filter(|&&covered| covered).count() > 100);
+        for (label, scale) in [
+            ("partly covered", Vec3::new(0.45, 1.4, 0.2)),
+            ("fully covered", Vec3::new(1.6, 1.4, 0.2)),
+        ] {
+            let object = scene.object_mut(occluder).unwrap();
+            object.visible = true;
+            object.transform.scale = scale;
+            revision += 1;
+            renderer.render(&scene, &settings, revision).unwrap();
+            let actual = outline(&mut renderer);
+            let changed = expected.iter().zip(&actual).filter(|(a, b)| a != b).count();
+            assert_eq!(changed, 0, "{mode:?}: {label} outline changed");
+        }
+    }
+}
+
+#[test]
+fn occluded_selection_preserves_holes_and_respects_object_visibility() {
+    let mut renderer = Renderer::new().unwrap();
+    let mut scene = Scene::empty();
+    // A hidden object before the selection exercises non-compacted object IDs.
+    let hidden = scene.add(Primitive::Cube);
+    scene.object_mut(hidden).unwrap().visible = false;
+    let selected = scene.add(Primitive::Torus);
+    scene.object_mut(selected).unwrap().transform.rotation.x = std::f32::consts::FRAC_PI_2;
+    let occluder = scene.add(Primitive::Cube);
+    let object = scene.object_mut(occluder).unwrap();
+    object.transform.translation.z = 1.0;
+    object.transform.scale = Vec3::new(2.0, 2.0, 0.2);
+    scene.camera.target = Vec3::ZERO;
+    scene.camera.yaw = 0.0;
+    scene.camera.pitch = 0.0;
+    scene.camera.distance = 6.0;
+    let settings = RenderSettings {
+        width: 128,
+        height: 96,
+        mode: RenderMode::Rendered,
+        max_samples: 1,
+        show_grid: false,
+        selected: Some(selected),
+        ..Default::default()
+    };
+    let mut revision = 0;
+    for orthographic in [false, true] {
+        scene.camera.orthographic = orthographic;
+        scene.object_mut(selected).unwrap().visible = true;
+        scene.object_mut(occluder).unwrap().visible = false;
+        revision += 1;
+        renderer.render(&scene, &settings, revision).unwrap();
+        let expected = renderer.read_denoise_input().unwrap().selection;
+        assert!(expected.iter().any(|&coverage| coverage > 0.5));
+        let row = &expected[(48 * 128)..(49 * 128)];
+        assert_eq!(row[64], 0.0, "The torus hole must remain empty");
+        let bands = row
+            .windows(2)
+            .filter(|pair| pair[0] == 0.0 && pair[1] > 0.5)
+            .count();
+        assert_eq!(bands, 4, "Both the outer silhouette and hole need outlines");
+
+        scene.object_mut(occluder).unwrap().visible = true;
+        revision += 1;
+        renderer.render(&scene, &settings, revision).unwrap();
+        assert_eq!(renderer.read_denoise_input().unwrap().selection, expected);
+
+        scene.object_mut(selected).unwrap().visible = false;
+        revision += 1;
+        renderer.render(&scene, &settings, revision).unwrap();
+        assert!(renderer.read_denoise_input().unwrap().selection.is_empty());
+    }
+}
