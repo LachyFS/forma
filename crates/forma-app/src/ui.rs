@@ -768,50 +768,47 @@ fn primary(
 
 fn titlebar(t: Colors, s: &Studio, cx: &mut Context<Studio>) -> AnyElement {
     row()
+        .relative()
         .h(px(36.))
         .flex_shrink_0()
-        .pl(px(if cfg!(target_os = "macos") { 80. } else { 12. }))
-        .pr(px(8.))
+        .px(px(8.))
         .gap(px(8.))
         .border_b_1()
         .border_color(rgb(t.line))
         .bg(rgb(t.panel))
         .child(
+            // Equal insets keep the document centered in the window and leave
+            // room for the actions even at the minimum window width.
             row()
-                .gap(px(9.))
-                .flex_shrink_0()
-                .child(icon(Icon::Cube, t.accent, 16.))
+                .absolute()
+                .left(px(450.))
+                .right(px(450.))
+                .top_0()
+                .bottom_0()
+                .justify_center()
                 .child(
-                    div()
-                        .font_weight(FontWeight::BOLD)
-                        .text_size(px(12.))
-                        .text_color(rgb(t.text))
-                        .child("FORMA"),
-                ),
-        )
-        .child(divider(t))
-        .child(
-            row()
-                .gap(px(7.))
-                .min_w(px(0.))
-                .child(
-                    div()
-                        .max_w(px(260.))
+                    row()
+                        .gap(px(7.))
                         .min_w(px(0.))
-                        .overflow_hidden()
-                        .text_ellipsis()
-                        .text_color(rgb(t.text))
-                        .child(s.project_name.clone()),
-                )
-                .when(s.dirty, |d| {
-                    d.child(
-                        div()
-                            .size(px(5.))
-                            .flex_shrink_0()
-                            .rounded_full()
-                            .bg(rgb(t.accent)),
-                    )
-                }),
+                        .max_w(px(260.))
+                        .child(
+                            div()
+                                .min_w(px(0.))
+                                .overflow_hidden()
+                                .text_ellipsis()
+                                .text_color(rgb(t.text))
+                                .child(s.project_name.clone()),
+                        )
+                        .when(s.dirty, |d| {
+                            d.child(
+                                div()
+                                    .size(px(5.))
+                                    .flex_shrink_0()
+                                    .rounded_full()
+                                    .bg(rgb(t.accent)),
+                            )
+                        }),
+                ),
         )
         .child(div().flex_1())
         .child(
