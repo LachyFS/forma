@@ -125,7 +125,7 @@ fn triangle_hit(ray: Ray, tri: Triangle, hit: ptr<function, Hit>, index: u32) ->
     *hit = Hit(distance, vec2(bary_u, bary_v), index);
     return true;
 }
-fn trace(ray: Ray, limit: f32, any_hit: bool) -> Hit {
+fn trace_scene(ray: Ray, limit: f32, any_hit: bool, selected_only: bool) -> Hit {
     var hit = Hit(limit, vec2(0.0), NO_HIT);
     if u.scene.x == 0u || u.scene.y == 0u { return hit; }
     let inverse_dir = vec3(inverse_component(ray.direction.x), inverse_component(ray.direction.y), inverse_component(ray.direction.z));
@@ -141,6 +141,7 @@ fn trace(ray: Ray, limit: f32, any_hit: bool) -> Hit {
         if node.data.z != 0u {
             let end = min(u.scene.x, node.data.x + node.data.y);
             for (var i = node.data.x; i < end; i += 1u) {
+                if selected_only && abs(triangles[i].params.z - u.settings.z) >= 0.25 { continue; }
                 if triangle_hit(ray, triangles[i], &hit, i) && any_hit { return hit; }
             }
         } else {
@@ -158,10 +159,14 @@ fn trace(ray: Ray, limit: f32, any_hit: bool) -> Hit {
     }
     if overflow {
         for (var i = 0u; i < u.scene.x; i += 1u) {
+            if selected_only && abs(triangles[i].params.z - u.settings.z) >= 0.25 { continue; }
             if triangle_hit(ray, triangles[i], &hit, i) && any_hit { break; }
         }
     }
     return hit;
+}
+fn trace(ray: Ray, limit: f32, any_hit: bool) -> Hit {
+    return trace_scene(ray, limit, any_hit, false);
 }
 fn surface_at(ray: Ray, hit: Hit) -> Surface {
     let tri = triangles[hit.triangle];
@@ -533,22 +538,25 @@ fn is_selected(hit: Hit) -> bool {
         && abs(triangles[hit.triangle].params.z - u.settings.z) < 0.25;
 }
 fn selection_silhouette(pixel: vec2<f32>) -> f32 {
-    // Called only on visible selected pixels: an inward band cannot reveal
-    // hidden geometry. Comparing object IDs avoids tessellation edges, while
-    // retaining silhouettes around holes and occlusion boundaries. Eight
-    // directions keep the band as wide on diagonal edges as on axis-aligned ones.
+    // Trace only the selected object so its silhouette and holes continue
+    // through occluders without outlining the occluders themselves. Eight
+    // directions keep the inward band equally wide along diagonal edges.
     let offsets = array<vec2<f32>, 8>(
         vec2(-1.0, 0.0), vec2(1.0, 0.0), vec2(0.0, -1.0), vec2(0.0, 1.0),
         vec2(-0.70710678, -0.70710678), vec2(0.70710678, -0.70710678),
         vec2(-0.70710678, 0.70710678), vec2(0.70710678, 0.70710678));
     for (var i = 0u; i < 8u; i += 1u) {
-        let neighbor = trace(camera_ray(pixel + offsets[i] * SELECTION_WIDTH), FAR, false);
-        if !is_selected(neighbor) { return 1.0; }
+        let neighbor = trace_scene(camera_ray(pixel + offsets[i] * SELECTION_WIDTH), FAR, true, true);
+        if neighbor.triangle == NO_HIT { return 1.0; }
     }
     return 0.0;
 }
 fn selection_coverage(pixel: vec2<f32>, hit: Hit) -> f32 {
-    if !is_selected(hit) { return 0.0; }
+    if u.settings.z <= 0.0 || hit.triangle == NO_HIT { return 0.0; }
+    if !is_selected(hit) {
+        let selected = trace_scene(camera_ray(pixel), FAR, true, true);
+        if selected.triangle == NO_HIT { return 0.0; }
+    }
     return selection_silhouette(pixel) * 0.92;
 }
 fn solid_shading(s: Surface, ray: Ray) -> vec3<f32> {

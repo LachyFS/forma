@@ -21,7 +21,9 @@ has its own immediate shading pipeline; Rendered performs progressive path traci
 
 Primary visibility uses the same triangle geometry and smooth normals as the
 other modes. On the native macOS backend with devices supporting Metal ray tracing, a cached primitive acceleration
-structure handles preview primary, antialiasing, AO and selection rays. Other native devices and all wgpu backends use the same BVH in GPU compute.
+structure handles preview primary, antialiasing and AO rays. Other native devices and all wgpu backends use the same BVH in GPU compute.
+Selection rays use the shared BVH filtered to the selected object in every mode,
+so its outline stays visible through occluders without following their contours.
  Both paths keep four fixed antialiasing samples and eight
 nearest-hit contact rays; navigation never reduces resolution or sampling quality.
 The acceleration structure is built only when needed after geometry changes and
