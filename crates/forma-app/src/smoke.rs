@@ -669,7 +669,10 @@ async fn check_denoise_workflow(
     output: &std::path::Path,
     cx: &mut AsyncApp,
 ) -> Result<()> {
-    window.update(cx, |s, _, cx| {
+    window.update(cx, |s, w, cx| {
+        // Component overlays intentionally pause viewport denoising. Earlier
+        // smoke checks may leave Face mode active, so start this workflow clean.
+        s.execute(Command::SetEditMode(EditMode::Object), w, cx);
         s.scene = Scene::default();
         s.selected = s.scene.objects.first().map(|object| object.id);
         s.settings.mode = RenderMode::Rendered;
