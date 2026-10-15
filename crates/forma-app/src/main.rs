@@ -1,9 +1,12 @@
 mod app;
 mod code_editor;
+mod exchange;
+mod mesh_commands;
 mod modelling;
 mod render_worker;
 mod shading_pie;
 mod smoke;
+mod text_entry;
 mod theme;
 #[cfg(target_os = "macos")]
 mod trackpad;
@@ -28,11 +31,22 @@ actions!(
         SaveProjectAs,
         ImportObj,
         ExportObj,
+        ImportStl,
+        ExportStl,
         ExportPng,
         Undo,
         Redo,
         Commands,
         ColorTheme,
+        FrameAll,
+        Measurements,
+        BevelEdges,
+        TriangulateFaces,
+        FlipNormals,
+        RecalculateNormals,
+        ApplyScale,
+        ApplyRotationScale,
+        CenterOrigin,
         Help,
         Quit
     ]
@@ -162,11 +176,22 @@ fn main() -> Result<()> {
         register!(SaveProjectAs, Command::SaveAs);
         register!(ImportObj, Command::ImportObj);
         register!(ExportObj, Command::ExportObj);
+        register!(ImportStl, Command::ImportStl);
+        register!(ExportStl, Command::ExportStl);
         register!(ExportPng, Command::ExportImage);
         register!(Undo, Command::Undo);
         register!(Redo, Command::Redo);
         register!(Commands, Command::TogglePalette);
         register!(ColorTheme, Command::ToggleTheme);
+        register!(FrameAll, Command::FrameAll);
+        register!(Measurements, Command::ToggleMeasurements);
+        register!(BevelEdges, Command::Bevel);
+        register!(TriangulateFaces, Command::Triangulate);
+        register!(FlipNormals, Command::FlipNormals);
+        register!(RecalculateNormals, Command::RecalculateNormals);
+        register!(ApplyScale, Command::ApplyScale);
+        register!(ApplyRotationScale, Command::ApplyRotationScale);
+        register!(CenterOrigin, Command::CenterOrigin);
         register!(Help, Command::ToggleHelp);
         cx.on_action(move |_: &Quit, cx| {
             let _ = window.update(cx, |s, w, cx| {
@@ -198,6 +223,8 @@ fn main() -> Result<()> {
                     MenuItem::separator(),
                     MenuItem::action("Import OBJ…", ImportObj),
                     MenuItem::action("Export OBJ…", ExportObj),
+                    MenuItem::action("Import STL…", ImportStl),
+                    MenuItem::action("Export STL…", ExportStl),
                     MenuItem::action("Export image…", ExportPng),
                 ],
             },
@@ -209,8 +236,29 @@ fn main() -> Result<()> {
                 ],
             },
             Menu {
+                name: "Object".into(),
+                items: vec![
+                    MenuItem::action("Apply scale", ApplyScale),
+                    MenuItem::action("Apply rotation and scale", ApplyRotationScale),
+                    MenuItem::action("Origin to geometry center", CenterOrigin),
+                ],
+            },
+            Menu {
+                name: "Mesh".into(),
+                items: vec![
+                    MenuItem::action("Bevel convex mesh edges…", BevelEdges),
+                    MenuItem::action("Triangulate faces", TriangulateFaces),
+                    MenuItem::separator(),
+                    MenuItem::action("Recalculate normals outside", RecalculateNormals),
+                    MenuItem::action("Flip normals", FlipNormals),
+                ],
+            },
+            Menu {
                 name: "View".into(),
                 items: vec![
+                    MenuItem::action("Frame all visible geometry", FrameAll),
+                    MenuItem::action("Selection measurements", Measurements),
+                    MenuItem::separator(),
                     MenuItem::action("Commands", Commands),
                     MenuItem::action("Color Theme…", ColorTheme),
                     MenuItem::action("Keyboard shortcuts", Help),

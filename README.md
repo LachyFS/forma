@@ -83,9 +83,16 @@ cargo run --locked --release -p forma
 - Add cubes, spheres, cylinders, tori and planes; select objects in the viewport
   or outliner, duplicate, hide and delete them.
 - Move, rotate and scale object groups and component selections with global/local axis and plane constraints,
-  numerical input and viewport handles. Edit exact values in the inspector.
+  arithmetic and unit input, and viewport handles. Set exact local dimensions in the inspector;
+  copy/paste numeric expressions and use `Tab` between fields. Show world dimensions and selected
+  edge lengths with `Shift+M`.
+- Apply object scale or rotation and scale, or center origins on geometry, from the Transform panel.
+  Meshes and their descendants keep their world positions; other linked instances are preserved.
 - Interactively extrude face regions or inset coplanar regions with exact thickness. Apply Catmull–Clark
-  subdivision to the selected mesh.
+  subdivision, or bevel every edge of a closed convex mesh with one segment. Triangulate selected
+  faces or objects, reverse face winding, and recalculate consistent normals from the Geometry panel.
+- Frame the selection or all visible geometry, and choose any of six orthographic views
+  through the clickable axis gizmo, command panel or keyboard shortcuts.
 - Choose PBR, Glass or Custom surface shaders, select PNG/JPEG image textures,
   and edit Metal/WGSL surface code with compile diagnostics. Adjust roughness, IOR, metallic response, emission,
   world strength and exposure. Enter arbitrary sRGB base colors and rename objects.
@@ -94,8 +101,9 @@ cargo run --locked --release -p forma
 - Save `.forma` projects with a versioned object graph, reusable mesh/material
   data, transforms, camera, world and render preferences. Version-1 projects
   migrate on open. Save replacement is atomic; edits support undo/redo.
-- Import OBJ polygon geometry, export transformed scene geometry to OBJ, and
-  export the current render mode to PNG while continuing to edit.
+- Import OBJ polygon geometry or ASCII/binary STL. Export transformed OBJ geometry, or choose
+  units and a selected/visible scope for binary STL. Export the current render mode to PNG
+  while continuing to edit.
 - Personalize the editor with five color themes: Forma Dark, Paper, Midnight,
   Synthwave and Matcha. Open **Theme** in the title bar, **View → Color Theme…**,
   or search **Preferences: Color Theme** in the command panel. Type to filter,
@@ -111,6 +119,20 @@ OBJ import combines groups into one object. Texture coordinates, supplied normal
 and MTL materials are not retained; normals are generated from the editable
 geometry. PNG export uses the current viewport dimensions and sample target,
 with editor selection/grid overlays disabled.
+
+STL exchange asks for **mm**, **cm**, **m** or **in** before opening the file picker;
+STL files do not specify their own units. Import combines facets into one editable
+mesh and shares vertices with identical coordinates. Export triangulates geometry,
+applies world transforms and corrects winding for mirrored objects. Choose
+**Selection** or **Visible scene**; hidden objects, including those hidden through
+parents or collections, are excluded in either scope. Axes are preserved, with
+Forma's **Y up** convention; there is no automatic conversion to Z up. STL carries
+geometry without materials. Invalid imports leave the scene intact, and failed
+exports preserve an existing destination file.
+
+Open **Formats** beside **Export image** in the title bar to choose PNG, OBJ or
+STL. At narrower window widths, Formats appears as a chevron. The direct
+**Export image** button remains available for PNG export.
 
 ## Render modes
 
@@ -188,17 +210,26 @@ The in-app command panel opens with
 | Pan | `Shift` + two-finger drag, `Shift` + middle/right drag, or `Shift` + wheel |
 | Zoom | Pinch, mouse wheel, `Ctrl` + middle drag, or `Ctrl` / `⌘` + two-finger drag |
 | Focus selection | Backtick (`` ` ``), `.` / numpad decimal, or `F`; focuses the entire selection |
+| Frame all visible geometry | `Home` |
 | Shading pie | `Z`; hold and flick, or tap then select |
 | Move / rotate / scale | `G` / `R` / `S` |
 | Constrain transform | `X`, `Y` or `Z`; repeat the same key for global → local → free |
 | Plane constraint | `Shift+X`, `Shift+Y` or `Shift+Z` excludes that axis |
 | Snap transform | Hold `Ctrl`; combine with `Shift` for finer increments |
-| Enter an exact transform | Type a value or arithmetic such as `1/8` or `2*3`; angles are degrees, scale is a factor |
+| Enter an exact transform | Arithmetic such as `(2+3)/4`; distances accept `m`, `cm`, `mm`, `in`, `ft`; angles accept `deg` or `rad`; scale is unitless |
+| Select / copy / paste numeric text | `⌘A` / `⌘C` / `⌘V` while editing an inspector field or transform expression |
+| Next / previous inspector field | `Tab` / `Shift+Tab`; commits valid input and stays within the current inspector section |
 | Apply / cancel transform | Click or `Return` / `Esc` or right click |
 | Fine pointer movement | Hold `Shift` during a transform |
 | Extrude / inset region | `E` / `I`, move the pointer or type a distance, then confirm |
+| Bevel all edges | `⌘B` in Object mode; enter a width, then confirm; requires a closed convex mesh |
+| Triangulate / flip / recalculate normals | Geometry panel or command panel; triangulate and flip use the selected face region or objects |
+| Apply scale / rotation and scale / center origin | Transform panel or command panel, in Object mode |
+| Selection measurements | `Shift+M`; world dimensions and selected edge lengths in metres |
 | Duplicate / delete | `⌘D` or `Shift+D` / `Delete` or `Backspace` |
 | Front / right / top | `1` / `3` / `7` in Object mode (also available in the command panel) |
+| Back / left / bottom | `Option+1` / `Option+3` / `Option+7` |
+| Axis view gizmo | Click `±X`, `±Y` or `±Z`; click the facing handle again to see the opposite side |
 | Toggle projection / reset perspective | `5` / `0` |
 | Undo / redo | `⌘Z` / `⌘Shift+Z` |
 | Color theme picker | `⌘Shift+T` |
@@ -207,6 +238,38 @@ The in-app command panel opens with
 Component edit modes show visible polygon edges on every mesh; Vertex mode also shows vertex markers. G/R/S transforms the selection around its median center. Rotation follows the pointer around the pivot; scaling follows pointer distance. Holding or releasing Shift preserves the current transform. Delete removes a face, or an edge/vertex and its incident faces; deleting the last face requires Object mode. Editing overlays are excluded from exported images.
 
 Extrude creates shared cap vertices and boundary walls for the selected region. Inset supports coplanar regions and keeps thickness even under object scaling. Duplicate starts a move operation immediately. Confirming creates one undo step; Escape restores the geometry and selection from before the operation. Invalid geometry or unfinished numeric input stays uncommitted.
+
+Distance input defaults to metres: `25mm`, `1/8in`, `(2+3)*10cm` and `1ft+6in`
+are supported in movement, mesh-tool widths and inspector distances. Rotation defaults
+to degrees and also accepts explicit radians. Invalid expressions remain editable.
+Inspector edits open with the full numeric value, independent of the rounded
+display label. Copy retains the complete active expression; paste replaces selected
+text or appends at the end. Unsupported or multiline paste leaves the existing
+input intact. `Tab` and `Shift+Tab` move through the current inspector group,
+skipping hidden controls; invalid input keeps its field active for correction.
+
+Inspector **Dimensions · m (local)** measures the mesh along its local axes after its
+own scale, excluding rotation and parent transforms; changing a dimension adjusts
+that scale axis and preserves mirroring. Flat axes require geometry before they can
+be given thickness. **World dimensions** measures the visible selection's bounding
+box along world axes, including rotation and hierarchy. Edge mode also shows the
+total selected edge length and up to 12 individual labels. Measurement overlays
+are session controls and never appear in exported images.
+
+In Object mode, **Apply scale** bakes local scale into selected meshes and resets
+their scale to one. **Apply rot / scale** also bakes rotation and resets it to zero.
+**Origin to geometry center** moves each origin to its mesh's local bounding-box
+center. These commands preserve world geometry, material links and descendant
+transforms. Edited objects receive independent mesh data when needed to protect
+other linked instances; unchanged objects keep their existing links. Each command
+is one undoable transaction, including when both a parent and its child are selected.
+
+Bevel is a destructive, single-segment chamfer of every edge on the active Object-mode
+mesh. Its width is measured along adjacent faces in world space. Open, concave,
+warped or collapsed inputs are rejected; there is no selected-edge bevel or rounded
+multi-segment bevel. Triangulation preserves polygon winding. Recalculate normals
+orients the whole mesh consistently and makes closed shells point outward; open
+surfaces retain their starting side because they have no intrinsic outside.
 
 An unconstrained numeric move uses world X. Rotation without an axis constraint
 uses the viewing axis. Subdivision, imports, exports, primitives and material

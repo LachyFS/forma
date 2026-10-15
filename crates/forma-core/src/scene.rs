@@ -1209,11 +1209,43 @@ impl Scene {
     }
 
     pub fn import_obj(&mut self, path: &Path) -> Result<u64> {
+        self.check_import_capacity()?;
+        let mesh = crate::obj::read(path)?;
+        self.insert_imported_mesh(path, mesh)
+    }
+
+    /// Import ASCII or binary STL, converting its unitless coordinates to
+    /// metres. For example, millimetres use `metres_per_unit = 0.001`.
+    pub fn import_stl(&mut self, path: &Path, metres_per_unit: f32) -> Result<u64> {
+        self.check_import_capacity()?;
+        let mesh = crate::stl::read(path, metres_per_unit)?;
+        self.insert_imported_mesh(path, mesh)
+    }
+
+    fn check_import_capacity(&self) -> Result<()> {
         ensure!(
             self.objects.len() < 10_000,
             "Import would exceed the 10,000 object limit"
         );
-        let mesh = crate::obj::read(path)?;
+        ensure!(
+            self.meshes.len() < 10_000,
+            "Import would exceed the 10,000 mesh limit"
+        );
+        ensure!(
+            self.materials.len() < 100_000,
+            "Import would exceed the 100,000 material limit"
+        );
+        ensure!(
+            self.next_id < u64::MAX - 3,
+            "Scene has exhausted object IDs"
+        );
+        self.validate()
+            .context("Cannot import into an invalid scene")
+    }
+
+    /// All checks precede allocation of the three data-block IDs. Both file
+    /// importers therefore leave names, IDs, and scene contents intact on error.
+    fn insert_imported_mesh(&mut self, path: &Path, mesh: Mesh) -> Result<u64> {
         let vertices: usize = self
             .meshes
             .iter()
@@ -1224,20 +1256,37 @@ impl Scene {
             vertices + mesh.positions.len() <= 5_000_000 && faces + mesh.faces.len() <= 5_000_000,
             "Import would exceed the five million scene vertex/face limit"
         );
-        ensure!(
-            self.next_id < u64::MAX - 3,
-            "Scene has exhausted object IDs"
-        );
         let label = path
             .file_stem()
             .and_then(|name| name.to_str())
             .unwrap_or("Imported mesh");
-        let label: String = label.chars().take(100).collect();
+        let label: String = label
+            .chars()
+            .filter(|c| !c.is_control())
+            .take(100)
+            .collect();
+        let label = if label.trim().is_empty() {
+            "Imported mesh"
+        } else {
+            &label
+        };
         Ok(self.add_mesh_object(label, mesh))
     }
 
     pub fn export_obj(&self, path: &Path) -> Result<()> {
         crate::obj::write(self, path)
+    }
+
+    /// Export visible mesh geometry as binary STL, baking world transforms.
+    /// Coordinates are divided by `metres_per_unit`; STL itself has no units.
+    /// An optional object selection further restricts the visible geometry.
+    pub fn export_stl(
+        &self,
+        path: &Path,
+        metres_per_unit: f32,
+        selection: Option<&BTreeSet<u64>>,
+    ) -> Result<()> {
+        crate::stl::write(self, path, metres_per_unit, selection)
     }
 
     pub fn validate(&self) -> Result<()> {
