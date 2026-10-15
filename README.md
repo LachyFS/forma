@@ -238,6 +238,10 @@ from the smoke workflow. Native file-picker
 interaction and OS pointer routing remain manual checks.
 
 Core geometry tests can run independently with `cargo test --locked -p forma-core`.
+For CPU-only triangulation and validation timings, run
+`cargo run --locked --release -p forma-core --bin mesh-bench`. It reports median
+and p95 latency for 65,536-face triangle, quad and concave-polygon meshes without
+requiring a GPU or window system.
 Renderer integration tests require a compatible GPU (Mesa software Vulkan can
 also execute them in CI). The [validation record](docs/VALIDATION.md) separates executed numerical, image and
 application checks from unverified scale or performance claims.

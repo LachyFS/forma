@@ -1,5 +1,46 @@
 # Implementation validation
 
+## Mesh processing allocations (2026-10-15)
+
+Mesh triangulation now reuses projection, ear-clipping and triangle scratch
+buffers across faces and reserves the output once. Validation reuses its vertex
+uniqueness buffer and shares one polygon projection between intersection checks
+and triangulation. Triangle order, polygon attribution and validation errors are
+preserved.
+
+Measured with Rust 1.92.0 release builds on Linux, AMD Ryzen 7 9800X3D. Each
+workload has 65,536 faces; `mesh-bench` performs five warmups and 31 timed samples,
+including output allocation and destruction. The table shows the median of five
+alternating baseline/current runs, against baseline `c255dbb` with the same
+benchmark. Times are milliseconds; these are CPU microbenchmarks, not viewport
+frame-rate measurements or cross-device guarantees.
+
+| Mesh | Operation | Before | After | Less time |
+| --- | --- | ---: | ---: | ---: |
+| Triangles | Triangulation | 0.360 | 0.284 | 21% |
+| Triangles | Triangulation with face indices | 0.479 | 0.206 | 57% |
+| Triangles | Validation | 2.167 | 1.256 | 42% |
+| Quads | Triangulation | 1.933 | 1.593 | 18% |
+| Quads | Triangulation with face indices | 2.205 | 1.582 | 28% |
+| Quads | Validation | 4.395 | 2.559 | 42% |
+| Concave pentagons | Triangulation | 3.058 | 2.407 | 21% |
+| Concave pentagons | Triangulation with face indices | 3.485 | 2.435 | 30% |
+| Concave pentagons | Validation | 6.266 | 4.046 | 35% |
+
+All **55 core tests**, strict core Clippy (`--all-targets -- -D warnings`),
+formatting and diff checks passed. New regression tests cover mixed polygon
+sizes, winding and all projection axes, original quad diagonals, failed-face
+isolation and validation after buffer reuse. A separate local comparison against
+the previous implementation also matched exact triangle output, face indices and
+validation results for both bundled V8 scenes and 10,000 generated mixed-face
+meshes, including invalid polygons.
+
+Reproduce the timing workloads with:
+
+```sh
+cargo run --locked --release -p forma-core --bin mesh-bench
+```
+
 ## Rust 1.92.0 compatibility (2026-09-13)
 
 The repository now pins Rust 1.92.0. All **113 workspace tests**, strict workspace
