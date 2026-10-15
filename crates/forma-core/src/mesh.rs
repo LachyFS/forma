@@ -30,6 +30,15 @@ pub struct Mesh {
     pub faces: Vec<Vec<u32>>,
 }
 
+/// Reuse face-sized scratch storage across a mesh pass. Rendering, picking and
+/// validation visit every face, so allocating these buffers per face is costly.
+#[derive(Default)]
+struct Triangulation {
+    points: Vec<Vec2>,
+    remaining: Vec<usize>,
+    triangles: Vec<[u32; 3]>,
+}
+
 impl Mesh {
     pub fn primitive(primitive: Primitive) -> Self {
         match primitive {
@@ -52,23 +61,33 @@ impl Mesh {
     /// Ear clipping preserves the winding of simple concave polygons. Quads
     /// and larger faces stay polygons in the editable mesh.
     pub fn triangles(&self) -> Vec<[u32; 3]> {
-        self.faces
-            .iter()
-            .flat_map(|face| self.triangulate_face(face))
-            .collect()
+        let mut scratch = Triangulation::default();
+        let mut triangles = Vec::with_capacity(self.triangle_capacity());
+        for face in &self.faces {
+            triangles.extend_from_slice(self.triangulate_face(face, &mut scratch));
+        }
+        triangles
     }
 
     /// Triangles with their original polygon index, for face picking.
     pub fn triangles_with_faces(&self) -> Vec<([u32; 3], usize)> {
+        let mut scratch = Triangulation::default();
+        let mut triangles = Vec::with_capacity(self.triangle_capacity());
+        for (index, face) in self.faces.iter().enumerate() {
+            triangles.extend(
+                self.triangulate_face(face, &mut scratch)
+                    .iter()
+                    .map(|&triangle| (triangle, index)),
+            );
+        }
+        triangles
+    }
+
+    fn triangle_capacity(&self) -> usize {
         self.faces
             .iter()
-            .enumerate()
-            .flat_map(|(index, face)| {
-                self.triangulate_face(face)
-                    .into_iter()
-                    .map(move |triangle| (triangle, index))
-            })
-            .collect()
+            .map(|face| face.len().saturating_sub(2))
+            .sum()
     }
 
     pub fn edges(&self) -> Vec<[u32; 2]> {
@@ -267,6 +286,8 @@ impl Mesh {
                 .all(|p| p.is_finite() && p.abs().max_element() <= 1.0e8),
             "Mesh contains a non-finite or out-of-range position"
         );
+        let mut unique = Vec::new();
+        let mut scratch = Triangulation::default();
         for (index, face) in self.faces.iter().enumerate() {
             ensure!(
                 (3..=4096).contains(&face.len()),
@@ -276,85 +297,52 @@ impl Mesh {
                 face.iter().all(|&i| (i as usize) < self.positions.len()),
                 "Face {index} references a missing vertex"
             );
-            let unique: BTreeSet<_> = face.iter().collect();
-            ensure!(unique.len() == face.len(), "Face {index} repeats a vertex");
+            unique.clear();
+            unique.extend_from_slice(face);
+            unique.sort_unstable();
             ensure!(
-                polygon_normal(&self.positions, face).length_squared() > 1.0e-20,
+                unique.windows(2).all(|pair| pair[0] != pair[1]),
+                "Face {index} repeats a vertex"
+            );
+            let normal = polygon_normal(&self.positions, face);
+            ensure!(
+                normal.length_squared() > 1.0e-20,
                 "Face {index} has zero area"
             );
+            self.project_face(face, normal, &mut scratch.points);
             ensure!(
-                simple_polygon(&self.project_face(face)),
+                simple_polygon(&scratch.points),
                 "Face {index} has overlapping or intersecting edges"
             );
+            scratch.triangulate(face);
             ensure!(
-                self.triangulate_face(face).len() == face.len() - 2,
+                scratch.triangles.len() == face.len() - 2,
                 "Face {index} is self-intersecting or cannot be triangulated"
             );
         }
         Ok(())
     }
 
-    fn triangulate_face(&self, face: &[u32]) -> Vec<[u32; 3]> {
+    fn triangulate_face<'a>(&self, face: &[u32], scratch: &'a mut Triangulation) -> &'a [[u32; 3]] {
+        scratch.triangles.clear();
         if face.len() < 3 || face.iter().any(|&i| i as usize >= self.positions.len()) {
-            return Vec::new();
+            return &scratch.triangles;
         }
         if face.len() == 3 {
-            return vec![[face[0], face[1], face[2]]];
+            scratch.triangles.push([face[0], face[1], face[2]]);
+        } else {
+            self.project_face(
+                face,
+                polygon_normal(&self.positions, face),
+                &mut scratch.points,
+            );
+            scratch.triangulate(face);
         }
-        let points = self.project_face(face);
-        let area: f64 = points
-            .iter()
-            .zip(points.iter().cycle().skip(1))
-            .take(points.len())
-            .map(|(a, b)| a.x as f64 * b.y as f64 - a.y as f64 * b.x as f64)
-            .sum();
-        if area.abs() < 1.0e-20 {
-            return Vec::new();
-        }
-        let sign = area.signum();
-        let mut remaining: Vec<usize> = (0..face.len()).collect();
-        let mut triangles = Vec::with_capacity(face.len() - 2);
-        while remaining.len() > 3 {
-            let mut found = false;
-            for i in 0..remaining.len() {
-                let a = remaining[(i + remaining.len() - 1) % remaining.len()];
-                let b = remaining[i];
-                let c = remaining[(i + 1) % remaining.len()];
-                if cross(points[a], points[b], points[c]) * sign <= 1.0e-14 {
-                    continue;
-                }
-                if remaining.iter().any(|&p| {
-                    p != a
-                        && p != b
-                        && p != c
-                        && in_triangle(points[p], points[a], points[b], points[c], sign)
-                }) {
-                    continue;
-                }
-                triangles.push([face[a], face[b], face[c]]);
-                remaining.remove(i);
-                found = true;
-                break;
-            }
-            if !found {
-                return Vec::new();
-            }
-        }
-        if cross(
-            points[remaining[0]],
-            points[remaining[1]],
-            points[remaining[2]],
-        ) * sign
-            <= 1.0e-14
-        {
-            return Vec::new();
-        }
-        triangles.push([face[remaining[0]], face[remaining[1]], face[remaining[2]]]);
-        triangles
+        &scratch.triangles
     }
 
-    fn project_face(&self, face: &[u32]) -> Vec<Vec2> {
-        let normal = polygon_normal(&self.positions, face).abs();
+    fn project_face(&self, face: &[u32], normal: Vec3, points: &mut Vec<Vec2>) {
+        let normal = normal.abs();
         let axis = if normal.x >= normal.y && normal.x >= normal.z {
             0
         } else if normal.y >= normal.z {
@@ -363,16 +351,15 @@ impl Mesh {
             2
         };
         let origin = self.positions[face[0] as usize];
-        face.iter()
-            .map(|&index| {
-                let p = self.positions[index as usize] - origin;
-                match axis {
-                    0 => Vec2::new(p.y, p.z),
-                    1 => Vec2::new(p.z, p.x),
-                    _ => Vec2::new(p.x, p.y),
-                }
-            })
-            .collect()
+        points.clear();
+        points.extend(face.iter().map(|&index| {
+            let p = self.positions[index as usize] - origin;
+            match axis {
+                0 => Vec2::new(p.y, p.z),
+                1 => Vec2::new(p.z, p.x),
+                _ => Vec2::new(p.x, p.y),
+            }
+        }));
     }
 
     fn cube() -> Self {
@@ -478,6 +465,72 @@ impl Mesh {
             }
         }
         Self { positions, faces }
+    }
+}
+
+impl Triangulation {
+    /// Clip the already projected polygon, retaining the original ear order.
+    fn triangulate(&mut self, face: &[u32]) {
+        self.triangles.clear();
+        if face.len() == 3 {
+            self.triangles.push([face[0], face[1], face[2]]);
+            return;
+        }
+        let points = &self.points;
+        let area: f64 = points
+            .iter()
+            .zip(points.iter().cycle().skip(1))
+            .take(points.len())
+            .map(|(a, b)| a.x as f64 * b.y as f64 - a.y as f64 * b.x as f64)
+            .sum();
+        if area.abs() < 1.0e-20 {
+            return;
+        }
+        let sign = area.signum();
+        let remaining = &mut self.remaining;
+        remaining.clear();
+        remaining.extend(0..face.len());
+        while remaining.len() > 3 {
+            let mut found = false;
+            for i in 0..remaining.len() {
+                let a = remaining[(i + remaining.len() - 1) % remaining.len()];
+                let b = remaining[i];
+                let c = remaining[(i + 1) % remaining.len()];
+                if cross(points[a], points[b], points[c]) * sign <= 1.0e-14 {
+                    continue;
+                }
+                if remaining.iter().any(|&p| {
+                    p != a
+                        && p != b
+                        && p != c
+                        && in_triangle(points[p], points[a], points[b], points[c], sign)
+                }) {
+                    continue;
+                }
+                self.triangles.push([face[a], face[b], face[c]]);
+                remaining.remove(i);
+                found = true;
+                break;
+            }
+            if !found {
+                // A failed face must not publish a partially clipped polygon or
+                // leave triangles behind for the next face using this storage.
+                self.triangles.clear();
+                return;
+            }
+        }
+        if cross(
+            points[remaining[0]],
+            points[remaining[1]],
+            points[remaining[2]],
+        ) * sign
+            <= 1.0e-14
+        {
+            self.triangles.clear();
+            return;
+        }
+        self.triangles
+            .push([face[remaining[0]], face[remaining[1]], face[remaining[2]]]);
     }
 }
 
