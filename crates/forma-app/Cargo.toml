@@ -14,7 +14,7 @@ image.workspace = true
 gpui = { version = "0.2.2", features = ["runtime_shaders"] }
 # GPUI's Naga 25 enables codespan-reporting's termcolor formatter. Cargo
 # unifies that dependency with wgpu's Naga 27, which must use the same formatter.
-naga = { version = "27.0.3", features = ["termcolor"] }
+naga = { version = "30.0.1", features = ["termcolor"] }
 smallvec = "1"
 async-channel = "2.5"
 
