@@ -1,5 +1,102 @@
 # Implementation validation
 
+## Picking, visibility and renderer preparation (2026-10-15)
+
+Three parallel experiments investigated object picking, visibility queries and
+renderer geometry preparation, followed by independent cross-review. The editor
+also retains one lazily built visibility index across camera, selection and frame
+updates; geometry/visibility changes and undo/redo clear it. This avoids repeated
+index construction during unchanged-scene overlays at the cost of retaining one
+world-space triangle/BVH copy until the next geometry invalidation.
+
+Measurements use Rust 1.92.0 release builds on Linux, AMD Ryzen 7 9800X3D, against
+`b3d6b90` (after the mesh-allocation improvements below). These are medians of five
+runs, with baseline/current order alternating, and no concurrent builds or other
+experiment workloads. Picking uses three warmups and 21 samples per run; query
+and geometry benchmarks use five warmups and 31 samples. Geometry preparation
+alternates the reference/current implementations within each sample pair and
+includes BVH construction and output destruction. These CPU measurements do not
+establish viewport frame rates or gains on other hardware.
+
+Picking skips triangulation for meshes whose conservative local bounds miss the
+ray. Times below are microseconds per ray; viewport batches contain 96 rays.
+The default scene has 5 objects/2,702 triangles, and V8 has 276 objects/81,212
+triangles. Hit object, polygon, distance and tie order remain unchanged.
+
+| Picking workload | Before (µs) | After (µs) | Change |
+| --- | ---: | ---: | ---: |
+| Default viewport | 78.416 | 5.188 | 93% less |
+| V8 viewport | 2168.279 | 90.091 | 96% less |
+| Default, hit rays only | 78.309 | 9.925 | 87% less |
+| V8, hit rays only | 2175.507 | 158.140 | 93% less |
+| Dense sphere, missed ray | 449.434 | 6.306 | 99% less |
+| Dense sphere, hit ray | 449.032 | 456.715 | 2% more |
+| Single cube, hit ray | 0.440 | 0.444 | 1% more |
+
+The bounds scan adds work for rays that hit the only dense mesh. It is bypassed
+when unused mesh positions outnumber face corners: a cube with 100,000 unused
+vertices takes 0.433 µs/ray in the final harness. An earlier unguarded prototype
+spent about 78 µs/ray scanning those unused positions.
+
+Visibility construction transforms shared vertices once and reserves a compact
+node array. Query traversal tests three slab axes together using division,
+retaining the original child order and parallel-ray cutoff. Each query batch
+contains 8,192 rays; the dense fixture contains 256 spheres/245,760 triangles.
+Hit counts match baseline for every fixture.
+
+| Visibility workload | Before (ms) | After (ms) | Less time |
+| --- | ---: | ---: | ---: |
+| Default, build | 0.190 | 0.172 | 9% |
+| V8, build | 8.948 | 8.280 | 7% |
+| Dense, build | 28.879 | 26.739 | 7% |
+| Default, queries | 1.232 | 0.762 | 38% |
+| V8, queries | 4.014 | 3.193 | 20% |
+| Dense, queries | 1.067 | 0.809 | 24% |
+
+Renderer preparation stores incident corners contiguously, collects polygon
+edges directly and reuses mesh-space preparation across linked instances within
+one build. Shared preparation is released before BVH construction. Triangle
+attributes, ordering, BVH nodes and emissive-light indices match the original
+implementation byte for byte.
+
+| Renderer geometry workload | Before (ms) | After (ms) | Less time |
+| --- | ---: | ---: | ---: |
+| Default | 1.079 | 0.927 | 14% |
+| V8 | 36.609 | 33.314 | 9% |
+| 128 linked spheres, 122,880 triangles | 44.136 | 26.716 | 39% |
+| Dense grid, 32,768 triangles | 13.256 | 11.480 | 13% |
+
+Rejected experiments: near-first visibility traversal slowed the measured query
+workloads; precomputed angle-weighted normals increased adjacency storage from
+16 to 24 bytes per corner without a consistent additional gain. Reciprocal
+multiplication was avoided because it can change grazing-box rejection through
+rounding.
+
+All **158 workspace tests** pass with Mesa llvmpipe Vulkan, along with strict
+workspace Clippy, formatting and diff checks. The real OIDN runtime test passes
+separately on CPU. New differential tests cover transformed/mirrored hierarchies,
+locked and hidden objects, linked mesh edits, concave and degenerate polygons,
+crease boundaries, tiny/large scales, signed-zero and grazing rays, and randomized
+box comparisons. Exact byte comparisons run before renderer timing as well.
+
+The full standard GPUI smoke workflow passes on Linux/X11 with llvmpipe,
+including cache reuse during camera movement, invalidation on hide/undo/redo,
+component selection, modelling, navigation, document I/O and concurrent image
+export. An earlier run with optional `FORMA_SMOKE_DENOISE=1` reached the first
+16-sample denoising wait and exceeded its 20-second limit; its cause is not
+established by the smoke log. The separate CPU denoiser test passes as noted
+above. Native macOS/Windows UI execution remains unverified here.
+
+Reproduce the workloads with:
+
+```sh
+cargo run --locked --release -p forma-core --bin picking-bench
+cargo run --locked --release -p forma-core --bin surface-query-bench
+cargo test --locked --release -p forma-render --lib geometry_preparation_benchmark -- --ignored --nocapture
+```
+
+Local timing logs and medians are in `artifacts/performance-round2/final/`.
+
 ## Mesh processing allocations (2026-10-15)
 
 Mesh triangulation now reuses projection, ear-clipping and triangle scratch

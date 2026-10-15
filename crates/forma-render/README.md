@@ -148,6 +148,7 @@ current mode and its current sample count.
 cargo test -p forma-render
 cargo run -p forma-render --bin render-smoke -- artifacts/render 128
 cargo run --release -p forma-render --bin navigation-bench -- artifacts/navigation
+cargo test --locked --release -p forma-render --lib geometry_preparation_benchmark -- --ignored --nocapture
 ```
 
 The tests execute the selected backend’s real GPU kernels and cover film reset/resume, mode behavior,
@@ -159,6 +160,10 @@ failed-import recovery. Hardware/software comparisons cover two-sided and transf
 geometry, contact AO, selection occlusion, cache lifetime, empty scenes and Rendered
 compatibility. The navigation benchmark measures 40 warmed camera updates at
 2020 × 1390 and reports median/p95 latency without imposing device-specific thresholds.
+The CPU geometry benchmark alternates the previous and current preparation paths
+across default, V8, linked-instance and dense-grid scenes, including BVH building
+and destruction. Differential tests compare triangle bytes, BVH nodes and light
+indices exactly across transforms, materials, creases, visibility and mesh edits.
 The smoke tool
 writes all four modes to PNG and reports measured sample cost. The shared tests run on all three operating systems. Native acceleration and
 Metal/wgpu parity tests run on macOS. Shader tests validate WGSL and generate

@@ -1837,7 +1837,7 @@ fn capture_window(studio: &Studio, _window: &gpui::Window, path: &std::path::Pat
 async fn check_modelling_workflow(window: WindowHandle<Studio>, cx: &mut AsyncApp) -> Result<()> {
     use crate::app::Tool;
     use glam::Vec3;
-    let saved = window.update(cx, |s, w, cx| {
+    let saved = window.update(cx, |s, w, cx| -> Result<_> {
         let saved = (
             s.scene.clone(),
             std::mem::take(&mut s.history),
@@ -1860,9 +1860,45 @@ async fn check_modelling_workflow(window: WindowHandle<Studio>, cx: &mut AsyncAp
         s.scene.camera.orthographic = true;
         s.settings.mode = RenderMode::Solid;
         s.tool = Tool::Select;
+        s.invalidate(true, cx);
         s.execute(Command::SetEditMode(EditMode::Vertex), w, cx);
-        saved
-    })?;
+        let ray = forma_core::Ray {
+            origin: Vec3::Z * 3.,
+            direction: Vec3::NEG_Z,
+        };
+        ensure!(
+            s.visibility_query().occludes(ray, 2.5),
+            "Initial visibility query missed the cube"
+        );
+        let camera = s.scene.camera;
+        s.scene.camera.orbit(Vec2::new(1., 0.));
+        s.invalidate(false, cx);
+        ensure!(
+            s.surface_query.get().is_some(),
+            "Camera navigation discarded unchanged visibility geometry"
+        );
+        s.scene.camera = camera;
+        let cube = s.selected.unwrap();
+        s.execute(Command::ToggleVisible(cube), w, cx);
+        ensure!(
+            s.surface_query.get().is_none() && !s.visibility_query().occludes(ray, 2.5),
+            "Hiding an object kept stale visibility geometry"
+        );
+        s.execute(Command::Undo, w, cx);
+        ensure!(
+            s.surface_query.get().is_none() && s.visibility_query().occludes(ray, 2.5),
+            "Undo failed to rebuild visibility geometry"
+        );
+        s.execute(Command::Redo, w, cx);
+        ensure!(
+            s.surface_query.get().is_none() && !s.visibility_query().occludes(ray, 2.5),
+            "Redo failed to rebuild visibility geometry"
+        );
+        s.execute(Command::Undo, w, cx);
+        s.history = forma_core::History::default();
+        Ok(saved)
+    })??;
+    println!("visibility_query_cache=camera_reuse,hide,undo,redo PASS");
     let original = window.update(cx, |s, _, _| s.scene.clone())?;
     let id = original.objects[0].id;
     window.update(cx, |s, w, cx| -> Result<()> {
@@ -2027,6 +2063,7 @@ async fn check_modelling_workflow(window: WindowHandle<Studio>, cx: &mut AsyncAp
         );
         s.execute(Command::SetEditMode(EditMode::Object), w, cx);
         s.scene.object_mut(id).unwrap().transform.rotation.z = std::f32::consts::FRAC_PI_2;
+        s.invalidate(true, cx);
         Ok(())
     })??;
     keys(window, &["g", "x", "x", "1", "enter"], cx).await?;
@@ -2068,7 +2105,7 @@ async fn check_modelling_workflow(window: WindowHandle<Studio>, cx: &mut AsyncAp
         Ok(())
     })??;
     keys(window, &["escape", "shift-d", "escape"], cx).await?;
-    let child = window.update(cx, |s, _, _| -> Result<_> {
+    let child = window.update(cx, |s, _, cx| -> Result<_> {
         ensure!(
             s.scene.objects.len() == 1 && s.selected == Some(id),
             "Cancelled duplicate lost original selection"
@@ -2078,6 +2115,7 @@ async fn check_modelling_workflow(window: WindowHandle<Studio>, cx: &mut AsyncAp
         s.scene.object_mut(child).unwrap().parent = Some(id);
         s.scene.object_mut(child).unwrap().transform.translation.x = 3.;
         s.select_objects([id, child].into_iter().collect(), Some(id));
+        s.invalidate(true, cx);
         Ok(child)
     })??;
     keys(window, &["g", "z", "1", "enter"], cx).await?;

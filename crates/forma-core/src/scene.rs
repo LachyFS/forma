@@ -1130,6 +1130,9 @@ impl Scene {
             // Keep this direction unnormalized: t remains world-space distance
             // under non-uniform object scaling.
             let local_direction = inverse.transform_vector3(direction);
+            if !ray_intersects_mesh_bounds(origin, local_direction, instance.mesh) {
+                continue;
+            }
             for (triangle, face) in instance.mesh.triangles_with_faces() {
                 let a = instance.mesh.positions[triangle[0] as usize];
                 let b = instance.mesh.positions[triangle[1] as usize];
@@ -1642,6 +1645,65 @@ fn validate_camera_data(camera: &CameraData) -> Result<()> {
 
 fn valid_color(value: Vec3, max: f32) -> bool {
     value.is_finite() && value.min_element() >= 0.0 && value.max_element() <= max
+}
+
+/// A conservative broad phase before allocating and testing every triangle.
+/// Recompute the bounds because meshes are publicly mutable, including linked
+/// instances; a persistent cache could otherwise hide edited geometry.
+fn ray_intersects_mesh_bounds(origin: Vec3, direction: Vec3, mesh: &Mesh) -> bool {
+    if !origin.is_finite() || !direction.is_finite() {
+        return true;
+    }
+    if mesh.positions.is_empty() {
+        return false;
+    }
+    // Loose vertices can far outnumber the faces used by picking. Do not scan
+    // more positions than the triangle path would visit face corners. Three
+    // corners per valid face gives a cheap lower bound for ordinary meshes.
+    if mesh.positions.len() > mesh.faces.len().saturating_mul(3)
+        && mesh.positions.len() > mesh.faces.iter().map(Vec::len).sum::<usize>()
+    {
+        return true;
+    }
+    let mut low = Vec3::splat(f32::INFINITY);
+    let mut high = Vec3::splat(f32::NEG_INFINITY);
+    for &point in &mesh.positions {
+        // Invalid data should reach the existing triangle checks, rather than
+        // allowing a NaN to shrink the bounds around otherwise finite faces.
+        if !point.is_finite() {
+            return true;
+        }
+        low = low.min(point);
+        high = high.max(point);
+    }
+    let origin = origin.as_dvec3();
+    let direction = direction.as_dvec3();
+    let low = low.as_dvec3();
+    let high = high.as_dvec3();
+    // Leave several float ulps of room at edges/corners and for distant ray
+    // origins. Double precision avoids overflow and preserves tiny nonzero
+    // directions under large/nonuniform object scales.
+    let padding = low.abs().max(high.abs()).max(origin.abs()) * (8.0 * f32::EPSILON as f64);
+    let low = low - padding;
+    let high = high + padding;
+    let mut near = 0.0_f64;
+    let mut far = f64::INFINITY;
+    for axis in 0..3 {
+        if direction[axis] == 0.0 {
+            if origin[axis] < low[axis] || origin[axis] > high[axis] {
+                return false;
+            }
+        } else {
+            let a = (low[axis] - origin[axis]) / direction[axis];
+            let b = (high[axis] - origin[axis]) / direction[axis];
+            near = near.max(a.min(b));
+            far = far.min(a.max(b));
+            if near > far {
+                return false;
+            }
+        }
+    }
+    true
 }
 
 pub(crate) fn intersect_triangle(

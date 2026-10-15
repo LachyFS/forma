@@ -242,6 +242,18 @@ For CPU-only triangulation and validation timings, run
 `cargo run --locked --release -p forma-core --bin mesh-bench`. It reports median
 and p95 latency for 65,536-face triangle, quad and concave-polygon meshes without
 requiring a GPU or window system.
+Additional CPU benchmarks cover picking, visibility queries and renderer geometry
+preparation, including the bundled V8 scene and synthetic stress cases:
+
+```sh
+cargo run --locked --release -p forma-core --bin picking-bench
+cargo run --locked --release -p forma-core --bin surface-query-bench
+cargo test --locked --release -p forma-render --lib geometry_preparation_benchmark -- --ignored --nocapture
+```
+
+These report timings without device-specific pass/fail thresholds. The geometry
+preparation benchmark compares the retained reference implementation with the
+current implementation and checks exact output equality before timing.
 Renderer integration tests require a compatible GPU (Mesa software Vulkan can
 also execute them in CI). The [validation record](docs/VALIDATION.md) separates executed numerical, image and
 application checks from unverified scale or performance claims.
