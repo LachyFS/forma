@@ -10,7 +10,12 @@ use forma_core::{
 use forma_render::{Backend, Frame, PreviewSettings, RenderMode, RenderSettings, StudioLight};
 use glam::{Vec2, Vec3};
 use gpui::{prelude::*, *};
-use std::{cell::Cell, path::PathBuf, rc::Rc, sync::Arc};
+use std::{
+    cell::{Cell, OnceCell},
+    path::PathBuf,
+    rc::Rc,
+    sync::Arc,
+};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Tool {
@@ -204,6 +209,7 @@ pub struct Studio {
     worker: RenderWorker,
     path: Option<PathBuf>,
     scene_revision: u64,
+    pub(crate) surface_query: OnceCell<forma_core::SurfaceQuery>,
     generation: u64,
     field_replace: bool,
     exporting: bool,
@@ -343,6 +349,7 @@ impl Studio {
             worker,
             path: None,
             scene_revision: 1,
+            surface_query: OnceCell::new(),
             generation: 0,
             field_replace: false,
             exporting: false,
@@ -599,6 +606,7 @@ impl Studio {
         if geometry {
             self.scene_revision += 1;
             self.needs_snapshot = true;
+            self.surface_query.take();
         }
         self.generation += 1;
         self.denoised_generation = None;
@@ -617,6 +625,14 @@ impl Studio {
             });
         }
         cx.notify();
+    }
+
+    pub(crate) fn visibility_query(&self) -> &forma_core::SurfaceQuery {
+        // Camera moves, selection changes and completed GPU frames all repaint
+        // overlays. Their world-space geometry is unchanged; rebuild lazily only
+        // after a scene edit, through the renderer's existing invalidation path.
+        self.surface_query
+            .get_or_init(|| forma_core::SurfaceQuery::new(&self.scene))
     }
 
     fn submit_render(&mut self) {

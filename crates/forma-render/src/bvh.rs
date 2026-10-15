@@ -1,7 +1,7 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use bytemuck::{Pod, Zeroable};
-use forma_core::Scene;
+use forma_core::{Mesh, Scene};
 use glam::Vec3;
 
 /// Explicit float4 alignment mirrors Metal; no implicit host padding.
@@ -91,9 +91,124 @@ fn edge_key(a: u32, b: u32) -> (u32, u32) {
     (a.min(b), a.max(b))
 }
 
+/// Attributes that depend only on mesh coordinates, shared by linked objects.
+struct MeshTriangle {
+    vertices: [u32; 3],
+    normals: [Vec3; 3],
+    edge_bits: u32,
+}
+
+struct MeshGeometry {
+    generated: Vec<Vec3>,
+    triangles: Vec<MeshTriangle>,
+}
+
+impl MeshGeometry {
+    fn new(mesh: &Mesh) -> Self {
+        let min = mesh
+            .positions
+            .iter()
+            .copied()
+            .fold(Vec3::splat(f32::INFINITY), Vec3::min);
+        let max = mesh
+            .positions
+            .iter()
+            .copied()
+            .fold(Vec3::splat(f32::NEG_INFINITY), Vec3::max);
+        let span = (max - min).max(Vec3::splat(1e-6));
+        let generated = mesh.positions.iter().map(|p| (*p - min) / span).collect();
+        let indices = mesh.triangles();
+        let edges: HashSet<_> = mesh
+            .faces
+            .iter()
+            .flat_map(|face| {
+                face.iter()
+                    .zip(face.iter().cycle().skip(1))
+                    .take(face.len())
+                    .filter(|(a, b)| a != b)
+                    .map(|(&a, &b)| edge_key(a, b))
+            })
+            .collect();
+        // Classify creases and angle-weight in mesh space. Nonuniform object
+        // scaling must not change smoothing groups or create sphere seams.
+        // Incident corners are contiguous, in the original triangle order, so
+        // the normal sums retain exactly the same floating-point arithmetic.
+        let mut offsets = vec![0usize; mesh.positions.len() + 1];
+        for face in &indices {
+            for &vertex in face {
+                offsets[vertex as usize + 1] += 1;
+            }
+        }
+        for i in 1..offsets.len() {
+            offsets[i] += offsets[i - 1];
+        }
+        let mut next = offsets[..mesh.positions.len()].to_vec();
+        let mut adjacent = vec![(Vec3::ZERO, 0.0); indices.len() * 3];
+        let face_normals: Vec<_> = indices
+            .iter()
+            .map(|face| {
+                let [a, b, c] = face.map(|index| mesh.positions[index as usize]);
+                let n = (b - a).cross(c - a).normalize_or_zero();
+                for corner in 0..3 {
+                    let p = mesh.positions[face[corner] as usize];
+                    let e0 =
+                        (mesh.positions[face[(corner + 1) % 3] as usize] - p).normalize_or_zero();
+                    let e1 =
+                        (mesh.positions[face[(corner + 2) % 3] as usize] - p).normalize_or_zero();
+                    let angle = e0.dot(e1).clamp(-1.0, 1.0).acos();
+                    let slot = &mut next[face[corner] as usize];
+                    adjacent[*slot] = (n, angle);
+                    *slot += 1;
+                }
+                n
+            })
+            .collect();
+        let mut triangles = Vec::with_capacity(indices.len());
+        for (face, geometric) in indices.into_iter().zip(face_normals) {
+            if geometric.length_squared() < 0.5 {
+                continue;
+            }
+            let normals = face.map(|index| {
+                let index = index as usize;
+                adjacent[offsets[index]..offsets[index + 1]]
+                    .iter()
+                    .filter(|(normal, _)| normal.dot(geometric) > std::f32::consts::FRAC_1_SQRT_2)
+                    .map(|(normal, angle)| *normal * *angle)
+                    .sum::<Vec3>()
+                    .normalize_or_zero()
+            });
+            let mut edge_bits = 0u32;
+            for corner in 0..3 {
+                if edges.contains(&edge_key(face[(corner + 1) % 3], face[(corner + 2) % 3])) {
+                    edge_bits |= 1 << corner;
+                }
+            }
+            triangles.push(MeshTriangle {
+                vertices: face,
+                normals,
+                edge_bits,
+            });
+        }
+        Self {
+            generated,
+            triangles,
+        }
+    }
+}
+
 impl Geometry {
     pub fn from_scene(scene: &Scene) -> Self {
         let mut triangles = Vec::new();
+        let mut mesh_users = HashMap::<u64, usize>::new();
+        for object in &scene.objects {
+            if let Some(id) = object.data.mesh_id() {
+                *mesh_users.entry(id).or_default() += 1;
+            }
+        }
+        // Cache only linked meshes, and only for this build. Unique meshes can
+        // release their preparation immediately; scene edits never need explicit
+        // invalidation and transforms/materials remain per instance.
+        let mut shared = HashMap::new();
         for (object_index, object) in scene.objects.iter().enumerate() {
             if !scene.is_effectively_visible(object.id) {
                 continue;
@@ -101,87 +216,44 @@ impl Geometry {
             let Some(instance) = scene.mesh_instance(object.id) else {
                 continue;
             };
+            let Some(mesh_id) = object.data.mesh_id() else {
+                continue;
+            };
+            let local;
+            let prepared = if mesh_users[&mesh_id] > 1 {
+                shared
+                    .entry(mesh_id)
+                    .or_insert_with(|| MeshGeometry::new(instance.mesh))
+            } else {
+                local = MeshGeometry::new(instance.mesh);
+                &local
+            };
             let transform = instance.world_transform;
             let normal_transform = transform.inverse().transpose();
-            let mesh = instance.mesh;
-            let min = mesh
+            let positions: Vec<_> = instance
+                .mesh
                 .positions
                 .iter()
-                .copied()
-                .fold(Vec3::splat(f32::INFINITY), Vec3::min);
-            let max = mesh
-                .positions
-                .iter()
-                .copied()
-                .fold(Vec3::splat(f32::NEG_INFINITY), Vec3::max);
-            let span = (max - min).max(Vec3::splat(1e-6));
-            let generated: Vec<_> = mesh.positions.iter().map(|p| (*p - min) / span).collect();
+                .map(|p| transform.transform_point3(*p))
+                .collect();
             let material_index = scene
                 .materials
                 .iter()
                 .position(|m| Some(&m.id) == object.data.material_ids().first())
                 .unwrap_or(0);
-            let indices = mesh.triangles();
-            let positions: Vec<_> = mesh
-                .positions
-                .iter()
-                .map(|p| transform.transform_point3(*p))
-                .collect();
-            let edges: HashSet<_> = mesh
-                .edges()
-                .into_iter()
-                .map(|[a, b]| edge_key(a, b))
-                .collect();
-            // Classify creases and angle-weight in mesh space, then transform
-            // normals with the inverse transpose. Nonuniform object scaling must
-            // not change smoothing groups or create seams on a flattened sphere.
-            let mut adjacent = vec![Vec::<(Vec3, f32)>::new(); positions.len()];
-            let face_normals: Vec<_> = indices
-                .iter()
-                .map(|face| {
-                    let [a, b, c] = face.map(|index| mesh.positions[index as usize]);
-                    let n = (b - a).cross(c - a).normalize_or_zero();
-                    for corner in 0..3 {
-                        let p = mesh.positions[face[corner] as usize];
-                        let e0 = (mesh.positions[face[(corner + 1) % 3] as usize] - p)
-                            .normalize_or_zero();
-                        let e1 = (mesh.positions[face[(corner + 2) % 3] as usize] - p)
-                            .normalize_or_zero();
-                        let angle = e0.dot(e1).clamp(-1.0, 1.0).acos();
-                        adjacent[face[corner] as usize].push((n, angle));
-                    }
-                    n
-                })
-                .collect();
-            for (face, geometric) in indices.iter().zip(face_normals) {
-                if geometric.length_squared() < 0.5 {
-                    continue;
-                }
-                let normals = face.map(|index| {
-                    let normal = adjacent[index as usize]
-                        .iter()
-                        .filter(|(normal, _)| {
-                            normal.dot(geometric) > std::f32::consts::FRAC_1_SQRT_2
-                        })
-                        .map(|(normal, angle)| *normal * *angle)
-                        .sum::<Vec3>()
-                        .normalize_or_zero();
+            for triangle in &prepared.triangles {
+                let face = triangle.vertices;
+                let normals = triangle.normals.map(|normal| {
                     normal_transform
                         .transform_vector3(normal)
                         .normalize_or_zero()
                 });
-                let mut edge_bits = 0u32;
-                for corner in 0..3 {
-                    if edges.contains(&edge_key(face[(corner + 1) % 3], face[(corner + 2) % 3])) {
-                        edge_bits |= 1 << corner;
-                    }
-                }
                 triangles.push(Triangle {
-                    generated0: generated[face[0] as usize]
+                    generated0: prepared.generated[face[0] as usize]
                         .extend(material_index as f32)
                         .to_array(),
-                    generated1: vec4(generated[face[1] as usize]),
-                    generated2: vec4(generated[face[2] as usize]),
+                    generated1: vec4(prepared.generated[face[1] as usize]),
+                    generated2: vec4(prepared.generated[face[2] as usize]),
                     v0: vec4(positions[face[0] as usize]),
                     v1: vec4(positions[face[1] as usize]),
                     v2: vec4(positions[face[2] as usize]),
@@ -201,11 +273,14 @@ impl Geometry {
                         instance.material.metallic.clamp(0.0, 1.0),
                         instance.material.roughness.clamp(0.02, 1.0),
                         (object_index + 1) as f32,
-                        edge_bits as f32,
+                        triangle.edge_bits as f32,
                     ],
                 });
             }
         }
+        // BVH construction gathers a second triangle array; release shared
+        // mesh preparation before allocating that additional storage.
+        drop(shared);
         Self::build(triangles)
     }
 
@@ -413,3 +488,7 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "bvh_experiments.rs"]
+mod experiments;

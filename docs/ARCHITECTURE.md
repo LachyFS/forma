@@ -42,7 +42,15 @@ viewport camera supports perspective and orthographic projection with the shared
 0–1 depth range. Its analytic yaw/pitch basis remains defined at exact
 top/bottom views. Picking transforms rays into each object's local coordinates
 while preserving world-space hit distances under hierarchy and nonuniform
-scaling.
+scaling. A conservative mesh-local bounds test skips triangulation for missed
+objects. Bounds are recomputed from the publicly mutable mesh, with a fallback
+to triangle testing when loose vertices make the bounds scan more expensive.
+
+Component picking, box selection and overlays share a lazily built world-space
+`SurfaceQuery`. The editor clears it through geometry invalidation, including
+visibility changes and undo/redo; camera navigation and selection reuse it.
+The query packs leaf ranges and child links into one node variant and tests all
+three box axes together, retaining division and the original traversal order.
 
 Materials contain linear RGB base color and emission, metallic weight,
 roughness, IOR, a PBR/Glass/Custom shader selection, generated texture coordinates,
@@ -131,7 +139,11 @@ flowchart LR
 
 GPU geometry buffers and accumulation persist across samples. A scene revision
 causes validation and a geometry fingerprint check; unchanged geometry avoids
-BVH rebuild and upload. Native Metal Material Preview uses a cached primitive acceleration
+BVH rebuild and upload. During a rebuild, linked mesh instances share mesh-space
+triangulation, generated coordinates, crease normals and polygon-edge flags.
+Incident triangle corners use contiguous storage. Transforms and materials are
+applied per object; shared preparation is released before building the BVH.
+Native Metal Material Preview uses a cached primitive acceleration
 structure on devices supporting Metal ray tracing, and software BVH traversal on
 other devices and all wgpu backends. Its primary, antialiasing, nearest-hit contact AO and selection
 rays keep the same sampling and lighting calculations. The structure references

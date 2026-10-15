@@ -172,13 +172,13 @@ fn visible_in_query(
 
 fn pick_component(
     scene: &forma_core::Scene,
+    query: &forma_core::SurfaceQuery,
     mode: EditMode,
     pointer: Vec2,
     bounds: Bounds<Pixels>,
 ) -> Option<(u64, [u32; 2])> {
     let aspect = f32::from(bounds.size.width) / f32::from(bounds.size.height).max(1.);
     let matrix = scene.camera.projection_matrix(aspect) * scene.camera.view_matrix();
-    let query = forma_core::SurfaceQuery::new(scene);
     let mut closest = 10.0;
     let mut picked = None;
     for object in scene
@@ -209,7 +209,7 @@ fn pick_component(
             let wa = (matrix * a.extend(1.)).w;
             let wb = (matrix * b.extend(1.)).w;
             let world_t = t * wa / ((1. - t) * wb + t * wa);
-            if distance < closest && visible_in_query(scene.camera, &query, a.lerp(b, world_t)) {
+            if distance < closest && visible_in_query(scene.camera, query, a.lerp(b, world_t)) {
                 closest = distance;
                 picked = Some((object.id, indices));
             }
@@ -271,7 +271,7 @@ impl Studio {
             self.invalidate(false, cx);
             return;
         }
-        let query = forma_core::SurfaceQuery::new(&self.scene);
+        let query = self.visibility_query();
         let candidates = self.all_components();
         let mut elements = if selection.extend || selection.subtract {
             self.component_elements()
@@ -293,7 +293,7 @@ impl Studio {
                 if let Some(p) = project(center, matrix, bounds).map(mouse_point)
                     && p.cmpge(low).all()
                     && p.cmple(high).all()
-                    && visible_in_query(self.scene.camera, &query, center)
+                    && visible_in_query(self.scene.camera, query, center)
                 {
                     if selection.subtract {
                         elements.remove(&element);
@@ -359,7 +359,7 @@ impl Studio {
                 .is_some_and(|id| self.scene.is_effectively_visible(id))
         });
         let query = (!self.component_elements().is_empty() || self.selected_ids().len() > 1)
-            .then(|| forma_core::SurfaceQuery::new(&self.scene));
+            .then(|| self.visibility_query());
         let mut highlights = self
             .selected_object()
             .map(|object| {
@@ -377,7 +377,6 @@ impl Studio {
                             .collect::<Vec<_>>();
                         let center = points.iter().sum::<Vec3>() / points.len() as f32;
                         query
-                            .as_ref()
                             .is_some_and(|q| visible_in_query(self.scene.camera, q, center))
                             .then_some(points)
                     })
@@ -397,7 +396,7 @@ impl Studio {
                                 .world_transform
                                 .transform_point3(object.mesh.positions[i as usize])
                         });
-                        if query.as_ref().is_some_and(|q| {
+                        if query.is_some_and(|q| {
                             visible_in_query(self.scene.camera, q, (points[0] + points[1]) * 0.5)
                         }) {
                             highlights.push(points.to_vec());
@@ -839,18 +838,23 @@ impl Studio {
             / Vec2::new(bounds.size.width.into(), bounds.size.height.into());
         let previous = (self.selected, self.component_vertices());
         let component = if matches!(self.edit_mode, EditMode::Edge | EditMode::Vertex) {
-            pick_component(&self.scene, self.edit_mode, self.last_mouse, bounds).map(
-                |(id, edge)| {
-                    (
-                        id,
-                        if self.edit_mode == EditMode::Vertex {
-                            forma_core::MeshElement::Vertex(edge[0])
-                        } else {
-                            forma_core::MeshElement::Edge(edge)
-                        },
-                    )
-                },
+            pick_component(
+                &self.scene,
+                self.visibility_query(),
+                self.edit_mode,
+                self.last_mouse,
+                bounds,
             )
+            .map(|(id, edge)| {
+                (
+                    id,
+                    if self.edit_mode == EditMode::Vertex {
+                        forma_core::MeshElement::Vertex(edge[0])
+                    } else {
+                        forma_core::MeshElement::Edge(edge)
+                    },
+                )
+            })
         } else {
             self.scene
                 .pick_surface(self.scene.camera.ray(uv, aspect))
@@ -985,12 +989,14 @@ mod tests {
         scene.camera.pitch = 0.;
         scene.camera.distance = 6.;
         let bounds = Bounds::new(point(px(50.), px(30.)), size(px(800.), px(600.)));
+        let query = forma_core::SurfaceQuery::new(&scene);
         for orthographic in [false, true] {
             scene.camera.orthographic = orthographic;
             let matrix = scene.camera.projection_matrix(800. / 600.) * scene.camera.view_matrix();
             let point_at = |p| mouse_point(project(p, matrix, bounds).unwrap());
             let vertex = pick_component(
                 &scene,
+                &query,
                 EditMode::Vertex,
                 point_at(Vec3::new(1., 1., 1.)),
                 bounds,
@@ -1003,6 +1009,7 @@ mod tests {
             );
             let edge = pick_component(
                 &scene,
+                &query,
                 EditMode::Edge,
                 point_at(Vec3::new(0., 1., 1.)),
                 bounds,
@@ -1016,6 +1023,7 @@ mod tests {
             assert!(
                 pick_component(
                     &scene,
+                    &query,
                     EditMode::Edge,
                     point_at(Vec3::new(0., 0., 1.)),
                     bounds
@@ -1023,10 +1031,19 @@ mod tests {
                 .is_none(),
                 "triangulation diagonal must not be selectable"
             );
-            assert!(pick_component(&scene, EditMode::Vertex, Vec2::ZERO, bounds).is_none());
+            assert!(pick_component(&scene, &query, EditMode::Vertex, Vec2::ZERO, bounds).is_none());
         }
         scene.object_mut(id).unwrap().selectable = false;
-        assert!(pick_component(&scene, EditMode::Vertex, Vec2::new(450., 330.), bounds).is_none());
+        assert!(
+            pick_component(
+                &scene,
+                &query,
+                EditMode::Vertex,
+                Vec2::new(450., 330.),
+                bounds
+            )
+            .is_none()
+        );
     }
 
     #[test]
