@@ -6,8 +6,11 @@ mod edit;
 mod history;
 mod material;
 mod mesh;
+mod mesh_tools;
 mod obj;
+mod object_ops;
 mod scene;
+mod stl;
 mod surface_query;
 pub use surface_query::SurfaceQuery;
 
@@ -16,6 +19,7 @@ pub use edit::MeshElement;
 pub use glam::{Mat4, Vec2, Vec3};
 pub use history::History;
 pub use mesh::{Mesh, Primitive};
+pub use object_ops::ApplyTransform;
 pub use scene::{
     CameraData, CameraProjection, Collection, DenoiseQuality, DenoiseSettings, Hit, Light,
     LightKind, MaterialData, MeshData, MeshInstance, Object, ObjectData, RenderPreferences, Scene,

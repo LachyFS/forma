@@ -1,5 +1,82 @@
 # Implementation validation
 
+## CAD exchange and object editing (2026-10-15)
+
+Validated on Linux with Rust 1.92.0 and Mesa llvmpipe Vulkan:
+
+- **219 workspace tests passed**, including 14 STL exchange/review tests,
+  12 object-transform regressions, five single-line input tests and three
+  inspector scrolling tests. Strict workspace Clippy (`--all-targets -- -D warnings`),
+  rustfmt and `git diff --check` passed; the native editor builds successfully.
+- STL tests cover ASCII/binary parsing, `solid`-prefixed binary headers,
+  LF/CRLF/CR line endings, exact coordinate welding, signed zero, explicit units,
+  selected/visible scopes, inherited visibility, hierarchy, reflected winding,
+  precision collapse, malformed input, geometry budgets and atomic destination
+  replacement. Import failure preserves scene data and allocation IDs.
+- Object utilities preserve world vertices and surface normals, descendant
+  transforms including shear, material links and unrelated shared meshes.
+  Tests cover parent/child selection order, mirrored scales, no-op identity,
+  failure rollback, save/load and history. Centering scans each shared mesh's
+  bounds once. Already-applied or centered selections skip staged scene copies.
+- Review added an early bevel output-budget rejection before topology allocation;
+  a closed 666,668-face fixture exercises that path. Both apply-transform and
+  world-space bevel integration preserve face orientation through reflections.
+- The real GPUI smoke workflow passed in an isolated Xvfb/Openbox display. It
+  exercises object utility commit/undo/redo, STL unit conversion and selected
+  export snapshots while editing continues, imported dimensions, invalid/stale
+  import rejection, modal keyboard/pointer isolation, exact clipboard operations,
+  selected-all input, Unicode/byte limits, invalid field correction, modal paste,
+  and Tab/Shift+Tab at 1000 × 650. Visible fields do not jump; hidden fields scroll
+  into view; superseded focus changes cannot apply stale scroll requests.
+  Earlier renderer, preview, shading, modelling, document and PNG-export flows
+  also passed. Evidence is in `artifacts/cad-workflow-smoke/`.
+
+STL is geometry exchange with explicit units, unchanged Y-up axes and no material
+data. It does not certify a printable solid. File-picker selection is outside the
+automated workflow, and software-rendered Linux checks do not establish hardware
+GPU performance or native execution on macOS/Windows. Large valid mesh-finishing
+operations remain synchronous in the editor; scene history still uses snapshots.
+
+## Precision modelling and mesh finishing (2026-10-15)
+
+Validated on Linux with Rust 1.92.0 and Mesa llvmpipe Vulkan:
+
+- **184 workspace tests passed**, including 13 mesh-finishing regressions,
+  precision expression/dimension tests, and seven measurement/navigation tests.
+  Geometry cases cover all 64 cube winding combinations, disconnected solids,
+  open surfaces, nonorientable and pinched topology, concave polygons, extreme
+  aspect ratios, mirrored/sheared geometry, exact bevel widths and atomic errors.
+- Strict workspace Clippy (`--all-targets -- -D warnings`), rustfmt and
+  `git diff --check` passed. The native application builds successfully.
+- The real GPUI smoke workflow passed on an isolated Xvfb/Openbox display.
+  New keyboard-driven cases exercise millimetre dimensions, fractional inches,
+  distance transforms, radian rotation, invalid dimensions retained for correction,
+  command modifiers during transforms, bevel commit/undo/redo/rejection/cancel,
+  remapped triangulation selections, normals repair, opposite views, hidden-object
+  exclusion during framing, and measurement refresh after edits/undo.
+  Existing renderer, material/shader, navigation, theme, resizing and background
+  document/export checks also passed. Output is in `artifacts/quality-smoke/`.
+- A separate XTest walkthrough drove OS keyboard/mouse events to create a
+  4 × 2 × 1 metre part, bevel it by 100 mm, display dimensions, and reject a
+  99-metre bevel without changing the part. Full-window screenshots were visually
+  inspected at normal size and at the 1000 × 650 minimum, including validation
+  feedback and the scrolling inspector; they are in the same artifact directory.
+- Measurement toggles preserve scene data, dirty state, the rendered frame and
+  progressive sample count. Local and world dimensions cache geometry; camera
+  movement does not rescan unchanged meshes. Individual edge labels are capped
+  at 12 while the total includes every selected edge.
+
+Bevel is a single-segment, whole-mesh operation for one selected closed convex
+mesh. It remains destructive and rejects unsupported inputs. Convexity work is
+bounded to eight million vertex/plane comparisons. Development timing samples
+on this host measured about 1.7 ms for 482 vertices and 16.7 ms for 1,986 vertices;
+these observations informed the work limit and are not frame-rate guarantees.
+
+The smoke run uses software rendering; it does not establish hardware GPU
+performance or macOS/Windows execution. Native file-picker interactions remain
+outside the automated workflow. This work does not provide a parametric CAD
+kernel, constraints, booleans or Blender feature parity.
+
 ## Picking, visibility and renderer preparation (2026-10-15)
 
 Three parallel experiments investigated object picking, visibility queries and

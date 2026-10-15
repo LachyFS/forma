@@ -33,7 +33,7 @@ pub struct Mesh {
 /// Reuse face-sized scratch storage across a mesh pass. Rendering, picking and
 /// validation visit every face, so allocating these buffers per face is costly.
 #[derive(Default)]
-struct Triangulation {
+pub(crate) struct Triangulation {
     points: Vec<Vec2>,
     remaining: Vec<usize>,
     triangles: Vec<[u32; 3]>,
@@ -323,7 +323,11 @@ impl Mesh {
         Ok(())
     }
 
-    fn triangulate_face<'a>(&self, face: &[u32], scratch: &'a mut Triangulation) -> &'a [[u32; 3]] {
+    pub(crate) fn triangulate_face<'a>(
+        &self,
+        face: &[u32],
+        scratch: &'a mut Triangulation,
+    ) -> &'a [[u32; 3]] {
         scratch.triangles.clear();
         if face.len() < 3 || face.iter().any(|&i| i as usize >= self.positions.len()) {
             return &scratch.triangles;

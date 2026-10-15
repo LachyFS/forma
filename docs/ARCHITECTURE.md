@@ -5,7 +5,7 @@ native app owns interaction and coordinates the renderer through a worker.
 
 | Crate | Responsibility |
 | --- | --- |
-| `forma-core` | Indexed polygon meshes, primitives, subdivision/extrusion, materials, transforms, camera, picking, history and scene/OBJ I/O. |
+| `forma-core` | Indexed polygon meshes, primitives, subdivision/extrusion/inset, convex bevels, triangulation and normal orientation, materials, object transform/origin utilities, camera, picking, history and scene/OBJ/STL I/O. |
 | `forma-render` | Native Metal and wgpu compute pipelines, shared triangle/BVH upload and light transport, progressive film, immutable display frames and PNG readback. |
 | `forma` (`crates/forma-app`) | GPUI workspace, commands, inspector, outliner, face/object transforms, native dialogs, viewport overlays and render scheduling. |
 
@@ -17,13 +17,23 @@ edges remain distinguishable from triangulation diagonals. Primitive winding is
 outward. Subdivision uses Catmull–Clark interior and open-boundary rules; extrusion
 replaces its source cap and connects the boundary with side faces.
 
+Mesh finishing operations are transactional. Explicit triangulation returns the
+new face selection; winding reversal preserves face indices. Normal recalculation
+propagates orientation across shared edges and uses signed volume to orient closed
+components outward; open components retain the side of their first face. Bevel
+builds inset faces, edge strips and corner caps for closed convex components with
+one segment. It rejects unsupported topology, nonplanar or concave geometry and
+collapsed widths, with a bounded convexity check. The app transforms the active
+mesh to world space for bevel previews so widths account for object and parent
+scale, then restores local coordinates. These are destructive mesh operations.
+
 The scene model separates **objects** from reusable **data blocks**. An object
 owns identity, name, local transform, parent, visibility, selectability,
 collection links and a typed payload. Mesh payloads reference named mesh and
 material data by stable IDs, so multiple objects can instance the same data.
 Normal duplication makes independent mesh/material copies; linked duplication
 shares them, and either link can later be made single-user. Mesh instances are
-the resolved boundary used by render, picking, OBJ and editor code, keeping
+the resolved boundary used by render, picking, OBJ/STL exchange and editor code, keeping
 those consumers independent of storage layout and non-mesh object types.
 
 Object payloads currently model mesh, empty, light and camera objects, plus a
@@ -37,6 +47,17 @@ validation. Data blocks may intentionally outlive their users and can be removed
 explicitly with orphan purging, matching the useful parts of Blender's
 object/data distinction.
 
+Object transform utilities operate on a staged scene and commit only after all
+selected meshes and resulting transforms validate. Apply Scale bakes local scale
+into vertices and resets it to one; Apply Rotation and Scale also resets rotation.
+Center Origin uses the local mesh bounding-box center. Each operation factors a
+coordinate change into the mesh and compensates direct children's parent-inverse
+matrices, preserving world geometry throughout the descendant hierarchy without
+decomposing shear. Reflected bakes reverse polygon winding. Only edited objects
+whose mesh data is shared receive independent mesh data; unedited instances and
+material links remain intact, and no-ops allocate no IDs. The app exposes these
+commands in Object mode and records one history entry for a changed selection.
+
 Transforms are translation, XYZ Euler rotation in radians and scale. The
 viewport camera supports perspective and orthographic projection with the shared
 0–1 depth range. Its analytic yaw/pitch basis remains defined at exact
@@ -45,6 +66,10 @@ while preserving world-space hit distances under hierarchy and nonuniform
 scaling. A conservative mesh-local bounds test skips triangulation for missed
 objects. Bounds are recomputed from the publicly mutable mesh, with a fallback
 to triangle testing when loose vertices make the bounds scan more expensive.
+The six axis-gizmo handles dispatch the same orthographic view commands as the
+command panel and opposite-view shortcuts (`Alt+1/3/7`). Repeating a facing handle reverses
+the view when the opposite handle is hidden behind it. Frame All (`Home`) uses
+the world bounds of effectively visible mesh instances.
 
 Component picking, box selection and overlays share a lazily built world-space
 `SurfaceQuery`. The editor clears it through geometry invalidation, including
@@ -68,6 +93,36 @@ document history. A drag starts from an immutable original object and applies
 pointer or typed deltas against that original, avoiding incremental numerical
 drift. Commit validates the edited scene and creates one undo checkpoint;
 cancellation restores the original object.
+
+The pure numeric parser carries distance and angle dimensions through arithmetic,
+supports parentheses and scientific notation, and rejects incompatible units or
+non-finite results. Distances use metres (`m`, `cm`, `mm`, `in`, `ft`); angles default
+to degrees and accept `deg` or `rad`; scale stays unitless. A sole trailing unit
+can qualify a whole scalar expression, including `1/8in`. Invalid inspector
+input remains active; changed values produce one undo checkpoint. Modal previews
+retain their immutable starting scene and cannot commit unfinished expressions.
+
+Inspector field edit text uses the full numeric value rather than the rounded
+display string. The shared single-line entry helper handles clipboard insertion,
+whole-text selection and deletion for both fields and modal expressions. Copy
+preserves the active expression; paste validates every character and the 128-byte
+budget before replacing or appending text, so rejected input changes nothing.
+`Tab` commits a valid inspector edit and advances within its transform, surface,
+render or preview group; `Shift+Tab` reverses direction. Navigation skips controls
+hidden by shader, texture or viewport state, scrolls the next field into view and
+stops on invalid input. These keys retain their ordinary editor commands outside
+text entry.
+
+Inspector dimensions use the mesh's local bounding box multiplied by absolute
+object scale, excluding rotation and parent transforms. Setting one dimension
+preserves the sign of that scale axis and rejects flat or unsupported extents.
+A cache keyed by selected object stores the dimension vector until geometry
+invalidation. World measurements (`Shift+M`) instead use exact transformed
+selection bounds and selected world edge lengths. Their separate cache is keyed
+by object/component selection and edit mode and cleared by geometry invalidation;
+camera updates and progressive frame presentation reuse it. The GPUI overlay
+draws guides and up to 12 edge labels while summing all selected edges. It is
+independent of the render film, export output, document and undo history.
 
 GPUI submits pending changes at the end of the current input/effect cycle.
 Geometry edits refresh a shared `Arc<Scene>` snapshot; camera/world updates reuse
@@ -212,6 +267,34 @@ faces, positive/negative indices, common `v/vt/vn` syntax and line continuations
 groups become one editable object. Supplied UVs, normals and MTL data are not
 retained. Export bakes object transforms and reverses winding for reflections.
 
+STL is a unitless triangle exchange path. The app asks for millimetres,
+centimetres, metres or inches before import/export; core APIs take an explicit
+positive finite metres-per-unit factor. Import multiplies file coordinates by
+that factor, and export divides world coordinates by it. Neither direction
+remaps axes: Forma's right-handed +Y-up coordinates are preserved. Materials and
+vendor color attributes are omitted. Supplied facet normals are checked for
+finite values but geometry winding determines editable normals.
+
+The STL reader supports binary and ASCII, including multiple ASCII solids and
+LF, CRLF or CR line endings. Exact binary record length and count take precedence
+over a `solid` header. The reader rejects truncated records, trailing binary
+data, malformed facets and degenerate or out-of-range converted geometry. Exact
+coordinate deduplication canonicalizes signed zero without proximity welding.
+File reads are bounded at 256 MiB; a mesh allows at most two million vertices and
+triangles. OBJ and STL share import capacity checks for objects, meshes,
+materials, aggregate geometry and reserved IDs before insertion.
+
+Binary STL export triangulates polygons with the existing ear clipper, includes
+each instance's world transform, reverses reflected winding and recomputes facet
+normals from the encoded vertices. The optional object selection intersects
+effective object, parent and collection visibility; locked visible objects remain
+exportable. The writer counts every instance before allocating output, rejects
+more than two million triangles and checks coordinate overflow or collapsed
+triangles after conversion to STL floats. Empty scopes fail without touching the
+destination. A same-directory temporary file and atomic rename protect existing
+exports. Import and export run on background executors with the document/snapshot
+guards used by the other exchange paths.
+
 ## Current performance boundaries
 
 Wireframe, Solid and Material Preview render at the window's backing pixel density,
@@ -226,7 +309,7 @@ resource use but are not tested interactive-performance guarantees.
 Wireframe, Solid and Rendered use software BVH traversal; Material Preview can
 use native Metal ray-tracing acceleration structures. wgpu modes use the shared
 software BVH on the GPU. Geometry validation, triangulation, BVH construction,
-OBJ I/O and history cloning remain CPU work. Project/OBJ parsing and disk writes
+OBJ/STL I/O and history cloning remain CPU work. Project/OBJ/STL parsing and disk writes
 run on background executors. Snapshot cloning, picking, subdivision and transform
 validation still run on the UI thread and can pause on large meshes. Generation
 and document-identity guards reject stale loads and preserve edits made during

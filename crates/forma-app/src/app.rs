@@ -1,4 +1,5 @@
 use crate::code_editor::{CodeEditor, EditorEvent};
+use crate::exchange::{MeshImport, StlDialog, StlDirection, StlUnit};
 use crate::render_worker::{RenderWorker, Request};
 use crate::shading_pie::ShadingPie;
 use crate::theme::{Colors, Theme, ThemePicker};
@@ -10,6 +11,7 @@ use forma_core::{
 use forma_render::{Backend, Frame, PreviewSettings, RenderMode, RenderSettings, StudioLight};
 use glam::{Vec2, Vec3};
 use gpui::{prelude::*, *};
+use std::collections::BTreeSet;
 use std::{
     cell::{Cell, OnceCell},
     path::PathBuf,
@@ -54,6 +56,7 @@ pub enum Field {
     Translation(usize),
     Rotation(usize),
     Scale(usize),
+    Dimensions(usize),
     Roughness,
     Ior,
     NormalStrength,
@@ -80,6 +83,8 @@ pub enum Command {
     SaveAs,
     ImportObj,
     ExportObj,
+    ImportStl,
+    ExportStl,
     ExportImage,
     Add(Primitive),
     Select(u64),
@@ -89,9 +94,13 @@ pub enum Command {
     Undo,
     Redo,
     FrameSelected,
+    FrameAll,
     ViewFront,
+    ViewBack,
     ViewRight,
+    ViewLeft,
     ViewTop,
+    ViewBottom,
     ViewPerspective,
     ToggleProjection,
     SetMode(RenderMode),
@@ -101,12 +110,20 @@ pub enum Command {
     Extrude,
     Subdivide,
     Inset,
+    Bevel,
+    Triangulate,
+    FlipNormals,
+    RecalculateNormals,
+    ApplyScale,
+    ApplyRotationScale,
+    CenterOrigin,
     SelectAll,
     DeselectAll,
     InvertSelection,
     SelectLinked,
     BoxSelect,
     ToggleGrid,
+    ToggleMeasurements,
     ToggleViewportDenoise,
     ToggleRenderDenoise,
     SetDenoiseQuality(DenoiseQuality),
@@ -147,6 +164,7 @@ pub(crate) struct TransformDrag {
     pub objects_before: std::collections::BTreeSet<u64>,
     pub before: Scene,
     pub numeric: String,
+    pub numeric_replace: bool,
     pub modal: bool,
     pub changed: bool,
     pub vertices: Vec<u32>,
@@ -164,6 +182,9 @@ pub struct Studio {
     pub selected_vertex: Option<u32>,
     pub components: std::collections::BTreeSet<forma_core::MeshElement>,
     pub(crate) box_select: Option<crate::viewport::BoxSelection>,
+    pub(crate) show_measurements: bool,
+    pub(crate) measurement_cache: std::cell::RefCell<Option<crate::viewport::MeasurementCache>>,
+    local_dimension_cache: std::cell::RefCell<Option<(u64, Option<Vec3>)>>,
     pub settings: RenderSettings,
     pub samples: u32,
     pub denoised_generation: Option<u64>,
@@ -177,6 +198,7 @@ pub struct Studio {
     pub(crate) theme_picker: Option<ThemePicker>,
     pub(crate) theme_path: Option<PathBuf>,
     pub palette_open: bool,
+    pub(crate) palette_exports_only: bool,
     pub palette_query: String,
     pub palette_index: usize,
     pub help_open: bool,
@@ -193,6 +215,8 @@ pub struct Studio {
     pub(crate) panels: crate::ui::PanelState,
     pub(crate) shading_pie: Option<ShadingPie>,
     pub active_field: Option<(Field, String)>,
+    pub(crate) stl_dialog: Option<StlDialog>,
+    pub(crate) stl_unit: StlUnit,
     pub tool: Tool,
     pub render_error: Option<String>,
     pub(crate) focus: FocusHandle,
@@ -221,6 +245,7 @@ pub struct Studio {
     saving: bool,
     loading: bool,
     exporting_obj: bool,
+    exporting_stl: bool,
     preview_load_id: u64,
 }
 
@@ -291,6 +316,9 @@ impl Studio {
             selected_vertex: None,
             components: Default::default(),
             box_select: None,
+            show_measurements: false,
+            measurement_cache: Default::default(),
+            local_dimension_cache: Default::default(),
             settings: RenderSettings {
                 edit_wireframe: false,
                 edit_vertices: false,
@@ -317,6 +345,7 @@ impl Studio {
             theme_picker: None,
             theme_path,
             palette_open: false,
+            palette_exports_only: false,
             palette_query: String::new(),
             palette_index: 0,
             help_open: false,
@@ -333,6 +362,8 @@ impl Studio {
             panels: crate::ui::PanelState::default(),
             shading_pie: None,
             active_field: None,
+            stl_dialog: None,
+            stl_unit: StlUnit::Millimetres,
             tool: Tool::Select,
             render_error: None,
             focus,
@@ -361,6 +392,7 @@ impl Studio {
             saving: false,
             loading: false,
             exporting_obj: false,
+            exporting_stl: false,
             preview_load_id: 0,
         };
         studio.invalidate(false, cx);
@@ -607,6 +639,8 @@ impl Studio {
             self.scene_revision += 1;
             self.needs_snapshot = true;
             self.surface_query.take();
+            self.measurement_cache.get_mut().take();
+            self.local_dimension_cache.get_mut().take();
         }
         self.generation += 1;
         self.denoised_generation = None;
@@ -759,6 +793,7 @@ impl Studio {
             }
         }
         window.focus(&self.focus);
+        self.stl_dialog = None;
         self.shading_pie = None;
         if command != Command::ToggleTheme {
             self.theme_picker = None;
@@ -817,6 +852,18 @@ impl Studio {
             Command::New => self.new_scene(cx),
             Command::Open => self.choose_open(false, cx),
             Command::ImportObj => self.choose_open(true, cx),
+            Command::ImportStl | Command::ExportStl => {
+                self.navigation = None;
+                self.stl_dialog = Some(StlDialog {
+                    direction: if command == Command::ImportStl {
+                        StlDirection::Import
+                    } else {
+                        StlDirection::Export
+                    },
+                    unit: self.stl_unit,
+                    selected_only: !self.selected_ids().is_empty(),
+                });
+            }
             Command::Save => {
                 if let Some(path) = self.path.clone() {
                     self.save_to(path, cx);
@@ -995,15 +1042,61 @@ impl Studio {
                     self.status = "Select an object or face to focus".into();
                 }
             }
+            Command::FrameAll => {
+                let mut minimum = Vec3::splat(f32::INFINITY);
+                let mut maximum = Vec3::splat(f32::NEG_INFINITY);
+                for instance in self
+                    .scene
+                    .mesh_instances()
+                    .filter(|o| self.scene.is_effectively_visible(o.id))
+                {
+                    for position in &instance.mesh.positions {
+                        let world = instance.world_transform.transform_point3(*position);
+                        minimum = minimum.min(world);
+                        maximum = maximum.max(world);
+                    }
+                }
+                if minimum.is_finite() && maximum.is_finite() {
+                    let size = self.bounds.get().size;
+                    let aspect = f32::from(size.width) / f32::from(size.height).max(1.);
+                    self.scene.camera.frame_in_viewport(
+                        (minimum + maximum) * 0.5,
+                        minimum.distance(maximum) * 0.5,
+                        aspect,
+                    );
+                    self.status = "All visible geometry focused".into();
+                    self.invalidate(false, cx);
+                } else {
+                    self.status = "No visible geometry to frame".into();
+                }
+            }
             Command::ViewFront
+            | Command::ViewBack
             | Command::ViewRight
+            | Command::ViewLeft
             | Command::ViewTop
+            | Command::ViewBottom
             | Command::ViewPerspective => {
                 let camera = &mut self.scene.camera;
                 match command {
                     Command::ViewFront => {
                         camera.yaw = 0.;
                         camera.pitch = 0.;
+                        camera.orthographic = true;
+                    }
+                    Command::ViewBack => {
+                        camera.yaw = std::f32::consts::PI;
+                        camera.pitch = 0.;
+                        camera.orthographic = true;
+                    }
+                    Command::ViewLeft => {
+                        camera.yaw = -std::f32::consts::FRAC_PI_2;
+                        camera.pitch = 0.;
+                        camera.orthographic = true;
+                    }
+                    Command::ViewBottom => {
+                        camera.yaw = 0.;
+                        camera.pitch = -std::f32::consts::FRAC_PI_2;
                         camera.orthographic = true;
                     }
                     Command::ViewRight => {
@@ -1167,6 +1260,13 @@ impl Studio {
                     cx,
                 );
             }
+            Command::Bevel => self.start_mesh_tool(crate::modelling::MeshTool::Bevel, cx),
+            Command::Triangulate | Command::FlipNormals | Command::RecalculateNormals => {
+                self.finish_mesh(command, cx);
+            }
+            Command::ApplyScale | Command::ApplyRotationScale | Command::CenterOrigin => {
+                self.apply_object_command(command, cx);
+            }
             Command::Subdivide => {
                 if let Some(id) = self.selected {
                     if self.scene.object_mesh(id).unwrap().faces.len() > 100_000 {
@@ -1208,6 +1308,15 @@ impl Studio {
             Command::ToggleGrid => {
                 self.settings.show_grid = !self.settings.show_grid;
                 self.invalidate(false, cx);
+            }
+            Command::ToggleMeasurements => {
+                self.show_measurements = !self.show_measurements;
+                self.status = if self.show_measurements {
+                    "Measurements on · World dimensions and selected edge lengths"
+                } else {
+                    "Measurements hidden"
+                }
+                .into();
             }
             Command::SetShader(ShaderKind::Custom) | Command::EditShader => {
                 self.open_shader_editor(window, cx)
@@ -1269,6 +1378,7 @@ impl Studio {
             }
             Command::TogglePalette => {
                 self.palette_open = !self.palette_open;
+                self.palette_exports_only = false;
                 self.palette_query.clear();
                 self.palette_index = 0;
                 self.help_open = false;
@@ -1459,16 +1569,25 @@ impl Studio {
     }
 
     pub(crate) fn open_from(&mut self, path: PathBuf, import: bool, cx: &mut Context<Self>) {
+        self.open_document(path, import.then_some(MeshImport::Obj), cx);
+    }
+
+    pub(crate) fn open_stl_from(&mut self, path: PathBuf, unit: StlUnit, cx: &mut Context<Self>) {
+        self.open_document(path, Some(MeshImport::Stl(unit)), cx);
+    }
+
+    fn open_document(&mut self, path: PathBuf, format: Option<MeshImport>, cx: &mut Context<Self>) {
         if self.loading {
             self.status = "A project open or import is already in progress".into();
             cx.notify();
             return;
         }
         self.loading = true;
-        self.status = if import {
-            "Importing OBJ…"
-        } else {
-            "Opening project…"
+        let import = format.is_some();
+        self.status = match format {
+            Some(MeshImport::Obj) => "Importing OBJ…",
+            Some(MeshImport::Stl(_)) => "Importing STL…",
+            None => "Opening project…",
         }
         .into();
         let epoch = self.project_epoch;
@@ -1479,7 +1598,10 @@ impl Studio {
         let source = path.clone();
         let load = cx.background_executor().spawn(async move {
             if let Some(mut scene) = snapshot {
-                let id = scene.import_obj(&source)?;
+                let id = match format.unwrap() {
+                    MeshImport::Obj => scene.import_obj(&source)?,
+                    MeshImport::Stl(unit) => scene.import_stl(&source, unit.metres())?,
+                };
                 if let Some((center, radius)) = scene.bounds(id) {
                     scene.camera.frame(center, radius);
                 }
@@ -1609,7 +1731,6 @@ impl Studio {
         self.exporting_obj = true;
         self.status = "Exporting OBJ…".into();
         let scene = self.scene.clone();
-        let generation = self.generation;
         let epoch = self.project_epoch;
         let destination = path.clone();
         let export = cx
@@ -1619,12 +1740,137 @@ impl Studio {
             let result = export.await;
             let _ = this.update(cx, |s, cx| {
                 s.exporting_obj = false;
-                if !s.accepts_document_result(epoch, generation) {
+                if s.project_epoch != epoch {
                     return;
                 }
                 s.status = match result {
                     Ok(()) => format!("OBJ exported · {}", path.display()),
                     Err(error) => format!("OBJ export failed: {error:#}"),
+                };
+                cx.notify();
+            });
+        })
+        .detach();
+        cx.notify();
+    }
+
+    pub(crate) fn confirm_stl_dialog(&mut self, cx: &mut Context<Self>) {
+        let Some(options) = self.stl_dialog else {
+            return;
+        };
+        if (options.direction == StlDirection::Import && self.loading)
+            || (options.direction == StlDirection::Export && self.exporting_stl)
+        {
+            self.status = "A file operation is already running · Try again when it finishes".into();
+            cx.notify();
+            return;
+        }
+        let selection = options.selected_only.then(|| self.selected_ids());
+        if options.direction == StlDirection::Export
+            && !self.scene.mesh_instances().any(|mesh| {
+                self.scene.is_effectively_visible(mesh.id)
+                    && selection.as_ref().is_none_or(|ids| ids.contains(&mesh.id))
+            })
+        {
+            self.status = "No visible mesh objects in the export scope".into();
+            cx.notify();
+            return;
+        }
+        self.stl_dialog = None;
+        self.stl_unit = options.unit;
+        let epoch = self.project_epoch;
+        let generation = self.generation;
+        if options.direction == StlDirection::Import {
+            let receiver = cx.prompt_for_paths(PathPromptOptions {
+                files: true,
+                directories: false,
+                multiple: false,
+                prompt: Some("Import STL".into()),
+            });
+            cx.spawn(async move |this, cx| {
+                let result = receiver.await;
+                let _ = this.update(cx, |s, cx| {
+                    if !s.accepts_document_result(epoch, generation) {
+                        return;
+                    }
+                    match result {
+                        Ok(Ok(Some(paths))) => {
+                            if let Some(path) = paths.first() {
+                                s.open_stl_from(path.clone(), options.unit, cx);
+                            }
+                        }
+                        Ok(Err(error)) => s.status = format!("File dialog: {error}"),
+                        _ => {}
+                    }
+                    cx.notify();
+                });
+            })
+            .detach();
+        } else {
+            let name = format!("{}.stl", self.project_name);
+            let directory = self
+                .path
+                .as_ref()
+                .and_then(|path| path.parent())
+                .map(|path| path.to_path_buf())
+                .or_else(|| std::env::var_os("HOME").map(PathBuf::from))
+                .unwrap_or_else(|| PathBuf::from("."));
+            let receiver = cx.prompt_for_new_path(&directory, Some(&name));
+            cx.spawn(async move |this, cx| {
+                let result = receiver.await;
+                let _ = this.update(cx, |s, cx| {
+                    if !s.accepts_document_result(epoch, generation) {
+                        return;
+                    }
+                    match result {
+                        Ok(Ok(Some(mut path))) => {
+                            if path.extension().is_none() {
+                                path.set_extension("stl");
+                            }
+                            s.export_stl_to(path, options.unit, selection, cx);
+                        }
+                        Ok(Err(error)) => s.status = format!("File dialog: {error}"),
+                        _ => {}
+                    }
+                    cx.notify();
+                });
+            })
+            .detach();
+        }
+        cx.notify();
+    }
+
+    pub(crate) fn export_stl_to(
+        &mut self,
+        path: PathBuf,
+        unit: StlUnit,
+        selection: Option<BTreeSet<u64>>,
+        cx: &mut Context<Self>,
+    ) {
+        if self.exporting_stl {
+            self.status = "An STL export is already running".into();
+            cx.notify();
+            return;
+        }
+        self.exporting_stl = true;
+        self.status = "Exporting STL…".into();
+        let scene = self.scene.clone();
+        let epoch = self.project_epoch;
+        let destination = path.clone();
+        let export = cx.background_executor().spawn(async move {
+            scene.export_stl(&destination, unit.metres(), selection.as_ref())
+        });
+        cx.spawn(async move |this, cx| {
+            let result = export.await;
+            let _ = this.update(cx, |s, cx| {
+                s.exporting_stl = false;
+                // Export owns a snapshot, so editing need not discard its completion.
+                if s.project_epoch != epoch {
+                    return;
+                }
+                s.status = match result {
+                    Ok(()) => format!("STL exported · {} · {}", unit.label(), path.display()),
+                    Err(error) => format!("STL export failed: {error:#}"),
                 };
                 cx.notify();
             });
@@ -1704,13 +1950,49 @@ impl Studio {
         {
             return text.clone();
         }
+        if field == Field::Name {
+            return self
+                .selected_object()
+                .map(|o| o.name.clone())
+                .unwrap_or_default();
+        }
+        self.field_numeric_value(field)
+            .map(|value| match field {
+                Field::Translation(_)
+                | Field::Rotation(_)
+                | Field::Scale(_)
+                | Field::Dimensions(_) => crate::transform::format_precision_value(value),
+                Field::Samples | Field::Bounces | Field::DenoiseStart => value.to_string(),
+                _ => format!("{value:.2}"),
+            })
+            .unwrap_or_else(|| "—".into())
+    }
+
+    // Shared by compact display and exact edit text; dimensions retain their
+    // geometry-invalidated cache rather than scanning vertices per axis.
+    fn field_numeric_value(&self, field: Field) -> Option<f32> {
         let object = self.selected_object();
-        let value = match field {
-            Field::Name => return object.map(|o| o.name.clone()).unwrap_or_default(),
+        match field {
+            Field::Name => None,
             Field::Color(axis) => object.map(|o| linear_to_srgb(o.material.base_color[axis])),
             Field::Translation(axis) => object.map(|o| o.transform.translation[axis]),
             Field::Rotation(axis) => object.map(|o| o.transform.rotation[axis].to_degrees()),
             Field::Scale(axis) => object.map(|o| o.transform.scale[axis]),
+            Field::Dimensions(axis) => object.and_then(|object| {
+                let mut cached = self.local_dimension_cache.borrow_mut();
+                if cached.as_ref().is_none_or(|(id, _)| *id != object.id) {
+                    *cached = Some((
+                        object.id,
+                        crate::transform::local_dimensions(
+                            &object.mesh.positions,
+                            object.transform.scale,
+                        ),
+                    ));
+                }
+                cached
+                    .as_ref()
+                    .and_then(|(_, dimensions)| dimensions.map(|size| size[axis]))
+            }),
             Field::Roughness => object.map(|o| o.material.roughness),
             Field::Ior => object.map(|o| o.material.ior),
             Field::NormalStrength => object.map(|o| o.material.normal_strength),
@@ -1724,31 +2006,167 @@ impl Studio {
             Field::PreviewStrength => Some(self.settings.preview.strength),
             Field::PreviewOpacity => Some(self.settings.preview.world_opacity * 100.),
             Field::PreviewBlur => Some(self.settings.preview.background_blur * 100.),
-            Field::Samples => return self.settings.max_samples.to_string(),
-            Field::Bounces => return self.settings.max_bounces.to_string(),
-            Field::DenoiseStart => return self.settings.denoise.start_sample.to_string(),
-        };
-        value
-            .map(|v| format!("{v:.2}"))
-            .unwrap_or_else(|| "—".into())
+            Field::Samples => Some(self.settings.max_samples as f32),
+            Field::Bounces => Some(self.settings.max_bounces as f32),
+            Field::DenoiseStart => Some(self.settings.denoise.start_sample as f32),
+        }
     }
 
     pub fn field_is_active(&self, field: Field) -> bool {
         self.active_field.as_ref().is_some_and(|(f, _)| *f == field)
     }
 
+    pub(crate) fn field_selection_active(&self, field: Field) -> bool {
+        self.field_is_active(field) && self.field_replace
+    }
+
+    fn field_edit_text(&self, field: Field) -> String {
+        if field == Field::Name {
+            self.selected_object()
+                .map(|object| object.name.clone())
+                .unwrap_or_default()
+        } else {
+            self.field_numeric_value(field)
+                .map(|value| value.to_string())
+                .unwrap_or_default()
+        }
+    }
+
     pub fn begin_field(&mut self, field: Field, window: &mut Window, cx: &mut Context<Self>) {
         window.focus(&self.focus);
-        self.active_field = Some((field, self.field_value(field)));
+        if self
+            .active_field
+            .as_ref()
+            .is_some_and(|(active, _)| *active != field)
+        {
+            self.commit_field(cx);
+            if self.active_field.is_some() {
+                return;
+            }
+        }
+        let text = if let Some((active, text)) = &self.active_field
+            && *active == field
+        {
+            text.clone()
+        } else {
+            self.field_edit_text(field)
+        };
+        self.active_field = Some((field, text));
         self.field_replace = true;
-        self.status = "Enter a value · Return to apply · Esc to cancel".into();
+        self.panels.reveal_field(field);
+        self.status = match field {
+            Field::Translation(_) => "Local position · m / cm / mm / in / ft · Enter apply · Esc cancel",
+            Field::Dimensions(_) => "Local dimensions · Parent transform excluded · m / cm / mm / in / ft · Enter apply · Esc cancel",
+            Field::Rotation(_) | Field::PreviewRotation => "Angle · Degrees by default, or use deg / rad · Enter apply · Esc cancel",
+            Field::Name => "Object name · Enter apply · Esc cancel",
+            _ => "Arithmetic supported: (2+3)/4 · Enter apply · Esc cancel",
+        }.into();
         cx.notify();
     }
 
-    fn commit_field(&mut self, cx: &mut Context<Self>) {
-        let Some((field, text)) = self.active_field.take() else {
+    fn insert_field_text(&mut self, input: &str, cx: &mut Context<Self>) {
+        use crate::text_entry::{EntryKind, InputError};
+        let Some((field, text)) = self.active_field.as_mut() else {
             return;
         };
+        let is_name = *field == Field::Name;
+        if let Err(error) = crate::text_entry::insert(
+            text,
+            &mut self.field_replace,
+            input,
+            if is_name {
+                EntryKind::Name
+            } else {
+                EntryKind::Expression
+            },
+        ) {
+            self.status = match error {
+                InputError::TooLong => "Input exceeds 128 bytes; current text kept",
+                InputError::UnsupportedCharacter if is_name => {
+                    "Names must be a single line without control characters"
+                }
+                InputError::UnsupportedCharacter => {
+                    "Use a single numeric expression with arithmetic or supported unit suffixes"
+                }
+            }
+            .into();
+        }
+        cx.notify();
+    }
+
+    fn insert_transform_text(&mut self, input: &str, modifiers: Modifiers, cx: &mut Context<Self>) {
+        use crate::text_entry::{EntryKind, InputError};
+        let Some(drag) = self.transform_drag.as_mut() else {
+            return;
+        };
+        match crate::text_entry::insert(
+            &mut drag.numeric,
+            &mut drag.numeric_replace,
+            input,
+            EntryKind::Expression,
+        ) {
+            Ok(true) => {
+                self.update_transform(self.last_mouse, modifiers.shift, modifiers.control, cx)
+            }
+            Ok(false) => {}
+            Err(error) => {
+                self.status = match error {
+                    InputError::TooLong => "Input exceeds 128 bytes; current expression kept",
+                    InputError::UnsupportedCharacter => {
+                        "Use a single numeric expression with arithmetic or supported unit suffixes"
+                    }
+                }
+                .into();
+                cx.notify();
+            }
+        }
+    }
+
+    fn advance_field(&mut self, backwards: bool, window: &mut Window, cx: &mut Context<Self>) {
+        let Some((current, _)) = self.active_field.as_ref() else {
+            return;
+        };
+        let current = *current;
+        self.commit_field(cx);
+        if self.active_field.is_some() {
+            return;
+        }
+        let next = crate::text_entry::next_field(current, backwards, |field| match field {
+            Field::Metallic => self
+                .selected_object()
+                .is_some_and(|object| object.material.shader != ShaderKind::Glass),
+            Field::NormalStrength => self.selected_object().is_some_and(|object| {
+                object.material.textures[TextureSlot::Normal as usize].is_some()
+            }),
+            Field::Samples | Field::Bounces => self.settings.mode.progressive(),
+            Field::DenoiseStart => {
+                self.settings.mode.progressive() && self.settings.denoise.viewport
+            }
+            Field::WorldStrength => {
+                self.settings.mode.progressive()
+                    || (self.settings.mode == RenderMode::MaterialPreview
+                        && self.settings.preview.use_scene_world)
+            }
+            _ => true,
+        });
+        self.begin_field(next, window, cx);
+        self.panels.scroll_to_active_field(next, window, cx);
+    }
+
+    fn commit_field(&mut self, cx: &mut Context<Self>) {
+        // Keep invalid input active so users can correct an expression or cancel
+        // it. History is recorded only after a valid value actually changes data.
+        let Some((field, text)) = self.active_field.clone() else {
+            return;
+        };
+        // Selection is independent of modification: selecting all of an edited
+        // expression must not turn Return or Tab into a silent cancellation.
+        if text == self.field_edit_text(field) {
+            self.active_field = None;
+            self.status = "Value unchanged".into();
+            cx.notify();
+            return;
+        }
         if field == Field::Name {
             let name = text.trim();
             if name.is_empty() || name.len() > 128 {
@@ -1756,25 +2174,77 @@ impl Studio {
                 cx.notify();
                 return;
             }
-            self.history.checkpoint(&self.scene);
-            if let Some(object) = self.selected.and_then(|id| self.scene.object_mut(id)) {
-                object.name = name.to_owned();
+            let Some(object) = self.selected.and_then(|id| self.scene.object(id)) else {
+                self.status = "Select an object first".into();
+                cx.notify();
+                return;
+            };
+            self.active_field = None;
+            if object.name == name {
+                self.status = "Name unchanged".into();
+                cx.notify();
+                return;
             }
+            let id = object.id;
+            self.history.checkpoint(&self.scene);
+            self.scene.object_mut(id).unwrap().name = name.to_owned();
             self.dirty = true;
             self.status = "Object renamed".into();
             self.invalidate(true, cx);
             return;
         }
-        let Ok(value) = text.parse::<f32>() else {
-            self.status = "Enter a valid number".into();
+        let parsed = match field {
+            Field::Translation(_) | Field::Dimensions(_) => crate::transform::distance_value(&text),
+            Field::Rotation(_) | Field::PreviewRotation => crate::transform::angle_value(&text),
+            _ => crate::transform::numeric_value(&text),
+        };
+        let Some(value) = parsed else {
+            self.status = match field {
+                Field::Translation(_) | Field::Dimensions(_) => {
+                    "Enter a distance expression, e.g. 25mm, 1/8in or 1m+2cm"
+                }
+                Field::Rotation(_) | Field::PreviewRotation => {
+                    "Enter an angle expression, e.g. 90, 45deg or 1.57rad"
+                }
+                _ => "Enter a finite, unitless expression, e.g. (2+3)/4",
+            }
+            .into();
             cx.notify();
             return;
         };
-        if !value.is_finite() {
-            self.status = "Value must be finite".into();
+        if matches!(field, Field::Scale(_)) && !(1e-5..=1e6).contains(&value.abs()) {
+            self.status = "Scale magnitude must be between 0.00001 and 1000000; negative values mirror the object".into();
             cx.notify();
             return;
         }
+        if matches!(field, Field::Translation(_)) && value.abs() > 1e8 {
+            self.status = "Position must be within ±100000000 metres".into();
+            cx.notify();
+            return;
+        }
+        let dimension_scale = if let Field::Dimensions(axis) = field {
+            let result = self
+                .selected_object()
+                .ok_or("Select a mesh object first")
+                .and_then(|object| {
+                    crate::transform::scale_for_dimension(
+                        &object.mesh.positions,
+                        object.transform.scale,
+                        axis,
+                        value,
+                    )
+                });
+            match result {
+                Ok(scale) => Some(scale),
+                Err(error) => {
+                    self.status = error.into();
+                    cx.notify();
+                    return;
+                }
+            }
+        } else {
+            None
+        };
         if matches!(
             field,
             Field::PreviewRotation
@@ -1784,8 +2254,7 @@ impl Studio {
         ) {
             match field {
                 Field::PreviewRotation => {
-                    self.settings.preview.rotation =
-                        value.to_radians().rem_euclid(std::f32::consts::TAU)
+                    self.settings.preview.rotation = value.rem_euclid(std::f32::consts::TAU)
                 }
                 Field::PreviewStrength => self.settings.preview.strength = value.clamp(0., 10.),
                 Field::PreviewOpacity => {
@@ -1796,6 +2265,7 @@ impl Studio {
                 }
                 _ => unreachable!(),
             }
+            self.active_field = None;
             self.status = "Preview lighting updated".into();
             self.invalidate(false, cx);
             return;
@@ -1808,8 +2278,12 @@ impl Studio {
                 | Field::Bounces
                 | Field::DenoiseStart
         );
-        self.history.checkpoint(&self.scene);
-        self.dirty = true;
+        if geometry && self.selected_object().is_none() {
+            self.status = "Select a mesh object first".into();
+            cx.notify();
+            return;
+        }
+        let before = self.scene.clone();
         match field {
             Field::Exposure => self.settings.exposure = value.clamp(-10., 10.),
             Field::WorldStrength => self.scene.world.strength = value.clamp(0., 100.),
@@ -1853,16 +2327,18 @@ impl Studio {
                                 Vec3::splat(value.clamp(0., 1000.))
                         }
                         Field::Translation(axis) => {
-                            self.scene.object_mut(id).unwrap().transform.translation[axis] =
-                                value.clamp(-100_000., 100_000.)
+                            self.scene.object_mut(id).unwrap().transform.translation[axis] = value
                         }
                         Field::Rotation(axis) => {
                             self.scene.object_mut(id).unwrap().transform.rotation[axis] =
-                                value.to_radians().rem_euclid(std::f32::consts::TAU)
+                                value.rem_euclid(std::f32::consts::TAU)
                         }
                         Field::Scale(axis) => {
+                            self.scene.object_mut(id).unwrap().transform.scale[axis] = value
+                        }
+                        Field::Dimensions(axis) => {
                             self.scene.object_mut(id).unwrap().transform.scale[axis] =
-                                value.clamp(0.001, 1000.)
+                                dimension_scale.unwrap()
                         }
                         _ => {}
                     }
@@ -1873,6 +2349,14 @@ impl Studio {
         self.scene.render.max_samples = self.settings.max_samples;
         self.scene.render.max_bounces = self.settings.max_bounces;
         self.scene.render.denoise = self.settings.denoise;
+        self.active_field = None;
+        if self.scene == before {
+            self.status = "Value unchanged".into();
+            cx.notify();
+            return;
+        }
+        self.history.checkpoint(&before);
+        self.dirty = true;
         self.status = "Value updated".into();
         self.invalidate(geometry, cx);
     }
@@ -1926,6 +2410,20 @@ impl Studio {
     ) {
         let key = event.keystroke.key.as_str();
         let mods = event.keystroke.modifiers;
+        if let Some(dialog) = self.stl_dialog.as_mut() {
+            match key {
+                "escape" => self.stl_dialog = None,
+                "enter" if !event.is_held => self.confirm_stl_dialog(cx),
+                "left" | "right" => dialog.unit = dialog.unit.cycle(key == "left"),
+                "tab" if dialog.direction == StlDirection::Export => {
+                    dialog.selected_only = !dialog.selected_only
+                }
+                _ => {}
+            }
+            cx.notify();
+            cx.stop_propagation();
+            return;
+        }
         if key == "t" && command_modifier(mods) && mods.shift {
             if !event.is_held {
                 self.execute(Command::ToggleTheme, window, cx);
@@ -1996,7 +2494,7 @@ impl Studio {
             return;
         }
         if self.palette_open {
-            let commands = palette_commands(&self.palette_query);
+            let commands = self.palette_items();
             match key {
                 "escape" => self.palette_open = false,
                 "k" if command_modifier(mods) => self.palette_open = false,
@@ -2034,41 +2532,48 @@ impl Studio {
         if self.active_field.is_some() {
             match key {
                 "enter" => self.commit_field(cx),
-                "escape" => {
-                    self.active_field = None;
+                "tab" if !mods.platform && !mods.control && !mods.alt => {
+                    self.advance_field(mods.shift, window, cx);
+                }
+                "a" if command_modifier(mods) => {
+                    self.field_replace = true;
+                    self.status = "All text selected · Type or paste to replace".into();
                     cx.notify();
                 }
-                "backspace" => {
-                    let (_, text) = self.active_field.as_mut().unwrap();
-                    if self.field_replace {
-                        text.clear();
-                    } else {
-                        text.pop();
+                "c" if command_modifier(mods) => {
+                    let text = self.active_field.as_ref().unwrap().1.clone();
+                    cx.write_to_clipboard(ClipboardItem::new_string(text));
+                }
+                "v" if command_modifier(mods) => {
+                    if let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) {
+                        self.insert_field_text(&text, cx);
                     }
-                    self.field_replace = false;
+                }
+                "escape" => {
+                    self.active_field = None;
+                    self.status = "Value edit cancelled".into();
+                    cx.notify();
+                }
+                "backspace" | "delete" => {
+                    let (_, text) = self.active_field.as_mut().unwrap();
+                    let erase = if key == "delete" {
+                        crate::text_entry::Erase::Delete
+                    } else if cfg!(target_os = "macos") && mods.platform {
+                        crate::text_entry::Erase::ToStart
+                    } else if mods.alt || (cfg!(not(target_os = "macos")) && mods.control) {
+                        crate::text_entry::Erase::PreviousWord
+                    } else {
+                        crate::text_entry::Erase::Backspace
+                    };
+                    crate::text_entry::erase(text, &mut self.field_replace, erase);
                     cx.notify();
                 }
                 _ => {
-                    if let Some(chars) = &event.keystroke.key_char {
-                        let is_name = self
-                            .active_field
-                            .as_ref()
-                            .is_some_and(|(field, _)| *field == Field::Name);
-                        if chars.chars().all(|c| {
-                            (is_name && !c.is_control())
-                                || c.is_ascii_digit()
-                                || ".-+eE".contains(c)
-                        }) {
-                            let (_, text) = self.active_field.as_mut().unwrap();
-                            if self.field_replace {
-                                text.clear();
-                                self.field_replace = false;
-                            }
-                            if text.len() < if is_name { 128 } else { 24 } {
-                                text.push_str(chars);
-                            }
-                            cx.notify();
-                        }
+                    if !mods.platform
+                        && !mods.control
+                        && let Some(chars) = &event.keystroke.key_char
+                    {
+                        self.insert_field_text(chars, cx);
                     }
                 }
             }
@@ -2106,7 +2611,23 @@ impl Studio {
             match key {
                 "escape" => self.finish_transform(true, cx),
                 "enter" => self.finish_transform(false, cx),
-                "x" | "y" | "z" => {
+                "a" if command_modifier(mods) => {
+                    self.transform_drag.as_mut().unwrap().numeric_replace = true;
+                    self.status = "Numeric input selected · Type or paste to replace".into();
+                    cx.notify();
+                }
+                "c" if command_modifier(mods) => {
+                    let text = &self.transform_drag.as_ref().unwrap().numeric;
+                    if !text.is_empty() {
+                        cx.write_to_clipboard(ClipboardItem::new_string(text.clone()));
+                    }
+                }
+                "v" if command_modifier(mods) => {
+                    if let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) {
+                        self.insert_transform_text(&text, mods, cx);
+                    }
+                }
+                "x" | "y" | "z" if !mods.platform && !mods.control && !mods.alt => {
                     self.transform_drag.as_mut().unwrap().constraint.cycle(
                         match key {
                             "x" => 0,
@@ -2117,21 +2638,30 @@ impl Studio {
                     );
                     self.update_transform(self.last_mouse, mods.shift, mods.control, cx);
                 }
-                "backspace" => {
-                    self.transform_drag.as_mut().unwrap().numeric.pop();
-                    self.update_transform(self.last_mouse, mods.shift, mods.control, cx);
+                "backspace" | "delete" => {
+                    let drag = self.transform_drag.as_mut().unwrap();
+                    let erase = if key == "delete" {
+                        crate::text_entry::Erase::Delete
+                    } else if cfg!(target_os = "macos") && mods.platform {
+                        crate::text_entry::Erase::ToStart
+                    } else if mods.alt || (cfg!(not(target_os = "macos")) && mods.control) {
+                        crate::text_entry::Erase::PreviousWord
+                    } else {
+                        crate::text_entry::Erase::Backspace
+                    };
+                    if crate::text_entry::erase(&mut drag.numeric, &mut drag.numeric_replace, erase)
+                    {
+                        self.update_transform(self.last_mouse, mods.shift, mods.control, cx);
+                    } else {
+                        cx.notify();
+                    }
                 }
                 _ => {
-                    if let Some(chars) = &event.keystroke.key_char
-                        && chars
-                            .chars()
-                            .all(|c| c.is_ascii_digit() || ".-+*/".contains(c))
+                    if !mods.platform
+                        && !mods.control
+                        && let Some(chars) = &event.keystroke.key_char
                     {
-                        let drag = self.transform_drag.as_mut().unwrap();
-                        if drag.numeric.len() < 16 {
-                            drag.numeric.push_str(chars);
-                        }
-                        self.update_transform(self.last_mouse, mods.shift, mods.control, cx);
+                        self.insert_transform_text(chars, mods, cx);
                     }
                 }
             }
@@ -2148,6 +2678,7 @@ impl Studio {
                 "z" => Some(Command::Undo),
                 "y" if cfg!(not(target_os = "macos")) => Some(Command::Redo),
                 "d" => Some(Command::Duplicate),
+                "b" => Some(Command::Bevel),
                 "i" => Some(Command::InvertSelection),
                 "k" => Some(Command::TogglePalette),
                 _ => None,
@@ -2190,14 +2721,21 @@ impl Studio {
                 "f" | "`" | "." | "decimal" if !mods.alt && !mods.shift => {
                     Some(Command::FrameSelected)
                 }
-                "1" if self.edit_mode.is_component() => {
+                "1" if self.edit_mode.is_component() && !mods.alt => {
                     Some(Command::SetEditMode(EditMode::Vertex))
                 }
                 "2" if self.edit_mode.is_component() => Some(Command::SetEditMode(EditMode::Edge)),
-                "3" if self.edit_mode.is_component() => Some(Command::SetEditMode(EditMode::Face)),
+                "3" if self.edit_mode.is_component() && !mods.alt => {
+                    Some(Command::SetEditMode(EditMode::Face))
+                }
+                "1" if mods.alt => Some(Command::ViewBack),
+                "3" if mods.alt => Some(Command::ViewLeft),
+                "7" if mods.alt => Some(Command::ViewBottom),
                 "1" => Some(Command::ViewFront),
                 "3" => Some(Command::ViewRight),
                 "7" => Some(Command::ViewTop),
+                "home" => Some(Command::FrameAll),
+                "m" if mods.shift => Some(Command::ToggleMeasurements),
                 "5" => Some(Command::ToggleProjection),
                 "0" => Some(Command::ViewPerspective),
                 "z" if !mods.alt && !mods.shift => {
@@ -2302,13 +2840,35 @@ pub(crate) fn palette_commands(query: &str) -> Vec<(&'static str, &'static str, 
         ("Add plane", "", Command::Add(Primitive::Plane)),
         ("Import Wavefront OBJ…", "", Command::ImportObj),
         ("Export Wavefront OBJ…", "", Command::ExportObj),
-        ("Export image…", "", Command::ExportImage),
+        ("Import STL with units…", "", Command::ImportStl),
+        ("Export STL with units and scope…", "", Command::ExportStl),
+        ("Apply object scale", "", Command::ApplyScale),
+        (
+            "Apply object rotation and scale",
+            "",
+            Command::ApplyRotationScale,
+        ),
+        ("Origin to geometry center", "", Command::CenterOrigin),
+        ("Export image (PNG)…", "", Command::ExportImage),
         ("Duplicate selection", "⇧ D", Command::Duplicate),
         ("Delete selection", "⌫", Command::Delete),
         ("Frame selected", "` / . / F", Command::FrameSelected),
+        ("Frame all visible geometry", "Home", Command::FrameAll),
         ("Subdivide mesh", "", Command::Subdivide),
         ("Extrude face region", "E", Command::Extrude),
         ("Inset face region", "I", Command::Inset),
+        (
+            "Bevel convex mesh edges",
+            platform_shortcut("⌘ B", "Ctrl+B"),
+            Command::Bevel,
+        ),
+        ("Triangulate faces", "", Command::Triangulate),
+        ("Flip face normals", "", Command::FlipNormals),
+        (
+            "Recalculate normals outside",
+            "",
+            Command::RecalculateNormals,
+        ),
         ("Select all components", "A", Command::SelectAll),
         ("Deselect all components", "Alt+A", Command::DeselectAll),
         (
@@ -2367,9 +2927,17 @@ pub(crate) fn palette_commands(query: &str) -> Vec<(&'static str, &'static str, 
         ),
         ("Perspective view", "0", Command::ViewPerspective),
         ("Front view", "1", Command::ViewFront),
+        ("Back view", "Alt+1", Command::ViewBack),
         ("Right view", "3", Command::ViewRight),
+        ("Left view", "Alt+3", Command::ViewLeft),
         ("Top view", "7", Command::ViewTop),
+        ("Bottom view", "Alt+7", Command::ViewBottom),
         ("Toggle grid", "", Command::ToggleGrid),
+        (
+            "Toggle selection measurements",
+            "Shift+M",
+            Command::ToggleMeasurements,
+        ),
         (
             "Toggle viewport AI denoising",
             "",
@@ -2402,6 +2970,21 @@ pub(crate) fn palette_commands(query: &str) -> Vec<(&'static str, &'static str, 
 }
 
 impl Studio {
+    /// Use one filtered list for drawing and keyboard dispatch so scoped menus
+    /// cannot execute an item from the unrestricted command palette.
+    pub(crate) fn palette_items(&self) -> Vec<(&'static str, &'static str, Command)> {
+        palette_commands(&self.palette_query)
+            .into_iter()
+            .filter(|(_, _, command)| {
+                !self.palette_exports_only
+                    || matches!(
+                        command,
+                        Command::ExportObj | Command::ExportStl | Command::ExportImage
+                    )
+            })
+            .collect()
+    }
+
     fn selected_material_id(&self) -> Option<u64> {
         self.scene
             .object(self.selected?)?

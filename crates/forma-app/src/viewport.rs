@@ -1,10 +1,177 @@
-use crate::app::{EditMode, Studio, Tool};
+use crate::app::{Command, EditMode, Studio, Tool};
 use forma_render::RenderMode;
 use glam::{Mat4, Vec2, Vec3};
 use gpui::{
     AnyElement, Bounds, Context, MouseButton, MouseDownEvent, MouseMoveEvent, PathBuilder, Pixels,
-    Point, ScrollWheelEvent, Size, Window, canvas, div, fill, point, prelude::*, px, rgb, size,
+    Point, ScrollWheelEvent, Size, TextRun, Window, canvas, div, fill, point, prelude::*, px, rgb,
+    size,
 };
+use std::{collections::BTreeSet, rc::Rc};
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct WorldBounds {
+    min: Vec3,
+    max: Vec3,
+}
+
+impl WorldBounds {
+    fn from_points(points: impl IntoIterator<Item = Vec3>) -> Option<Self> {
+        let mut points = points.into_iter().filter(|point| point.is_finite());
+        let first = points.next()?;
+        Some(points.fold(
+            Self {
+                min: first,
+                max: first,
+            },
+            |bounds, point| Self {
+                min: bounds.min.min(point),
+                max: bounds.max.max(point),
+            },
+        ))
+    }
+
+    fn dimensions(self) -> Vec3 {
+        self.max - self.min
+    }
+}
+
+#[derive(Default)]
+struct SelectionMeasurements {
+    bounds: Option<WorldBounds>,
+    edges: Vec<[Vec3; 2]>,
+    edge_count: usize,
+    edge_length: f64,
+}
+
+/// The selection key changes independently from geometry. Geometry invalidation
+/// clears this cache, so camera motion and progressive frames do not walk meshes.
+pub(crate) struct MeasurementCache {
+    objects: BTreeSet<u64>,
+    components: BTreeSet<forma_core::MeshElement>,
+    mode: EditMode,
+    values: Rc<SelectionMeasurements>,
+}
+
+fn measure_selection(
+    scene: &forma_core::Scene,
+    objects: &BTreeSet<u64>,
+    components: &BTreeSet<forma_core::MeshElement>,
+    mode: EditMode,
+) -> SelectionMeasurements {
+    let mut measurements = SelectionMeasurements::default();
+    let mut object_bounds = Vec::new();
+    for id in objects {
+        if !scene.is_effectively_visible(*id) {
+            continue;
+        }
+        let Some(object) = scene.mesh_instance(*id) else {
+            continue;
+        };
+        let point = |index: u32| {
+            object
+                .mesh
+                .positions
+                .get(index as usize)
+                .map(|point| object.world_transform.transform_point3(*point))
+        };
+        let bounds = if mode == EditMode::Object {
+            WorldBounds::from_points(
+                object
+                    .mesh
+                    .positions
+                    .iter()
+                    .map(|point| object.world_transform.transform_point3(*point)),
+            )
+        } else {
+            WorldBounds::from_points(components.iter().flat_map(|element| {
+                element
+                    .vertex_indices(object.mesh)
+                    .into_iter()
+                    .filter_map(point)
+            }))
+        };
+        if let Some(bounds) = bounds {
+            object_bounds.extend([bounds.min, bounds.max]);
+        }
+        if mode == EditMode::Edge {
+            // Canonicalize defensively so the same edge cannot count twice.
+            let edges: BTreeSet<_> = components
+                .iter()
+                .filter_map(|element| match *element {
+                    forma_core::MeshElement::Edge([a, b]) if a != b => Some([a.min(b), a.max(b)]),
+                    _ => None,
+                })
+                .collect();
+            for [a, b] in edges {
+                let (Some(a), Some(b)) = (point(a), point(b)) else {
+                    continue;
+                };
+                let length = a.as_dvec3().distance(b.as_dvec3());
+                if !length.is_finite() {
+                    continue;
+                }
+                measurements.edge_count += 1;
+                measurements.edge_length += length;
+                // Keep overlay work bounded even with thousands of selected edges.
+                if measurements.edges.len() < 12 {
+                    measurements.edges.push([a, b]);
+                }
+            }
+        }
+    }
+    measurements.bounds = WorldBounds::from_points(object_bounds);
+    measurements
+}
+
+fn measurement_value(value: f64) -> String {
+    if value == 0. {
+        "0".into()
+    } else if !(0.001..100_000.).contains(&value.abs()) {
+        format!("{value:.3e}")
+    } else {
+        format!("{value:.3}")
+            .trim_end_matches('0')
+            .trim_end_matches('.')
+            .into()
+    }
+}
+
+fn camera_view_label(camera: forma_core::Camera) -> &'static str {
+    if !camera.orthographic {
+        return "User perspective";
+    }
+    let facing = camera.view_matrix().inverse().z_axis.truncate();
+    for (axis, positive, negative) in [
+        (Vec3::X, "Right orthographic", "Left orthographic"),
+        (Vec3::Y, "Top orthographic", "Bottom orthographic"),
+        (Vec3::Z, "Front orthographic", "Back orthographic"),
+    ] {
+        if facing.dot(axis) > 0.99999 {
+            return positive;
+        }
+        if facing.dot(-axis) > 0.99999 {
+            return negative;
+        }
+    }
+    "User orthographic"
+}
+
+struct ViewHint(&'static str, crate::theme::Colors);
+
+impl Render for ViewHint {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .px(px(8.))
+            .py(px(5.))
+            .rounded(px(5.))
+            .bg(rgb(self.1.panel))
+            .border_1()
+            .border_color(rgb(self.1.edge))
+            .text_color(rgb(self.1.text))
+            .text_size(px(11.))
+            .child(self.0)
+    }
+}
 
 #[derive(Clone, Copy)]
 pub(crate) enum NavigationMode {
@@ -114,6 +281,142 @@ fn line(window: &mut Window, points: &[Point<Pixels>], color: u32, width: f32) {
     }
     if let Ok(path) = path.build() {
         window.paint_path(path, rgb(color));
+    }
+}
+
+fn measurement_label(
+    text: String,
+    center: Point<Pixels>,
+    bounds: Bounds<Pixels>,
+    color: u32,
+    background: u32,
+    window: &mut Window,
+    cx: &mut gpui::App,
+) -> Option<Bounds<Pixels>> {
+    let run = TextRun {
+        len: text.len(),
+        font: window.text_style().font(),
+        color: rgb(color).into(),
+        background_color: None,
+        underline: None,
+        strikethrough: None,
+    };
+    let text = window
+        .text_system()
+        .shape_line(text.into(), px(11.), &[run], None);
+    let label_bounds = Bounds::new(
+        center - point((text.width + px(10.)) * 0.5, px(10.)),
+        size(text.width + px(10.), px(20.)),
+    );
+    if !bounds.contains(&label_bounds.origin) || !bounds.contains(&label_bounds.bottom_right()) {
+        return None;
+    }
+    window.paint_quad(fill(label_bounds, rgb(background)));
+    let _ = text.paint(
+        label_bounds.origin + point(px(5.), px(2.)),
+        px(16.),
+        window,
+        cx,
+    );
+    Some(label_bounds)
+}
+
+fn paint_measurements(
+    measurements: &SelectionMeasurements,
+    matrix: Mat4,
+    bounds: Bounds<Pixels>,
+    colors: crate::theme::Colors,
+    window: &mut Window,
+    cx: &mut gpui::App,
+) {
+    let Some(world) = measurements.bounds else {
+        return;
+    };
+    let world_center = (world.min + world.max) * 0.5;
+    let projected_center = project(world_center, matrix, bounds).map(mouse_point);
+    let mut labels: Vec<Bounds<Pixels>> = Vec::new();
+    for axis in 0..3 {
+        let mut end = world.min;
+        end[axis] = world.max[axis];
+        let (Some(a), Some(b)) = (
+            project(world.min, matrix, bounds),
+            project(end, matrix, bounds),
+        ) else {
+            continue;
+        };
+        let (a, b) = (mouse_point(a), mouse_point(b));
+        if a.distance(b) < 42. {
+            continue;
+        }
+        let direction = (b - a).normalize();
+        let mut normal = Vec2::new(-direction.y, direction.x);
+        if projected_center.is_some_and(|center| normal.dot((a + b) * 0.5 - center) < 0.) {
+            normal = -normal;
+        }
+        let (start, end) = (a + normal * 18., b + normal * 18.);
+        let points = [start, end].map(|p| point(px(p.x), px(p.y)));
+        // A contrasting under-stroke keeps guides legible over every material.
+        line(window, &points, colors.panel, 3.5);
+        line(window, &points, colors.axis_ink[axis], 1.);
+        for (from, to) in [
+            (a + normal * 7., start + normal * 4.),
+            (b + normal * 7., end + normal * 4.),
+        ] {
+            let points = [from, to].map(|p| point(px(p.x), px(p.y)));
+            line(window, &points, colors.panel, 3.);
+            line(window, &points, colors.axis_ink[axis], 1.);
+        }
+        let midpoint = (start + end) * 0.5 + normal * 12.;
+        let position = point(px(midpoint.x), px(midpoint.y));
+        if !labels.iter().any(|label| {
+            label.intersects(&Bounds::new(
+                position - point(px(40.), px(10.)),
+                size(px(80.), px(20.)),
+            ))
+        }) && let Some(label) = measurement_label(
+            format!(
+                "{} {}",
+                ["X", "Y", "Z"][axis],
+                measurement_value(world.dimensions()[axis] as f64)
+            ),
+            position,
+            bounds,
+            colors.axis_ink[axis],
+            colors.panel,
+            window,
+            cx,
+        ) {
+            labels.push(label);
+        }
+    }
+    for [a, b] in &measurements.edges {
+        let (Some(start), Some(end), Some(midpoint)) = (
+            project(*a, matrix, bounds),
+            project(*b, matrix, bounds),
+            project((*a + *b) * 0.5, matrix, bounds),
+        ) else {
+            continue;
+        };
+        if mouse_point(start).distance(mouse_point(end)) < 34. {
+            continue;
+        }
+        let position = midpoint + point(px(0.), px(-13.));
+        if !labels.iter().any(|label| {
+            label.intersects(&Bounds::new(
+                position - point(px(32.), px(10.)),
+                size(px(64.), px(20.)),
+            ))
+        }) && let Some(label) = measurement_label(
+            measurement_value(a.as_dvec3().distance(b.as_dvec3())),
+            position,
+            bounds,
+            colors.accent,
+            colors.panel,
+            window,
+            cx,
+        ) {
+            labels.push(label);
+        }
     }
 }
 
@@ -227,6 +530,139 @@ pub(crate) struct BoxSelection {
 }
 
 impl Studio {
+    /// World-space extents of the visible selection, shared with verification
+    /// and independent of camera projection or measurement display preference.
+    pub(crate) fn selection_dimensions(&self) -> Option<Vec3> {
+        self.selection_measurements()
+            .bounds
+            .map(WorldBounds::dimensions)
+    }
+
+    fn selection_measurements(&self) -> Rc<SelectionMeasurements> {
+        let objects = self.selected_ids();
+        let components = self.component_elements();
+        let mut cache = self.measurement_cache.borrow_mut();
+        if let Some(cache) = cache.as_ref()
+            && cache.objects == objects
+            && cache.components == components
+            && cache.mode == self.edit_mode
+        {
+            return cache.values.clone();
+        }
+        let values = Rc::new(measure_selection(
+            &self.scene,
+            &objects,
+            &components,
+            self.edit_mode,
+        ));
+        *cache = Some(MeasurementCache {
+            objects,
+            components,
+            mode: self.edit_mode,
+            values: values.clone(),
+        });
+        values
+    }
+
+    fn orientation_gizmo(&self, cx: &mut Context<Self>) -> AnyElement {
+        let colors = self.theme_colors();
+        let view = self.scene.camera.view_matrix();
+        let mut directions = Vec::with_capacity(6);
+        for (axis, positive, negative, positive_hint, negative_hint) in [
+            (
+                0,
+                Command::ViewRight,
+                Command::ViewLeft,
+                "Right view · click again for Left",
+                "Left view · click again for Right",
+            ),
+            (
+                1,
+                Command::ViewTop,
+                Command::ViewBottom,
+                "Top view · click again for Bottom",
+                "Bottom view · click again for Top",
+            ),
+            (
+                2,
+                Command::ViewFront,
+                Command::ViewBack,
+                "Front view · click again for Back",
+                "Back view · click again for Front",
+            ),
+        ] {
+            for positive_axis in [false, true] {
+                let sign = if positive_axis { 1. } else { -1. };
+                let vector = view.transform_vector3(glam::Mat3::IDENTITY.col(axis) * sign);
+                let (target, opposite, hint) = if positive_axis {
+                    (positive, negative, positive_hint)
+                } else {
+                    (negative, positive, negative_hint)
+                };
+                let active = self.scene.camera.orthographic && vector.z > 0.99999;
+                directions.push((
+                    vector,
+                    axis,
+                    positive_axis,
+                    if active { opposite } else { target },
+                    hint,
+                    active,
+                ));
+            }
+        }
+        // Far-side handles paint first. Clicking the facing handle again reverses
+        // it, so the opposite view remains reachable when two handles coincide.
+        directions.sort_by(|a, b| a.0.z.total_cmp(&b.0.z));
+        let mut gizmo = div()
+            .absolute()
+            .top(px(12.))
+            .right(px(12.))
+            .w(px(108.))
+            .h(px(108.));
+        for (vector, axis, positive, command, hint, active) in directions {
+            let label = format!(
+                "{}{}",
+                if positive { "" } else { "−" },
+                ["X", "Y", "Z"][axis]
+            );
+            gizmo = gizmo.child(
+                div()
+                    .id(("view-axis", axis * 2 + usize::from(positive)))
+                    .absolute()
+                    .left(px(43. + vector.x * 34.))
+                    .top(px(43. - vector.y * 34.))
+                    .w(px(22.))
+                    .h(px(22.))
+                    .rounded_full()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .bg(rgb(if active { colors.active } else { colors.panel }))
+                    .border_1()
+                    .border_color(rgb(if positive {
+                        colors.axis_ink[axis]
+                    } else {
+                        colors.edge
+                    }))
+                    .text_size(px(10.))
+                    .text_color(rgb(colors.axis_ink[axis]))
+                    .cursor_pointer()
+                    .hover(move |style| style.bg(rgb(colors.active_hover)))
+                    .tooltip(move |_, cx| cx.new(|_| ViewHint(hint, colors)).into())
+                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                    .on_mouse_down(MouseButton::Right, |_, _, cx| cx.stop_propagation())
+                    .on_mouse_down(MouseButton::Middle, |_, _, cx| cx.stop_propagation())
+                    .on_scroll_wheel(|_, _, cx| cx.stop_propagation())
+                    .on_click(cx.listener(move |studio, _, window, cx| {
+                        cx.stop_propagation();
+                        studio.execute(command, window, cx);
+                    }))
+                    .child(label),
+            );
+        }
+        gizmo.into_any_element()
+    }
+
     pub(crate) fn finish_box_select(&mut self, cx: &mut Context<Self>) {
         let Some(selection) = self.box_select.take() else {
             return;
@@ -354,6 +790,10 @@ impl Studio {
 
     pub(crate) fn viewport(&self, cx: &mut Context<Self>) -> AnyElement {
         let t = self.theme_colors();
+        let measurements = self
+            .show_measurements
+            .then(|| self.selection_measurements());
+        let painted_measurements = measurements.clone();
         let geometry = self.selection_center().filter(|_| {
             self.selected
                 .is_some_and(|id| self.scene.is_effectively_visible(id))
@@ -492,6 +932,9 @@ impl Studio {
                         }
                     }
                 }
+                if let Some(measurements) = painted_measurements.as_ref() {
+                    paint_measurements(measurements, matrix, bounds, t, window, cx);
+                }
                 if let Some(center) = &geometry
                     && tool != Tool::Select
                 {
@@ -567,26 +1010,26 @@ impl Studio {
                         ));
                     }
                 }
-                // Compact world-space axis orientation indicator.
-                let origin = point(bounds.right() - px(46.), bounds.origin.y + px(94.));
+                // The endpoint buttons use these same projected world axes.
+                let origin = point(bounds.right() - px(66.), bounds.origin.y + px(66.));
                 for (vector, color) in [Vec3::X, Vec3::Y, Vec3::Z].into_iter().zip(crate::ui::AXIS)
                 {
                     let screen = view.transform_vector3(vector);
-                    let end = origin + point(px(screen.x * 23.), px(-screen.y * 23.));
-                    line(window, &[origin, end], color, 2.);
-                    window.paint_quad(fill(
-                        Bounds::new(end - point(px(2.5), px(2.5)), size(px(5.), px(5.))),
-                        rgb(color),
-                    ));
+                    for sign in [-1., 1.] {
+                        let end =
+                            origin + point(px(screen.x * 34. * sign), px(-screen.y * 34. * sign));
+                        line(
+                            window,
+                            &[origin, end],
+                            color,
+                            if sign > 0. { 2. } else { 1. },
+                        );
+                    }
                 }
             },
         )
         .size_full();
-        let view_label = if camera.orthographic {
-            "User orthographic"
-        } else {
-            "User perspective"
-        };
+        let view_label = camera_view_label(camera);
         let selection_label = self
             .selected_object()
             .map(|o| o.name.clone())
@@ -613,6 +1056,7 @@ impl Studio {
                 s.scroll_wheel(event, cx);
             }))
             .child(canvas)
+            .child(self.orientation_gizmo(cx))
             .child(
                 div()
                     .absolute()
@@ -632,6 +1076,65 @@ impl Studio {
                             .child(selection_label),
                     ),
             );
+        if let Some(measurements) = measurements {
+            let mut panel = div()
+                .absolute()
+                .bottom(px(
+                    if self
+                        .transform_drag
+                        .as_ref()
+                        .is_some_and(|drag| drag.error.is_some())
+                    {
+                        100.
+                    } else if self.transform_drag.is_some() {
+                        58.
+                    } else {
+                        16.
+                    },
+                ))
+                .right(px(16.))
+                .px(px(11.))
+                .py(px(9.))
+                .rounded(px(6.))
+                .bg(rgb(t.panel))
+                .border_1()
+                .border_color(rgb(t.edge))
+                .text_size(px(11.))
+                .text_color(rgb(t.muted))
+                .child("World dimensions · m");
+            if let Some(bounds) = measurements.bounds {
+                let mut dimensions = div().flex().gap(px(14.)).mt(px(5.));
+                for axis in 0..3 {
+                    dimensions =
+                        dimensions.child(div().text_color(rgb(t.axis_ink[axis])).child(format!(
+                            "{} {}",
+                            ["X", "Y", "Z"][axis],
+                            measurement_value(bounds.dimensions()[axis] as f64)
+                        )));
+                }
+                panel = panel.child(dimensions);
+                if measurements.edge_count > 0 {
+                    panel = panel.child(div().mt(px(5.)).text_color(rgb(t.text)).child(format!(
+                        "{} edge{} · total {} m",
+                        measurements.edge_count,
+                        if measurements.edge_count == 1 {
+                            ""
+                        } else {
+                            "s"
+                        },
+                        measurement_value(measurements.edge_length)
+                    )));
+                }
+            } else {
+                panel = panel.child(
+                    div()
+                        .mt(px(5.))
+                        .text_color(rgb(t.text))
+                        .child("Select geometry to measure"),
+                );
+            }
+            viewport = viewport.child(panel);
+        }
         if self.frame.is_none() {
             viewport = viewport.child(
                 div()
@@ -656,13 +1159,20 @@ impl Studio {
             );
         }
         if let Some(drag) = &self.transform_drag {
+            let label = drag
+                .mesh_tool
+                .map(|tool| format!("{tool:?}"))
+                .unwrap_or_else(|| format!("{:?}", drag.tool));
             let text = format!(
-                "{:?}  {}  {}    ·    Click / Return to apply    Esc to cancel",
-                drag.tool,
-                drag.constraint
-                    .axis
-                    .map(|axis| ["X", "Y", "Z"][axis])
-                    .unwrap_or("Free"),
+                "{}  {}  {}    ·    Enter to apply · Esc to cancel",
+                label,
+                if drag.mesh_tool == Some(crate::modelling::MeshTool::Bevel) {
+                    "All edges".into()
+                } else if drag.mesh_tool == Some(crate::modelling::MeshTool::Inset) {
+                    "Face region".into()
+                } else {
+                    drag.constraint.label()
+                },
                 drag.numeric
             );
             viewport = viewport.child(
@@ -670,6 +1180,7 @@ impl Studio {
                     .absolute()
                     .bottom(px(16.))
                     .left(px(16.))
+                    .max_w(gpui::relative(0.95))
                     .px(px(11.))
                     .py(px(7.))
                     .rounded(px(7.))
@@ -678,7 +1189,15 @@ impl Studio {
                     .border_color(rgb(t.accent_line))
                     .text_color(rgb(t.accent))
                     .text_size(px(11.))
-                    .child(text),
+                    .child(text)
+                    .when_some(drag.error.as_ref(), |d, error| {
+                        d.child(
+                            div()
+                                .mt(px(4.))
+                                .text_color(rgb(t.alert))
+                                .child(error.clone()),
+                        )
+                    }),
             );
         }
         viewport.into_any_element()
@@ -725,6 +1244,7 @@ impl Studio {
             || self.help_open
             || self.palette_open
             || self.theme_picker.is_some()
+            || self.stl_dialog.is_some()
     }
 
     pub(crate) fn mouse_down(
@@ -733,6 +1253,10 @@ impl Studio {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.stl_dialog.is_some() {
+            cx.stop_propagation();
+            return;
+        }
         if self.theme_picker.is_some() {
             self.cancel_theme(cx);
             cx.stop_propagation();
@@ -914,6 +1438,10 @@ impl Studio {
         _: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.stl_dialog.is_some() {
+            cx.stop_propagation();
+            return;
+        }
         let position = mouse_point(event.position);
         if self.preview_open {
             cx.stop_propagation();
@@ -979,6 +1507,149 @@ fn segment_distance(p: Vec2, a: Vec2, b: Vec2) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn measurement_bounds_handle_empty_flat_and_invalid_points() {
+        assert_eq!(WorldBounds::from_points([]), None);
+        assert_eq!(WorldBounds::from_points([Vec3::splat(f32::NAN)]), None);
+        let bounds = WorldBounds::from_points([
+            Vec3::new(-3., 4., 0.),
+            Vec3::new(2., -1., 0.),
+            Vec3::splat(f32::INFINITY),
+        ])
+        .unwrap();
+        assert_eq!(bounds.min, Vec3::new(-3., -1., 0.));
+        assert_eq!(bounds.dimensions(), Vec3::new(5., 5., 0.));
+    }
+
+    #[test]
+    fn measurement_bounds_include_parent_rotation_and_negative_scale() {
+        let mut scene = forma_core::Scene::empty();
+        let parent = scene.add_empty("Assembly").unwrap();
+        let child = scene.add(forma_core::Primitive::Cube);
+        scene.set_parent(child, Some(parent), false).unwrap();
+        scene.object_mut(parent).unwrap().transform.translation = Vec3::new(10., 20., 30.);
+        scene.object_mut(parent).unwrap().transform.rotation.z = std::f32::consts::FRAC_PI_2;
+        scene.object_mut(child).unwrap().transform.scale = Vec3::new(-2., 3., 4.);
+        let values = measure_selection(&scene, &[child].into(), &BTreeSet::new(), EditMode::Object);
+        let bounds = values.bounds.unwrap();
+        assert!((bounds.dimensions() - Vec3::new(6., 4., 8.)).length() < 0.00001);
+        assert!(((bounds.min + bounds.max) * 0.5 - Vec3::new(10., 20., 30.)).length() < 0.00001);
+        scene.object_mut(parent).unwrap().visible = false;
+        assert!(
+            measure_selection(&scene, &[child].into(), &BTreeSet::new(), EditMode::Object)
+                .bounds
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn measurement_bounds_combine_objects_and_limit_component_selection() {
+        use forma_core::MeshElement;
+        let mut scene = forma_core::Scene::empty();
+        let left = scene.add(forma_core::Primitive::Cube);
+        let right = scene.add(forma_core::Primitive::Cube);
+        scene.object_mut(right).unwrap().transform.translation.x = 6.;
+        let values = measure_selection(
+            &scene,
+            &[left, right].into(),
+            &BTreeSet::new(),
+            EditMode::Object,
+        );
+        assert_eq!(values.bounds.unwrap().dimensions(), Vec3::new(8., 2., 2.));
+        let values = measure_selection(
+            &scene,
+            &[left].into(),
+            &[MeshElement::Edge([0, 1])].into(),
+            EditMode::Edge,
+        );
+        assert_eq!(values.bounds.unwrap().dimensions(), Vec3::new(2., 0., 0.));
+        assert!(
+            measure_selection(&scene, &[left].into(), &BTreeSet::new(), EditMode::Vertex)
+                .bounds
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn measurement_edge_totals_use_world_lengths_and_count_each_edge_once() {
+        use forma_core::MeshElement;
+        let mut scene = forma_core::Scene::empty();
+        let id = scene.add(forma_core::Primitive::Cube);
+        scene.object_mut(id).unwrap().transform.scale = Vec3::new(-2., 3., 4.);
+        scene.object_mut(id).unwrap().transform.rotation.z = 0.37;
+        let components = [
+            MeshElement::Edge([0, 1]),
+            MeshElement::Edge([1, 0]),
+            MeshElement::Edge([1, 2]),
+            MeshElement::Edge([0, 999]),
+        ]
+        .into();
+        let values = measure_selection(&scene, &[id].into(), &components, EditMode::Edge);
+        assert_eq!(values.edge_count, 2);
+        assert!((values.edge_length - 10.).abs() < 0.00001);
+        assert_eq!(values.edges.len(), 2);
+    }
+
+    #[test]
+    fn measurement_labels_are_bounded_while_edge_totals_are_complete() {
+        let mut scene = forma_core::Scene::empty();
+        let id = scene.add(forma_core::Primitive::Sphere);
+        let edges = scene.object_mesh(id).unwrap().edges();
+        let expected: f64 = edges
+            .iter()
+            .map(|[a, b]| {
+                let mesh = scene.object_mesh(id).unwrap();
+                mesh.positions[*a as usize]
+                    .as_dvec3()
+                    .distance(mesh.positions[*b as usize].as_dvec3())
+            })
+            .sum();
+        let components = edges
+            .iter()
+            .copied()
+            .map(forma_core::MeshElement::Edge)
+            .collect();
+        let values = measure_selection(&scene, &[id].into(), &components, EditMode::Edge);
+        assert!(values.edge_count > 12);
+        assert_eq!(values.edge_count, edges.len());
+        assert_eq!(values.edges.len(), 12);
+        assert!((values.edge_length - expected).abs() < 0.00001);
+    }
+
+    #[test]
+    fn measurement_values_preserve_small_lengths_and_trim_padding() {
+        assert_eq!(measurement_value(0.), "0");
+        assert_eq!(measurement_value(12.500), "12.5");
+        assert_eq!(measurement_value(100.), "100");
+        assert_eq!(measurement_value(0.00001), "1.000e-5");
+        assert_eq!(measurement_value(1_000_000.), "1.000e6");
+    }
+
+    #[test]
+    fn named_views_cover_both_sides_of_every_axis() {
+        use std::f32::consts::{FRAC_PI_2, PI};
+        for (yaw, pitch, label) in [
+            (0., 0., "Front orthographic"),
+            (PI, 0., "Back orthographic"),
+            (FRAC_PI_2, 0., "Right orthographic"),
+            (-FRAC_PI_2, 0., "Left orthographic"),
+            (0., FRAC_PI_2, "Top orthographic"),
+            (0., -FRAC_PI_2, "Bottom orthographic"),
+        ] {
+            let camera = forma_core::Camera {
+                yaw,
+                pitch,
+                orthographic: true,
+                ..Default::default()
+            };
+            assert_eq!(camera_view_label(camera), label);
+        }
+        assert_eq!(
+            camera_view_label(forma_core::Camera::default()),
+            "User perspective"
+        );
+    }
 
     #[test]
     fn component_picking_targets_vertices_and_polygon_edges() {

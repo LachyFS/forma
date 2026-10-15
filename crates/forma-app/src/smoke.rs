@@ -1079,6 +1079,78 @@ async fn check_panel_resize(window: WindowHandle<Studio>, cx: &mut AsyncApp) -> 
     Ok(())
 }
 
+async fn check_export_formats(window: WindowHandle<Studio>, cx: &mut AsyncApp) -> Result<()> {
+    window.update(cx, |s, w, cx| -> Result<()> {
+        s.execute(Command::TogglePalette, w, cx);
+        s.palette_exports_only = true;
+        let items = s.palette_items();
+        ensure!(
+            s.palette_open
+                && s.palette_query.is_empty()
+                && items.len() == 3
+                && [Command::ExportObj, Command::ExportStl, Command::ExportImage]
+                    .iter()
+                    .all(|expected| items.iter().any(|(_, _, command)| command == expected)),
+            "Formats did not show exactly OBJ, STL and image export"
+        );
+        cx.notify();
+        Ok(())
+    })??;
+    keys(window, &["p", "n", "g"], cx).await?;
+    window.update(cx, |s, _, _| -> Result<()> {
+        let items = s.palette_items();
+        ensure!(
+            items.len() == 1 && items[0].2 == Command::ExportImage,
+            "Formats did not find PNG image export by extension"
+        );
+        Ok(())
+    })??;
+    keys(
+        window,
+        &["backspace", "backspace", "backspace", "s", "t", "l"],
+        cx,
+    )
+    .await?;
+    window.update(cx, |s, _, _| -> Result<()> {
+        let items = s.palette_items();
+        ensure!(
+            items.len() == 1 && items[0].2 == Command::ExportStl,
+            "Formats search did not stay scoped to STL export"
+        );
+        Ok(())
+    })??;
+    keys(window, &["enter"], cx).await?;
+    window.update(cx, |s, _, _| -> Result<()> {
+        ensure!(
+            !s.palette_open
+                && s.stl_dialog.is_some_and(|dialog| {
+                    dialog.direction == crate::exchange::StlDirection::Export
+                }),
+            "Formats keyboard selection did not open STL export options"
+        );
+        Ok(())
+    })??;
+    keys(
+        window,
+        &["escape", platform_shortcut("cmd-k", "ctrl-k")],
+        cx,
+    )
+    .await?;
+    window.update(cx, |s, _, _| -> Result<()> {
+        ensure!(
+            s.palette_open
+                && !s.palette_exports_only
+                && s.palette_query.is_empty()
+                && s.palette_items().len() > 3,
+            "Commands did not restore the unrestricted palette after Formats"
+        );
+        Ok(())
+    })??;
+    keys(window, &["escape"], cx).await?;
+    println!("export_formats=three_formats_scoped_search_keyboard_dispatch_normal_reset_pass");
+    Ok(())
+}
+
 async fn run(window: WindowHandle<Studio>, output: PathBuf, cx: &mut AsyncApp) -> Result<()> {
     std::fs::create_dir_all(&output)?;
     settle(window, cx).await?;
@@ -1096,6 +1168,7 @@ async fn run(window: WindowHandle<Studio>, output: PathBuf, cx: &mut AsyncApp) -
     check_theme_workflow(window, &output, cx).await?;
     check_preview_workflow(window, &output, cx).await?;
     check_shader_workflow(window, cx).await?;
+    check_export_formats(window, cx).await?;
     let palette_key = platform_shortcut("cmd-k", "ctrl-k");
     keys(window, &[palette_key, palette_key], cx).await?;
     window.update(cx, |s, _, _| -> Result<()> {
@@ -1292,6 +1365,9 @@ async fn run(window: WindowHandle<Studio>, output: PathBuf, cx: &mut AsyncApp) -
     })??;
     println!("trackpad_navigation_pass");
     check_modelling_workflow(window, cx).await?;
+    check_precision_finishing_workflow(window, cx).await?;
+    check_exchange_object_workflow(window, &output, cx).await?;
+    check_numeric_entry_workflow(window, cx).await?;
     keys(window, &["0"], cx).await?;
     let (id, before_x) = window.update(cx, |s, w, cx| {
         s.execute(Command::Add(Primitive::Cube), w, cx);
@@ -1572,7 +1648,7 @@ async fn run(window: WindowHandle<Studio>, output: PathBuf, cx: &mut AsyncApp) -
     std::fs::write(
         output.join("native-smoke.txt"),
         format!(
-            "PASS: real GPUI window; deterministic material preview; studio/world/contact lighting; preview numeric input without document or history mutation; valid/invalid/stale HDR loading; preview export with a 4096-sample path target; material-preview orbit; searchable command palette; four mode keyboard shortcuts and GPU frames; continuous orbit through pointer handlers at 8ms intervals ({presentations} frames presented); constrained numeric move; undo/redo; cancel; face extrusion; subdivision; numeric exposure; object rename; sRGB material input; exact top view; project/OBJ persistence; duplicate/delete/undo; resize; background save snapshot and dirty guard; stale-open rejection; background open/import/export; concurrent PNG export. Renderer: {device}. Native file-picker and OS pointer routing are separate manual checks.\n"
+            "PASS: real GPUI window; deterministic material preview; studio/world/contact lighting; preview numeric input without document or history mutation; valid/invalid/stale HDR loading; preview export with a 4096-sample path target; material-preview orbit; searchable command palette; four mode keyboard shortcuts and GPU frames; continuous orbit through pointer handlers at 8ms intervals ({presentations} frames presented); constrained numeric move; undo/redo; cancel; face extrusion; subdivision; numeric exposure; object rename; sRGB material input; exact top view; project/OBJ persistence; duplicate/delete/undo; resize; background save snapshot and dirty guard; stale-open rejection; background open/import/export; concurrent PNG export.\nPrecision: contextual units and arithmetic; dimensions; bevel including mirrored winding; triangulation and normals; framing and measurements; object scale/rotation/origin transactions; STL units, selected scope, immutable export, atomic import and stale guard; exact clipboard input; Tab/Shift+Tab validation and minimal scrolling at minimum window size.\nRenderer: {device}. Native file-picker and OS pointer routing are separate manual checks.\n"
         ),
     )?;
     Ok(())
@@ -1830,6 +1906,865 @@ fn capture_window(studio: &Studio, _window: &gpui::Window, path: &std::path::Pat
     println!(
         "viewport_capture={} (full-window capture is available on macOS)",
         path.display()
+    );
+    Ok(())
+}
+
+async fn check_precision_finishing_workflow(
+    window: WindowHandle<Studio>,
+    cx: &mut AsyncApp,
+) -> Result<()> {
+    use glam::Vec3;
+    let saved = window.update(cx, |s, _, cx| {
+        let saved = (
+            s.scene.clone(),
+            std::mem::take(&mut s.history),
+            s.selected,
+            s.edit_mode,
+            s.component_elements(),
+            s.settings.clone(),
+            s.tool,
+            s.dirty,
+            s.objects_selected.clone(),
+            s.show_measurements,
+        );
+        s.scene = Scene::empty();
+        s.selected = Some(s.scene.add(Primitive::Cube));
+        s.objects_selected.clear();
+        s.clear_components();
+        s.edit_mode = EditMode::Object;
+        s.settings.mode = RenderMode::Solid;
+        s.invalidate(true, cx);
+        saved
+    })?;
+    let before_invalid = window.update(cx, |s, _, _| s.scene.clone())?;
+    preview_field(window, Field::Dimensions(0), "0mm", cx).await?;
+    window.update(cx, |s, _, _| -> Result<()> {
+        ensure!(
+            s.scene == before_invalid && !s.history.can_undo() && s.active_field.is_some(),
+            "Invalid dimension changed geometry/history or discarded editable input"
+        );
+        Ok(())
+    })??;
+    keys(window, &["escape"], cx).await?;
+    preview_field(window, Field::Dimensions(0), "250mm", cx).await?;
+    window.update(cx, |s, w, cx| -> Result<()> {
+        let object = s.selected_object().unwrap();
+        ensure!(
+            (object.transform.scale.x - 0.125).abs() < 1e-6,
+            "Dimension in millimetres was not applied exactly"
+        );
+        ensure!(
+            (s.selection_dimensions().unwrap().x - 0.25).abs() < 1e-6,
+            "World measurement did not update after an exact dimension edit"
+        );
+        s.execute(Command::Undo, w, cx);
+        ensure!(
+            (s.selected_object().unwrap().transform.scale.x - 1.).abs() < 1e-6,
+            "Dimensions did not undo in one step"
+        );
+        ensure!(
+            (s.selection_dimensions().unwrap().x - 2.).abs() < 1e-6,
+            "World measurement retained stale dimensions after undo"
+        );
+        Ok(())
+    })??;
+    preview_field(window, Field::Translation(0), "1/8in", cx).await?;
+    window.update(cx, |s, w, cx| -> Result<()> {
+        ensure!(
+            (s.selected_object().unwrap().transform.translation.x - 0.003175).abs() < 1e-7,
+            "Fractional inch expression failed in inspector"
+        );
+        s.execute(Command::Undo, w, cx);
+        Ok(())
+    })??;
+    keys(
+        window,
+        &["g", "x", "cmd-c", "cmd-z", "2", "5", "m", "m", "enter"],
+        cx,
+    )
+    .await?;
+    window.update(cx, |s, w, cx| -> Result<()> {
+        ensure!(
+            (s.selected_object().unwrap().transform.translation.x - 0.025).abs() < 1e-6,
+            "Modal transform did not accept distance units"
+        );
+        s.execute(Command::Undo, w, cx);
+        Ok(())
+    })??;
+    keys(window, &["r", "z", "1", "r", "a", "d", "enter"], cx).await?;
+    window.update(cx, |s, w, cx| -> Result<()> {
+        ensure!(
+            (s.selected_object().unwrap().transform.rotation.z - 1.).abs() < 1e-5,
+            "Modal rotation did not accept radians"
+        );
+        s.execute(Command::Undo, w, cx);
+        Ok(())
+    })??;
+    let original = window.update(cx, |s, _, _| s.scene.clone())?;
+    keys(window, &["cmd-b", "5", "0", "m", "m", "enter"], cx).await?;
+    window.update(cx, |s, w, cx| -> Result<()> {
+        ensure!(s.transform_drag.is_none(), "Valid bevel remained modal");
+        ensure!(
+            s.selected_object().unwrap().mesh.faces.len() == 26,
+            "Cube bevel topology is incorrect"
+        );
+        s.scene.validate()?;
+        s.execute(Command::Undo, w, cx);
+        ensure!(s.scene == original, "Bevel did not undo as one transaction");
+        s.execute(Command::Redo, w, cx);
+        ensure!(
+            s.selected_object().unwrap().mesh.faces.len() == 26,
+            "Bevel redo failed"
+        );
+        s.execute(Command::Undo, w, cx);
+        Ok(())
+    })??;
+    window.update(cx, |s, _, cx| {
+        s.scene
+            .object_mut(s.selected.unwrap())
+            .unwrap()
+            .transform
+            .scale
+            .x = -1.;
+        s.invalidate(true, cx);
+    })?;
+    keys(window, &["cmd-b", "5", "0", "m", "m", "enter"], cx).await?;
+    window.update(cx, |s, w, cx| -> Result<()> {
+        let mesh = s.scene.object_mesh(s.selected.unwrap()).unwrap();
+        ensure!(
+            mesh.faces.len() == 26
+                && mesh.faces.iter().enumerate().all(|(index, face)| {
+                    let center = face
+                        .iter()
+                        .map(|&vertex| mesh.positions[vertex as usize])
+                        .sum::<Vec3>()
+                        / face.len() as f32;
+                    mesh.face_normal(index).dot(center) > 0.
+                }),
+            "Mirrored bevel inverted local winding and rendered surface normals"
+        );
+        s.execute(Command::Undo, w, cx);
+        s.scene
+            .object_mut(s.selected.unwrap())
+            .unwrap()
+            .transform
+            .scale
+            .x = 1.;
+        s.invalidate(true, cx);
+        ensure!(
+            s.scene == original,
+            "Mirrored bevel undo lost the source geometry"
+        );
+        Ok(())
+    })??;
+    keys(window, &["cmd-b", "9", "9", "m", "enter"], cx).await?;
+    window.update(cx, |s, _, _| -> Result<()> {
+        ensure!(s.transform_drag.is_some(), "Oversized bevel was committed");
+        ensure!(s.scene == original, "Rejected bevel changed the scene");
+        Ok(())
+    })??;
+    keys(window, &["escape"], cx).await?;
+    window.update(cx, |s, w, cx| -> Result<()> {
+        ensure!(
+            s.scene == original,
+            "Bevel cancellation failed to restore original"
+        );
+        s.execute(Command::SetEditMode(EditMode::Face), w, cx);
+        s.set_components([forma_core::MeshElement::Face(0)].into_iter().collect());
+        s.execute(Command::Triangulate, w, cx);
+        ensure!(
+            s.selected_object().unwrap().mesh.faces.len() == 7 && s.component_elements().len() == 2,
+            "Triangulation failed to preserve selected replacement faces"
+        );
+        s.execute(Command::Undo, w, cx);
+        s.set_components([forma_core::MeshElement::Face(0)].into_iter().collect());
+        let before = s.selected_object().unwrap().mesh.face_normal(0);
+        s.execute(Command::FlipNormals, w, cx);
+        ensure!(
+            s.selected_object().unwrap().mesh.face_normal(0).dot(before) < -0.99,
+            "Flip normals did not reverse selected face"
+        );
+        s.execute(Command::RecalculateNormals, w, cx);
+        ensure!(
+            s.selected_object().unwrap().mesh.face_normal(0).dot(before) > 0.99,
+            "Normals repair did not orient cube outward"
+        );
+        s.execute(Command::SetEditMode(EditMode::Object), w, cx);
+        s.execute(Command::Triangulate, w, cx);
+        ensure!(
+            s.component_elements().is_empty(),
+            "Object triangulation retained stale component selections"
+        );
+        s.execute(Command::Undo, w, cx);
+        let hidden = s.scene.add(Primitive::Cube);
+        s.scene.object_mut(hidden).unwrap().transform.translation = Vec3::splat(10000.);
+        s.scene.object_mut(hidden).unwrap().visible = false;
+        s.execute(Command::FrameAll, w, cx);
+        ensure!(
+            s.scene.camera.target.length() < 1e-4 && s.scene.camera.distance < 20.,
+            "Frame all included hidden geometry"
+        );
+        Ok(())
+    })??;
+    keys(window, &["alt-1"], cx).await?;
+    window.update(cx, |s, _, _| -> Result<()> {
+        ensure!(
+            (s.scene.camera.yaw - std::f32::consts::PI).abs() < 1e-5,
+            "Back view shortcut failed"
+        );
+        ensure!(
+            (s.selection_dimensions().unwrap() - Vec3::splat(2.)).length() < 1e-5,
+            "Camera changes altered world dimensions"
+        );
+        Ok(())
+    })??;
+    keys(window, &["alt-7"], cx).await?;
+    window.update(cx, |s, w, cx| -> Result<()> {
+        ensure!(
+            (s.scene.camera.pitch + std::f32::consts::FRAC_PI_2).abs() < 1e-5,
+            "Bottom view shortcut failed"
+        );
+        let scene = s.scene.clone();
+        let samples = s.samples;
+        let dirty = s.dirty;
+        let frame = s.frame_image.clone();
+        let enabled = s.show_measurements;
+        s.execute(Command::ToggleMeasurements, w, cx);
+        ensure!(
+            s.show_measurements != enabled
+                && s.scene == scene
+                && s.samples == samples
+                && s.dirty == dirty,
+            "Measurement overlay mutated the document or reset rendering"
+        );
+        ensure!(
+            match (&frame, &s.frame_image) {
+                (Some(a), Some(b)) => std::sync::Arc::ptr_eq(a, b),
+                (None, None) => true,
+                _ => false,
+            },
+            "Measurements replaced the rendered frame"
+        );
+        Ok(())
+    })??;
+    // Let the real GPUI overlay paint once before restoring the prior document.
+    Timer::after(Duration::from_millis(120)).await;
+    window.update(cx, |s, _, cx| {
+        s.scene = saved.0;
+        s.history = saved.1;
+        s.selected = saved.2;
+        s.edit_mode = saved.3;
+        s.set_components(saved.4);
+        s.settings = saved.5;
+        s.tool = saved.6;
+        s.dirty = saved.7;
+        s.objects_selected = saved.8;
+        s.show_measurements = saved.9;
+        s.active_field = None;
+        s.invalidate(true, cx);
+    })?;
+    println!(
+        "precision_finishing=units,dimensions,bevel,undo,redo,cancel,triangulate,normals,views,measurements PASS"
+    );
+    Ok(())
+}
+
+async fn check_numeric_entry_workflow(
+    window: WindowHandle<Studio>,
+    cx: &mut AsyncApp,
+) -> Result<()> {
+    let saved = window.update(cx, |s, w, cx| {
+        let saved = (
+            s.scene.clone(),
+            std::mem::take(&mut s.history),
+            s.selected,
+            s.edit_mode,
+            s.component_elements(),
+            s.settings.clone(),
+            s.tool,
+            s.dirty,
+            s.objects_selected.clone(),
+            cx.read_from_clipboard(),
+        );
+        s.scene = Scene::empty();
+        s.selected = Some(s.scene.add(Primitive::Cube));
+        s.objects_selected.clear();
+        s.clear_components();
+        s.edit_mode = EditMode::Object;
+        s.settings.mode = RenderMode::Solid;
+        s.active_field = None;
+        s.invalidate(true, cx);
+        s.begin_field(Field::Translation(0), w, cx);
+        cx.write_to_clipboard(gpui::ClipboardItem::new_string("1/8in".into()));
+        saved
+    })?;
+    keys(window, &["cmd-v", "cmd-c", "cmd-a", "tab"], cx).await?;
+    window.update(cx, |s, w, cx| -> Result<()> {
+        ensure!(
+            cx.read_from_clipboard()
+                .and_then(|item| item.text())
+                .as_deref()
+                == Some("1/8in"),
+            "Copy did not preserve the exact inspector expression"
+        );
+        ensure!(
+            s.field_is_active(Field::Translation(1))
+                && (s.selected_object().unwrap().transform.translation.x - 0.003175).abs() < 1e-7,
+            "Tab failed to commit a changed expression after Select All"
+        );
+        s.execute(Command::Undo, w, cx);
+        ensure!(
+            s.selected_object().unwrap().transform.translation.x == 0. && !s.history.can_undo(),
+            "Inspector Tab did not create exactly one undo step"
+        );
+        s.begin_field(Field::Rotation(0), w, cx);
+        Ok(())
+    })??;
+    keys(window, &["cmd-a", "tab", "shift-tab"], cx).await?;
+    window.update(cx, |s, w, cx| -> Result<()> {
+        ensure!(
+            s.field_is_active(Field::Rotation(0)) && !s.history.can_undo(),
+            "Untouched Tab/Shift+Tab created history or navigated incorrectly"
+        );
+        s.begin_field(Field::Scale(0), w, cx);
+        cx.write_to_clipboard(gpui::ClipboardItem::new_string("0".into()));
+        Ok(())
+    })??;
+    keys(window, &["cmd-v", "tab", "shift-tab"], cx).await?;
+    window.update(cx, |s, _, cx| -> Result<()> {
+        ensure!(
+            s.field_is_active(Field::Scale(0))
+                && s.field_value(Field::Scale(0)) == "0"
+                && s.selected_object().unwrap().transform.scale.x == 1.
+                && !s.history.can_undo(),
+            "Invalid Tab lost editable input, advanced focus or changed history"
+        );
+        cx.write_to_clipboard(gpui::ClipboardItem::new_string("2".into()));
+        Ok(())
+    })??;
+    keys(window, &["cmd-a", "cmd-v", "shift-tab"], cx).await?;
+    window.update(cx, |s, w, cx| -> Result<()> {
+        ensure!(
+            s.field_is_active(Field::Rotation(2))
+                && s.selected_object().unwrap().transform.scale.x == 2.,
+            "Shift+Tab did not commit corrected scale and focus the preceding field"
+        );
+        s.execute(Command::Undo, w, cx);
+        ensure!(
+            !s.history.can_undo(),
+            "Corrected inspector input committed more than once"
+        );
+        s.begin_field(Field::Name, w, cx);
+        cx.write_to_clipboard(gpui::ClipboardItem::new_string("x".repeat(129)));
+        Ok(())
+    })??;
+    keys(window, &["cmd-v"], cx).await?;
+    window.update(cx, |s, _, cx| -> Result<()> {
+        ensure!(
+            s.field_value(Field::Name) == "Cube" && s.field_selection_active(Field::Name),
+            "Oversized replacement paste cleared the original text or selection"
+        );
+        cx.write_to_clipboard(gpui::ClipboardItem::new_string("é".repeat(64)));
+        Ok(())
+    })??;
+    keys(window, &["cmd-v"], cx).await?;
+    window.update(cx, |s, _, cx| -> Result<()> {
+        ensure!(
+            s.field_value(Field::Name) == "é".repeat(64),
+            "128-byte Unicode paste was not retained exactly"
+        );
+        cx.write_to_clipboard(gpui::ClipboardItem::new_string("a".into()));
+        Ok(())
+    })??;
+    keys(window, &["cmd-v", "cmd-c"], cx).await?;
+    window.update(cx, |s, _, cx| -> Result<()> {
+        ensure!(
+            s.field_value(Field::Name) == "é".repeat(64)
+                && cx.read_from_clipboard().and_then(|item| item.text()) == Some("é".repeat(64)),
+            "Oversized append truncated UTF-8 text or copy changed it"
+        );
+        Ok(())
+    })??;
+    keys(window, &["escape"], cx).await?;
+    window.update(cx, |s, w, cx| {
+        s.begin_field(Field::Translation(0), w, cx);
+        cx.write_to_clipboard(gpui::ClipboardItem::new_string("1m;\n2m".into()));
+    })?;
+    keys(window, &["cmd-v"], cx).await?;
+    window.update(cx, |s, _, _| -> Result<()> {
+        ensure!(
+            s.field_value(Field::Translation(0)) == "0"
+                && s.field_selection_active(Field::Translation(0)),
+            "Partially invalid paste mutated the selected expression"
+        );
+        Ok(())
+    })??;
+    keys(window, &["2", "cmd-a", "delete"], cx).await?;
+    window.update(cx, |s, _, _| -> Result<()> {
+        ensure!(
+            s.field_value(Field::Translation(0)).is_empty()
+                && !s.field_selection_active(Field::Translation(0)),
+            "Delete did not remove and clear the whole-text selection"
+        );
+        Ok(())
+    })??;
+    keys(window, &["escape"], cx).await?;
+    window.update(cx, |s, w, cx| {
+        let id = s.selected.unwrap();
+        s.scene.object_material_mut(id).unwrap().roughness = 1.;
+        s.invalidate(true, cx);
+        s.begin_field(Field::Roughness, w, cx);
+        cx.write_to_clipboard(gpui::ClipboardItem::new_string("2".into()));
+    })?;
+    keys(window, &["cmd-v", "tab"], cx).await?;
+    window.update(cx, |s, _, _| -> Result<()> {
+        ensure!(
+            s.field_is_active(Field::Metallic)
+                && !s.history.can_undo()
+                && s.selected_object().unwrap().material.roughness == 1.,
+            "A clamped no-op edit created an undo step or prevented Tab navigation"
+        );
+        Ok(())
+    })??;
+    keys(window, &["escape", "g", "x"], cx).await?;
+    window.update(cx, |_, _, cx| {
+        cx.write_to_clipboard(gpui::ClipboardItem::new_string("25mm".into()))
+    })?;
+    keys(window, &["cmd-v", "cmd-c"], cx).await?;
+    window.update(cx, |s, _, cx| -> Result<()> {
+        ensure!(
+            (s.selected_object().unwrap().transform.translation.x - 0.025).abs() < 1e-7
+                && cx
+                    .read_from_clipboard()
+                    .and_then(|item| item.text())
+                    .as_deref()
+                    == Some("25mm"),
+            "Modal paste/copy did not preserve and preview the exact expression"
+        );
+        cx.write_to_clipboard(gpui::ClipboardItem::new_string("+5mm".into()));
+        Ok(())
+    })??;
+    keys(window, &["cmd-v"], cx).await?;
+    window.update(cx, |s, _, cx| -> Result<()> {
+        ensure!(
+            s.transform_drag.as_ref().unwrap().numeric == "25mm+5mm"
+                && (s.selected_object().unwrap().transform.translation.x - 0.03).abs() < 1e-7,
+            "Modal paste without selection failed to append"
+        );
+        cx.write_to_clipboard(gpui::ClipboardItem::new_string("1/8in".into()));
+        Ok(())
+    })??;
+    keys(window, &["cmd-a", "cmd-v", "enter"], cx).await?;
+    window.update(cx, |s, w, cx| -> Result<()> {
+        ensure!(
+            s.transform_drag.is_none()
+                && (s.selected_object().unwrap().transform.translation.x - 0.003175).abs() < 1e-7,
+            "Modal Select All/paste did not replace and commit the expression"
+        );
+        s.execute(Command::Undo, w, cx);
+        ensure!(
+            !s.history.can_undo(),
+            "Modal text editing created more than one undo checkpoint"
+        );
+        cx.write_to_clipboard(gpui::ClipboardItem::new_string("1".repeat(129)));
+        Ok(())
+    })??;
+    keys(window, &["g", "x", "2", "cmd-a", "cmd-v"], cx).await?;
+    window.update(cx, |s, _, _| -> Result<()> {
+        let drag = s.transform_drag.as_ref().unwrap();
+        ensure!(
+            drag.numeric == "2" && drag.numeric_replace,
+            "Oversized modal paste lost the previous expression or selection"
+        );
+        Ok(())
+    })??;
+    keys(window, &["delete"], cx).await?;
+    window.update(cx, |s, _, _| -> Result<()> {
+        let drag = s.transform_drag.as_ref().unwrap();
+        ensure!(
+            drag.numeric.is_empty() && !drag.numeric_replace,
+            "Modal Delete did not clear text and selection together"
+        );
+        Ok(())
+    })??;
+    keys(window, &["escape"], cx).await?;
+    let original_size = window.update(cx, |s, w, cx| {
+        let original = w.viewport_size();
+        w.resize(size(px(1000.), px(650.)));
+        s.begin_field(Field::Name, w, cx);
+        original
+    })?;
+    keys(window, &["tab"], cx).await?;
+    wait_for(window, cx, |s| {
+        s.field_is_active(Field::Translation(0))
+            && s.panels.active_field_is_visible(Field::Translation(0))
+    })
+    .await?;
+    let visible_offset = window.update(cx, |s, _, _| s.panels.inspector_scroll_offset())?;
+    keys(window, &["tab"], cx).await?;
+    wait_for(window, cx, |s| {
+        s.panels.active_field_is_visible(Field::Translation(1))
+    })
+    .await?;
+    Timer::after(Duration::from_millis(80)).await;
+    window.update(cx, |s, w, cx| -> Result<()> {
+        ensure!(
+            s.panels.inspector_scroll_offset() == visible_offset,
+            "Tab unnecessarily scrolled an already-visible inspector field"
+        );
+        s.begin_field(Field::Color(2), w, cx);
+        Ok(())
+    })??;
+    keys(window, &["tab"], cx).await?;
+    wait_for(window, cx, |s| {
+        s.field_is_active(Field::Roughness) && s.panels.active_field_is_visible(Field::Roughness)
+    })
+    .await?;
+    window.update(cx, |s, w, cx| -> Result<()> {
+        ensure!(
+            s.panels.inspector_scroll_offset().y < visible_offset.y,
+            "Tab did not scroll down to a previously hidden surface field"
+        );
+        s.begin_field(Field::Name, w, cx);
+        Ok(())
+    })??;
+    keys(window, &["shift-tab"], cx).await?;
+    wait_for(window, cx, |s| {
+        s.field_is_active(Field::Dimensions(2))
+            && s.panels.active_field_is_visible(Field::Dimensions(2))
+    })
+    .await?;
+    let settled_offset = window.update(cx, |s, w, cx| {
+        s.begin_field(Field::Name, w, cx);
+        s.panels.inspector_scroll_offset()
+    })?;
+    let handle: AnyWindowHandle = window.into();
+    handle.update(cx, |_, w, cx| -> Result<()> {
+        // Both focus changes occur before layout. The older pending reveal must
+        // not move the inspector after focus has returned to the fixed name row.
+        for key in ["shift-tab", "tab"] {
+            w.dispatch_keystroke(Keystroke::parse(key)?, cx);
+        }
+        Ok(())
+    })??;
+    Timer::after(Duration::from_millis(120)).await;
+    window.update(cx, |s, _, _| -> Result<()> {
+        ensure!(
+            s.field_is_active(Field::Name) && s.panels.inspector_scroll_offset() == settled_offset,
+            "A stale Tab callback scrolled after focus moved elsewhere"
+        );
+        ensure!(
+            !s.history.can_undo(),
+            "Field navigation created an undo checkpoint"
+        );
+        Ok(())
+    })??;
+    keys(window, &["escape"], cx).await?;
+    window.update(cx, |s, w, cx| {
+        w.resize(original_size);
+        s.scene = saved.0;
+        s.history = saved.1;
+        s.selected = saved.2;
+        s.edit_mode = saved.3;
+        s.set_components(saved.4);
+        s.settings = saved.5;
+        s.tool = saved.6;
+        s.dirty = saved.7;
+        s.objects_selected = saved.8;
+        cx.write_to_clipboard(
+            saved
+                .9
+                .unwrap_or_else(|| gpui::ClipboardItem::new_string(String::new())),
+        );
+        s.invalidate(true, cx);
+    })?;
+    println!(
+        "numeric_entry=clipboard,select_all,tab,shift_tab,invalid,noop,limits,unicode,modal_paste,minimal_scroll,stale_focus PASS"
+    );
+    Ok(())
+}
+
+async fn check_exchange_object_workflow(
+    window: WindowHandle<Studio>,
+    output: &std::path::Path,
+    cx: &mut AsyncApp,
+) -> Result<()> {
+    use crate::exchange::{StlDirection, StlUnit};
+    use glam::Vec3;
+    let saved = window.update(cx, |s, _, cx| {
+        let saved = (
+            s.scene.clone(),
+            std::mem::take(&mut s.history),
+            s.selected,
+            s.edit_mode,
+            s.component_elements(),
+            s.settings.clone(),
+            s.tool,
+            s.dirty,
+            s.objects_selected.clone(),
+            s.stl_unit,
+        );
+        s.scene = Scene::empty();
+        let id = s.scene.add(Primitive::Cube);
+        s.selected = Some(id);
+        s.objects_selected.clear();
+        s.clear_components();
+        s.active_field = None;
+        s.edit_mode = EditMode::Object;
+        s.settings.mode = RenderMode::Solid;
+        let object = s.scene.object_mut(id).unwrap();
+        object.transform.translation = Vec3::new(1., 2., 3.);
+        object.transform.rotation = Vec3::new(0.2, 0.4, -0.1);
+        object.transform.scale = Vec3::new(-2., 3., 0.5);
+        for point in &mut s.scene.object_mesh_mut(id).unwrap().positions {
+            *point += Vec3::new(3., -2., 1.);
+        }
+        s.invalidate(true, cx);
+        saved
+    })?;
+    window.update(cx, |s, w, cx| -> Result<()> {
+        let original = s.scene.clone();
+        let id = s.selected.unwrap();
+        let original_dimensions = s.selection_dimensions().unwrap();
+        let world_positions = |scene: &Scene| {
+            let transform = scene.world_transform(id).unwrap();
+            scene
+                .object_mesh(id)
+                .unwrap()
+                .positions
+                .iter()
+                .map(|&point| transform.transform_point3(point))
+                .collect::<Vec<_>>()
+        };
+        let expected = world_positions(&original);
+        for command in [
+            Command::ApplyScale,
+            Command::ApplyRotationScale,
+            Command::CenterOrigin,
+        ] {
+            s.execute(command, w, cx);
+            ensure!(
+                s.scene != original && s.history.can_undo(),
+                "Object utility was not a document transaction"
+            );
+            ensure!(
+                world_positions(&s.scene)
+                    .iter()
+                    .zip(&expected)
+                    .all(|(a, b)| a.distance(*b) < 1e-4),
+                "Object utility moved world geometry"
+            );
+            ensure!(
+                s.selection_dimensions()
+                    .unwrap()
+                    .distance(original_dimensions)
+                    < 1e-4,
+                "Object utility left stale measurements"
+            );
+            if command != Command::CenterOrigin {
+                ensure!(
+                    s.selected_object().unwrap().transform.scale == Vec3::ONE,
+                    "Apply scale kept local scale"
+                );
+            }
+            if command == Command::ApplyRotationScale {
+                ensure!(
+                    s.selected_object().unwrap().transform.rotation == Vec3::ZERO,
+                    "Apply rotation kept local rotation"
+                );
+                let applied = s.scene.clone();
+                s.execute(Command::ApplyScale, w, cx);
+                ensure!(s.scene == applied, "No-op apply scale changed the document");
+            }
+            let edited = s.scene.clone();
+            s.execute(Command::Undo, w, cx);
+            ensure!(
+                s.scene == original,
+                "Object utility did not undo in one step"
+            );
+            s.execute(Command::Redo, w, cx);
+            ensure!(s.scene == edited, "Object utility redo changed its result");
+            s.execute(Command::Undo, w, cx);
+        }
+        s.execute(Command::SetEditMode(EditMode::Face), w, cx);
+        s.execute(Command::ApplyScale, w, cx);
+        ensure!(
+            s.scene == original,
+            "Object utility bypassed component-mode guard"
+        );
+        s.execute(Command::SetEditMode(EditMode::Object), w, cx);
+        s.scene = Scene::empty();
+        let id = s.scene.add(Primitive::Cube);
+        s.scene.object_mut(id).unwrap().transform.scale = Vec3::new(0.06, 0.04, 0.01);
+        let other = s.scene.add(Primitive::Cube);
+        s.scene.object_mut(other).unwrap().transform.translation.x = 10.;
+        s.selected = Some(id);
+        s.history = forma_core::History::default();
+        s.dirty = false;
+        s.invalidate(true, cx);
+        s.execute(Command::ExportStl, w, cx);
+        ensure!(
+            s.stl_dialog.is_some_and(
+                |dialog| dialog.direction == StlDirection::Export && dialog.selected_only
+            ),
+            "STL export did not default to selection"
+        );
+        Ok(())
+    })??;
+    let modal_scene = window.update(cx, |s, _, _| s.scene.clone())?;
+    keys(window, &["g", "cmd-z", "right", "tab"], cx).await?;
+    window.update(cx, |s, w, cx| -> Result<()> {
+        let options = s.stl_dialog.unwrap();
+        let selected = s.selected_ids();
+        let last_mouse = s.last_mouse;
+        let pointer = s.bounds.get().origin + point(px(40.), px(40.));
+        for button in [MouseButton::Left, MouseButton::Middle] {
+            s.mouse_down(
+                &MouseDownEvent {
+                    button,
+                    position: pointer,
+                    ..Default::default()
+                },
+                w,
+                cx,
+            );
+        }
+        s.mouse_move(
+            &MouseMoveEvent {
+                position: pointer + point(px(40.), px(20.)),
+                pressed_button: Some(MouseButton::Middle),
+                ..Default::default()
+            },
+            w,
+            cx,
+        );
+        ensure!(
+            s.selected_ids() == selected && s.navigation.is_none() && s.last_mouse == last_mouse,
+            "STL options leaked pointer input to selection or viewport navigation"
+        );
+        ensure!(
+            s.scene == modal_scene && s.transform_drag.is_none(),
+            "STL options leaked shortcuts to editing"
+        );
+        ensure!(
+            options.unit == StlUnit::Centimetres && !options.selected_only,
+            "STL options keyboard navigation failed"
+        );
+        Ok(())
+    })??;
+    settle(window, cx).await?;
+    prepare_capture(window, cx).await?;
+    window.update(cx, |s, w, _| {
+        capture_window(s, w, &output.join("stl-exchange.png"))
+    })??;
+    keys(window, &["escape"], cx).await?;
+    let exported = output.join("precision-part-mm.stl");
+    window.update(cx, |s, _, cx| {
+        s.export_stl_to(
+            exported.clone(),
+            StlUnit::Millimetres,
+            Some(s.selected_ids()),
+            cx,
+        );
+        // A real document edit must not strand the snapshot export's completion.
+        s.scene
+            .object_mut(s.selected.unwrap())
+            .unwrap()
+            .transform
+            .translation
+            .x = 2.;
+        s.dirty = true;
+        s.invalidate(true, cx);
+    })?;
+    wait_for(window, cx, |s| s.status.starts_with("STL exported")).await?;
+    let mut round_trip = Scene::empty();
+    let imported = round_trip.import_stl(&exported, StlUnit::Millimetres.metres())?;
+    let positions = &round_trip.object_mesh(imported).unwrap().positions;
+    let low = positions
+        .iter()
+        .copied()
+        .fold(Vec3::splat(f32::INFINITY), Vec3::min);
+    let high = positions
+        .iter()
+        .copied()
+        .fold(Vec3::splat(f32::NEG_INFINITY), Vec3::max);
+    ensure!(
+        (high - low).distance(Vec3::new(0.12, 0.08, 0.02)) < 1e-6 && (high + low).length() < 1e-6,
+        "STL export lost units, selected scope, or the original snapshot"
+    );
+    let before_import = window.update(cx, |s, _, _| s.scene.clone())?;
+    window.update(cx, |s, _, cx| {
+        s.open_stl_from(exported.clone(), StlUnit::Millimetres, cx)
+    })?;
+    wait_for(window, cx, |s| s.status.starts_with("Imported")).await?;
+    window.update(cx, |s, w, cx| -> Result<()> {
+        ensure!(
+            s.scene.objects.len() == before_import.objects.len() + 1 && s.history.can_undo(),
+            "STL import did not add one undoable mesh"
+        );
+        ensure!(
+            s.selection_dimensions()
+                .unwrap()
+                .distance(Vec3::new(0.12, 0.08, 0.02))
+                < 1e-6,
+            "STL import lost millimetre dimensions"
+        );
+        s.execute(Command::Undo, w, cx);
+        ensure!(
+            s.scene == before_import,
+            "STL import did not undo atomically"
+        );
+        Ok(())
+    })??;
+    let bad_path = output.join("invalid.stl");
+    std::fs::write(
+        &bad_path,
+        b"solid broken\nfacet normal 0 0 1\nendsolid broken",
+    )?;
+    let invalid_before = window.update(cx, |s, _, _| (s.scene.clone(), s.history.can_redo()))?;
+    window.update(cx, |s, _, cx| {
+        s.open_stl_from(bad_path, StlUnit::Millimetres, cx)
+    })?;
+    wait_for(window, cx, |s| s.status.starts_with("Import failed:")).await?;
+    window.update(cx, |s, _, _| -> Result<()> {
+        ensure!(
+            s.scene == invalid_before.0 && s.history.can_redo() == invalid_before.1,
+            "Failed STL import changed geometry or history"
+        );
+        Ok(())
+    })??;
+    window.update(cx, |s, _, cx| {
+        s.open_stl_from(exported, StlUnit::Millimetres, cx);
+        s.scene
+            .object_mut(s.selected.unwrap())
+            .unwrap()
+            .transform
+            .translation
+            .y += 1.;
+        s.invalidate(true, cx);
+    })?;
+    let changed = window.update(cx, |s, _, _| s.scene.clone())?;
+    wait_for(window, cx, |s| s.status.starts_with("Import skipped")).await?;
+    window.update(cx, |s, _, cx| -> Result<()> {
+        ensure!(s.scene == changed, "Stale STL import replaced a newer edit");
+        s.scene = saved.0;
+        s.history = saved.1;
+        s.selected = saved.2;
+        s.edit_mode = saved.3;
+        s.set_components(saved.4);
+        s.settings = saved.5;
+        s.tool = saved.6;
+        s.dirty = saved.7;
+        s.objects_selected = saved.8;
+        s.stl_unit = saved.9;
+        s.stl_dialog = None;
+        s.active_field = None;
+        s.invalidate(true, cx);
+        Ok(())
+    })??;
+    println!(
+        "exchange_object=apply_scale,apply_rotation,origin,undo,redo,stl_units,scope,snapshot,import,rollback,stale_guard PASS"
     );
     Ok(())
 }

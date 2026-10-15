@@ -6,6 +6,7 @@ use crate::theme::{Colors, Theme};
 use forma_core::{DenoiseQuality, Primitive, ShaderKind, TextureMapping, TextureSlot};
 use forma_render::{RenderMode, StudioLight};
 use gpui::{prelude::*, *};
+use std::{cell::Cell, rc::Rc};
 
 /// Fully transparent fill for the resting state of ghost controls.
 fn clear() -> Rgba {
@@ -29,7 +30,7 @@ impl PanelSection {
             (self, field),
             (
                 Self::Transform,
-                Field::Translation(_) | Field::Rotation(_) | Field::Scale(_)
+                Field::Translation(_) | Field::Rotation(_) | Field::Scale(_) | Field::Dimensions(_)
             ) | (
                 Self::Surface,
                 Field::Color(_)
@@ -42,7 +43,11 @@ impl PanelSection {
                     | Field::TextureOffset(_)
             ) | (
                 Self::Render,
-                Field::Samples | Field::Bounces | Field::Exposure | Field::WorldStrength
+                Field::Samples
+                    | Field::Bounces
+                    | Field::Exposure
+                    | Field::WorldStrength
+                    | Field::DenoiseStart
             )
         )
     }
@@ -61,26 +66,124 @@ struct SidebarResize {
     width: f32,
 }
 
+#[derive(Clone, Copy)]
+struct ActiveFieldLayout {
+    field: Field,
+    bounds: Bounds<Pixels>,
+}
+
 /// Workspace layout and disclosure state never enter the document or undo history.
 pub(crate) struct PanelState {
     open: [bool; 5],
     collection_open: bool,
     sidebar_width: f32,
     sidebar_resize: Option<SidebarResize>,
+    inspector_scroll: ScrollHandle,
+    active_field_bounds: Rc<Cell<Option<ActiveFieldLayout>>>,
+    field_scroll_request: Rc<Cell<u64>>,
 }
 
 impl Default for PanelState {
     fn default() -> Self {
+        let inspector_scroll = ScrollHandle::new();
         Self {
             open: [true, true, false, true, false],
             collection_open: true,
             sidebar_width: SIDEBAR_DEFAULT_WIDTH,
             sidebar_resize: None,
+            inspector_scroll,
+            active_field_bounds: Default::default(),
+            field_scroll_request: Default::default(),
         }
     }
 }
 
 impl PanelState {
+    fn is_inspector_field(field: Field) -> bool {
+        [
+            PanelSection::Transform,
+            PanelSection::Surface,
+            PanelSection::Render,
+        ]
+        .into_iter()
+        .any(|section| section.contains_field(field))
+    }
+
+    pub(crate) fn scroll_to_active_field(
+        &self,
+        field: Field,
+        window: &mut Window,
+        cx: &mut Context<Studio>,
+    ) {
+        let request = self.field_scroll_request.get().wrapping_add(1);
+        self.field_scroll_request.set(request);
+        if !Self::is_inspector_field(field) {
+            return;
+        }
+        // Wait for the newly revealed field's layout, then move only the amount
+        // needed to show it. Ignore superseded requests and cancelled editing.
+        self.active_field_bounds.set(None);
+        let bounds = self.active_field_bounds.clone();
+        let requests = self.field_scroll_request.clone();
+        let scroll = self.inspector_scroll.clone();
+        let studio = cx.weak_entity();
+        window.on_next_frame(move |window, _| {
+            window.on_next_frame(move |window, cx| {
+                if requests.get() != request {
+                    return;
+                }
+                let Some(studio) = studio.upgrade() else {
+                    return;
+                };
+                if !studio.read(cx).field_is_active(field) {
+                    return;
+                }
+                let Some(layout) = bounds.get() else {
+                    return;
+                };
+                if layout.field != field {
+                    return;
+                }
+                let current = scroll.offset();
+                let offset = reveal_field_offset(
+                    scroll.bounds(),
+                    layout.bounds,
+                    current,
+                    scroll.max_offset(),
+                );
+                if offset != current {
+                    scroll.set_offset(offset);
+                    window.refresh();
+                }
+            });
+        });
+    }
+
+    /// Native smoke observes the same layout bounds used for keyboard reveal.
+    pub(crate) fn active_field_is_visible(&self, field: Field) -> bool {
+        self.active_field_bounds.get().is_some_and(|layout| {
+            let viewport = self.inspector_scroll.bounds();
+            layout.field == field
+                && layout.bounds.top() >= viewport.top() - px(0.5)
+                && layout.bounds.bottom() <= viewport.bottom() + px(0.5)
+        })
+    }
+
+    pub(crate) fn inspector_scroll_offset(&self) -> Point<Pixels> {
+        self.inspector_scroll.offset()
+    }
+
+    pub(crate) fn reveal_field(&mut self, field: Field) {
+        for section in [
+            PanelSection::Transform,
+            PanelSection::Surface,
+            PanelSection::Render,
+        ] {
+            if section.contains_field(field) {
+                self.open[section as usize] = true;
+            }
+        }
+    }
     fn clamp_sidebar_width(width: f32, window_width: f32) -> f32 {
         let maximum =
             (window_width - 2. * WORKSPACE_PADDING - SIDEBAR_DIVIDER_WIDTH - VIEWPORT_MIN_WIDTH)
@@ -94,6 +197,82 @@ impl PanelState {
 
     pub(crate) fn finish_sidebar_resize(&mut self) -> bool {
         self.sidebar_resize.take().is_some()
+    }
+}
+
+fn reveal_field_offset(
+    viewport: Bounds<Pixels>,
+    field: Bounds<Pixels>,
+    current: Point<Pixels>,
+    maximum: Size<Pixels>,
+) -> Point<Pixels> {
+    if viewport.size.height <= px(0.) {
+        return current;
+    }
+    let margin = px(4.).min((viewport.size.height - field.size.height).max(px(0.)) * 0.5);
+    let delta = if field.top() < viewport.top() + margin {
+        viewport.top() + margin - field.top()
+    } else if field.bottom() > viewport.bottom() - margin {
+        viewport.bottom() - margin - field.bottom()
+    } else {
+        px(0.)
+    };
+    point(
+        current.x,
+        (current.y + delta).clamp(-maximum.height, px(0.)),
+    )
+}
+
+#[cfg(test)]
+mod field_scroll_tests {
+    use super::reveal_field_offset;
+    use gpui::{Bounds, Point, point, px, size};
+
+    #[test]
+    fn tab_does_not_scroll_fields_already_in_view() {
+        let viewport = Bounds::new(point(px(100.), px(100.)), size(px(200.), px(100.)));
+        let current = point(px(-9.), px(-100.));
+        let maximum = size(px(20.), px(500.));
+        for top in [104., 130., 175.] {
+            let field = Bounds::new(point(px(110.), px(top)), size(px(150.), px(21.)));
+            assert_eq!(
+                reveal_field_offset(viewport, field, current, maximum),
+                current
+            );
+        }
+    }
+
+    #[test]
+    fn tab_reveals_only_the_clipped_edge_and_preserves_horizontal_position() {
+        let viewport = Bounds::new(point(px(100.), px(100.)), size(px(200.), px(100.)));
+        let current = point(px(-9.), px(-100.));
+        let maximum = size(px(20.), px(500.));
+        let above = Bounds::new(point(px(110.), px(90.)), size(px(150.), px(21.)));
+        let below = Bounds::new(point(px(110.), px(190.)), size(px(150.), px(21.)));
+        assert_eq!(
+            reveal_field_offset(viewport, above, current, maximum),
+            point(px(-9.), px(-86.))
+        );
+        assert_eq!(
+            reveal_field_offset(viewport, below, current, maximum),
+            point(px(-9.), px(-115.))
+        );
+    }
+
+    #[test]
+    fn field_reveal_clamps_to_scroll_limits_and_ignores_empty_viewports() {
+        let viewport = Bounds::new(point(px(100.), px(100.)), size(px(200.), px(100.)));
+        let field = Bounds::new(point(px(110.), px(400.)), size(px(150.), px(21.)));
+        assert_eq!(
+            reveal_field_offset(viewport, field, Point::default(), size(px(0.), px(50.))),
+            point(px(0.), px(-50.))
+        );
+        let empty = Bounds::new(viewport.origin, size(px(200.), px(0.)));
+        let current = point(px(0.), px(-10.));
+        assert_eq!(
+            reveal_field_offset(empty, field, current, size(px(0.), px(50.))),
+            current
+        );
     }
 }
 
@@ -231,7 +410,9 @@ fn command_hint(command: Command) -> &'static str {
             platform_shortcut("Save project as · ⇧ ⌘ S", "Save project as · Ctrl+Shift+S")
         }
         Command::ImportObj => "Import Wavefront OBJ",
+        Command::ImportStl => "Import STL with explicit file units",
         Command::ExportObj => "Export scene geometry as OBJ",
+        Command::ExportStl => "Export selection or visible scene as STL",
         Command::ExportImage => "Export current rendered image as PNG",
         Command::Add(Primitive::Cube) => "Add cube",
         Command::Add(Primitive::Sphere) => "Add sphere",
@@ -245,9 +426,13 @@ fn command_hint(command: Command) -> &'static str {
         Command::Undo => platform_shortcut("Undo · ⌘ Z", "Undo · Ctrl+Z"),
         Command::Redo => platform_shortcut("Redo · ⇧ ⌘ Z", "Redo · Ctrl+Shift+Z"),
         Command::FrameSelected => "Frame selected · ` / . / F",
+        Command::FrameAll => "Frame all visible geometry · Home",
         Command::ViewFront => "Front view · 1",
+        Command::ViewBack => "Back view · Alt+1",
         Command::ViewRight => "Right view · 3",
+        Command::ViewLeft => "Left view · Alt+3",
         Command::ViewTop => "Top view · 7",
+        Command::ViewBottom => "Bottom view · Alt+7",
         Command::ViewPerspective => "Perspective view · 0",
         Command::ToggleProjection => "Toggle perspective / orthographic · 5",
         Command::SetMode(RenderMode::Wireframe) => "Wireframe · Z, then 4",
@@ -270,7 +455,21 @@ fn command_hint(command: Command) -> &'static str {
         Command::BoxSelect => "Box select · B",
         Command::Extrude => "Extrude face region · E",
         Command::Subdivide => "Subdivide selected mesh",
+        Command::Bevel => "Bevel all edges of a closed convex mesh · Enter width · Object mode",
+        Command::Triangulate => "Triangulate selected faces, or entire selected objects",
+        Command::FlipNormals => "Reverse winding of selected faces or objects",
+        Command::RecalculateNormals => "Make face normals consistent; closed shells point outward",
+        Command::ApplyScale => {
+            "Bake scale into mesh data while preserving world geometry and children"
+        }
+        Command::ApplyRotationScale => {
+            "Bake rotation and scale while preserving world geometry and children"
+        }
+        Command::CenterOrigin => {
+            "Place each origin at its mesh bounds center; keep geometry in place"
+        }
         Command::ToggleGrid => "Toggle ground grid",
+        Command::ToggleMeasurements => "World dimensions and edge lengths · Shift+M",
         Command::ToggleViewportDenoise => "AI denoising for the Rendered viewport",
         Command::ToggleRenderDenoise => "High quality AI denoising for PNG renders",
         Command::SetDenoiseQuality(_) => "Viewport denoising quality · exports always use High",
@@ -444,6 +643,8 @@ enum Icon {
     Move,
     Rotate,
     Scale,
+    Bevel,
+    Measure,
     Grid,
     Eye,
     Hidden,
@@ -486,6 +687,23 @@ fn icon(kind: Icon, color: u32, side: f32) -> AnyElement {
                 paths
             };
             let paths: Vec<Vec<(f32, f32)>> = match kind {
+                Icon::Bevel => vec![
+                    vec![
+                        (3., 13.),
+                        (3., 6.),
+                        (6., 3.),
+                        (13., 3.),
+                        (13., 13.),
+                        (3., 13.),
+                    ],
+                    vec![(3., 9.), (9., 3.)],
+                ],
+                Icon::Measure => vec![
+                    vec![(2., 5.), (14., 5.), (14., 11.), (2., 11.), (2., 5.)],
+                    vec![(5., 5.), (5., 8.)],
+                    vec![(8., 5.), (8., 9.)],
+                    vec![(11., 5.), (11., 8.)],
+                ],
                 Icon::Cube => vec![
                     vec![
                         (8., 1.6),
@@ -766,9 +984,58 @@ fn primary(
         .child(label.to_owned())
 }
 
-fn titlebar(t: Colors, s: &Studio, cx: &mut Context<Studio>) -> AnyElement {
+/// Keep the one-click image action and expose other formats through the same
+/// searchable command menu, scoped to the three supported export formats.
+fn export_controls(t: Colors, compact: bool, cx: &mut Context<Studio>) -> AnyElement {
     row()
-        .relative()
+        .gap(px(2.))
+        .flex_shrink_0()
+        .child(primary(
+            t,
+            "export-image",
+            "Export image",
+            Icon::Export,
+            Command::ExportImage,
+            cx,
+        ))
+        .child(
+            row()
+                .id("export-formats")
+                .h(px(24.))
+                .px(px(7.))
+                .gap(px(4.))
+                .rounded(px(4.))
+                .border_1()
+                .border_color(rgb(t.accent_line))
+                .bg(rgb(t.active))
+                .text_color(rgb(t.accent))
+                .cursor_pointer()
+                .hover(move |d| d.bg(rgb(t.active_hover)))
+                .tooltip(move |_, cx| {
+                    cx.new(|_| Tooltip("Export formats: PNG image, Wavefront OBJ or STL", t))
+                        .into()
+                })
+                .when(!compact, |d| d.child("Formats"))
+                .child(icon(Icon::Chevron, t.accent, 10.))
+                .on_click(cx.listener(|s, _, window, cx| {
+                    cx.stop_propagation();
+                    s.execute(Command::TogglePalette, window, cx);
+                    if s.palette_open {
+                        s.palette_exports_only = true;
+                        s.palette_query.clear();
+                        s.palette_index = 0;
+                    }
+                })),
+        )
+        .into_any_element()
+}
+
+fn titlebar(t: Colors, s: &Studio, window: &Window, cx: &mut Context<Studio>) -> AnyElement {
+    let wide = window.viewport_size().width >= px(1200.);
+    // Matched side reservations keep the title centered on wide windows. On
+    // narrow windows it instead takes the available space before the actions.
+    let action_width = px(560.);
+    row()
         .h(px(36.))
         .flex_shrink_0()
         .px(px(8.))
@@ -776,21 +1043,21 @@ fn titlebar(t: Colors, s: &Studio, cx: &mut Context<Studio>) -> AnyElement {
         .border_b_1()
         .border_color(rgb(t.line))
         .bg(rgb(t.panel))
+        .when(wide, |d| d.child(div().w(action_width).flex_shrink_0()))
         .child(
-            // Equal insets keep the document centered in the window and leave
-            // room for the actions even at the minimum window width.
             row()
-                .absolute()
-                .left(px(450.))
-                .right(px(450.))
-                .top_0()
-                .bottom_0()
-                .justify_center()
+                .flex_1()
+                .min_w(px(0.))
+                .overflow_hidden()
+                .when(wide, |d| d.justify_center())
                 .child(
                     row()
                         .gap(px(7.))
+                        .w_full()
                         .min_w(px(0.))
                         .max_w(px(260.))
+                        .overflow_hidden()
+                        .when(wide, |d| d.justify_center())
                         .child(
                             div()
                                 .min_w(px(0.))
@@ -810,55 +1077,57 @@ fn titlebar(t: Colors, s: &Studio, cx: &mut Context<Studio>) -> AnyElement {
                         }),
                 ),
         )
-        .child(div().flex_1())
         .child(
-            button(
-                t,
-                "commands",
-                "Commands",
-                Some(Icon::Search),
-                Command::TogglePalette,
-                s.palette_open,
-                cx,
-            )
-            .child(key(t, platform_shortcut("⌘K", "Ctrl+K"))),
+            row()
+                .gap(px(8.))
+                .flex_shrink_0()
+                .when(wide, |d| d.w(action_width).justify_end())
+                .child(
+                    button(
+                        t,
+                        "commands",
+                        "Commands",
+                        Some(Icon::Search),
+                        Command::TogglePalette,
+                        s.palette_open && !s.palette_exports_only,
+                        cx,
+                    )
+                    .child(key(t, platform_shortcut("⌘K", "Ctrl+K"))),
+                )
+                .child(button(
+                    t,
+                    "color-theme",
+                    "Theme",
+                    Some(Icon::Material),
+                    Command::ToggleTheme,
+                    s.theme_picker.is_some(),
+                    cx,
+                ))
+                .child(divider(t))
+                .child(button(
+                    t,
+                    "open",
+                    "Open",
+                    Some(Icon::Folder),
+                    Command::Open,
+                    false,
+                    cx,
+                ))
+                .child(button(
+                    t,
+                    "save",
+                    "Save",
+                    Some(Icon::Save),
+                    Command::Save,
+                    false,
+                    cx,
+                ))
+                .child(export_controls(
+                    t,
+                    window.viewport_size().width < px(1100.),
+                    cx,
+                )),
         )
-        .child(button(
-            t,
-            "color-theme",
-            "Theme",
-            Some(Icon::Material),
-            Command::ToggleTheme,
-            s.theme_picker.is_some(),
-            cx,
-        ))
-        .child(divider(t))
-        .child(button(
-            t,
-            "open",
-            "Open",
-            Some(Icon::Folder),
-            Command::Open,
-            false,
-            cx,
-        ))
-        .child(button(
-            t,
-            "save",
-            "Save",
-            Some(Icon::Save),
-            Command::Save,
-            false,
-            cx,
-        ))
-        .child(primary(
-            t,
-            "export-image",
-            "Export image",
-            Icon::Export,
-            Command::ExportImage,
-            cx,
-        ))
         .into_any_element()
 }
 
@@ -1148,7 +1417,7 @@ fn outliner(t: Colors, s: &Studio, cx: &mut Context<Studio>) -> AnyElement {
 }
 
 /// Everything that puts new geometry in the scene.
-fn sources() -> [(Icon, &'static str, Command); 6] {
+fn sources() -> [(Icon, &'static str, Command); 7] {
     [
         (Icon::Cube, "Cube", Command::Add(Primitive::Cube)),
         (Icon::Sphere, "Sphere", Command::Add(Primitive::Sphere)),
@@ -1160,6 +1429,7 @@ fn sources() -> [(Icon, &'static str, Command); 6] {
         (Icon::Torus, "Torus", Command::Add(Primitive::Torus)),
         (Icon::Plane, "Plane", Command::Add(Primitive::Plane)),
         (Icon::Folder, "OBJ file", Command::ImportObj),
+        (Icon::Folder, "STL file", Command::ImportStl),
     ]
 }
 
@@ -1196,6 +1466,37 @@ fn toolrail(t: Colors, s: &Studio, cx: &mut Context<Studio>) -> AnyElement {
             }),
         )
         .child(div().w(px(16.)).h(px(1.)).my(px(5.)).bg(rgb(t.line)))
+        .when(s.edit_mode == EditMode::Object, |d| {
+            d.child(icon_button(
+                t,
+                "rail-bevel",
+                Icon::Bevel,
+                Command::Bevel,
+                false,
+                28.,
+                cx,
+            ))
+        })
+        .when(s.edit_mode.is_component(), |d| {
+            d.child(icon_button(
+                t,
+                "rail-extrude",
+                Icon::Export,
+                Command::Extrude,
+                false,
+                28.,
+                cx,
+            ))
+            .child(icon_button(
+                t,
+                "rail-inset",
+                Icon::Grid,
+                Command::Inset,
+                false,
+                28.,
+                cx,
+            ))
+        })
         .child(icon_button(
             t,
             "rail-frame",
@@ -1211,6 +1512,15 @@ fn toolrail(t: Colors, s: &Studio, cx: &mut Context<Studio>) -> AnyElement {
             Icon::Grid,
             Command::ToggleGrid,
             s.settings.show_grid,
+            28.,
+            cx,
+        ))
+        .child(icon_button(
+            t,
+            "rail-measurements",
+            Icon::Measure,
+            Command::ToggleMeasurements,
+            s.show_measurements,
             28.,
             cx,
         ))
@@ -1311,6 +1621,7 @@ fn field(
     };
     row()
         .id(SharedString::from(id.to_owned()))
+        .relative()
         .h(px(21.))
         .flex_shrink_0()
         .px(px(7.))
@@ -1342,11 +1653,29 @@ fn field(
                 .overflow_hidden()
                 .text_ellipsis()
                 .text_color(rgb(if active { t.accent } else { t.text }))
+                .when(s.field_selection_active(f), |d| d.bg(rgb(t.active)))
                 .text_right()
                 .when(!label.is_empty(), |d| d.text_center())
                 .when(f == Field::Name, |d| d.text_left())
                 .child(value),
         )
+        .when(active && PanelState::is_inspector_field(f), |element| {
+            let bounds = s.panels.active_field_bounds.clone();
+            element.child(
+                canvas(
+                    move |layout, _, _| {
+                        bounds.set(Some(ActiveFieldLayout {
+                            field: f,
+                            bounds: layout,
+                        }))
+                    },
+                    |_, _, _, _| {},
+                )
+                .absolute()
+                .inset_0()
+                .size_full(),
+            )
+        })
         .on_click(cx.listener(move |s, _, w, cx| {
             cx.stop_propagation();
             s.begin_field(f, w, cx);
@@ -1725,7 +2054,7 @@ fn inspector(t: Colors, s: &Studio, cx: &mut Context<Studio>) -> AnyElement {
             .child(axis_row(
                 t,
                 s,
-                "Location",
+                "Location · m",
                 "transform-0",
                 ["X", "Y", "Z"],
                 Field::Translation,
@@ -1748,7 +2077,55 @@ fn inspector(t: Colors, s: &Studio, cx: &mut Context<Studio>) -> AnyElement {
                 ["X", "Y", "Z"],
                 Field::Scale,
                 cx,
-            ));
+            ))
+            .child(axis_row(
+                t,
+                s,
+                "Dimensions · m (local)",
+                "transform-3",
+                ["X", "Y", "Z"],
+                Field::Dimensions,
+                cx,
+            ))
+            .child(
+                div()
+                    .text_size(px(9.))
+                    .text_color(rgb(t.muted))
+                    .child("Exact input: 25mm · 1/8in · (2+3)*10cm"),
+            )
+            .child(
+                row().gap(px(4.)).children(
+                    [
+                        ("apply-scale", "Apply scale", Command::ApplyScale),
+                        (
+                            "apply-rotation-scale",
+                            "Apply rot / scale",
+                            Command::ApplyRotationScale,
+                        ),
+                    ]
+                    .into_iter()
+                    .map(|(id, label, command)| {
+                        button(t, id, label, None, command, false, cx)
+                            .flex_1()
+                            .min_w(px(0.))
+                            .justify_center()
+                            .bg(rgb(t.raised))
+                    }),
+                ),
+            )
+            .child(
+                button(
+                    t,
+                    "center-origin",
+                    "Origin to geometry center",
+                    None,
+                    Command::CenterOrigin,
+                    false,
+                    cx,
+                )
+                .justify_center()
+                .bg(rgb(t.raised)),
+            );
         contents = contents.child(panel_card(
             t,
             s,
@@ -1966,6 +2343,43 @@ fn inspector(t: Colors, s: &Studio, cx: &mut Context<Studio>) -> AnyElement {
                         .bg(rgb(t.raised)),
                     ),
             );
+        let geometry = geometry
+            .child(
+                row().gap(px(4.)).children(
+                    [
+                        ("bevel", "Bevel edges", Command::Bevel),
+                        ("triangulate", "Triangulate", Command::Triangulate),
+                    ]
+                    .into_iter()
+                    .map(|(id, label, command)| {
+                        button(t, id, label, None, command, false, cx)
+                            .flex_1()
+                            .min_w(px(0.))
+                            .justify_center()
+                            .bg(rgb(t.raised))
+                    }),
+                ),
+            )
+            .child(
+                row().gap(px(4.)).children(
+                    [
+                        (
+                            "recalculate-normals",
+                            "Normals outside",
+                            Command::RecalculateNormals,
+                        ),
+                        ("flip-normals", "Flip normals", Command::FlipNormals),
+                    ]
+                    .into_iter()
+                    .map(|(id, label, command)| {
+                        button(t, id, label, None, command, false, cx)
+                            .flex_1()
+                            .min_w(px(0.))
+                            .justify_center()
+                            .bg(rgb(t.raised))
+                    }),
+                ),
+            );
         contents = contents.child(panel_card(
             t,
             s,
@@ -1993,7 +2407,7 @@ fn inspector(t: Colors, s: &Studio, cx: &mut Context<Studio>) -> AnyElement {
         s,
         PanelSection::AddGeometry,
         "Add Geometry",
-        "Primitives / OBJ",
+        "Primitives / Files",
         sources,
         cx,
     ));
@@ -2042,6 +2456,7 @@ fn inspector(t: Colors, s: &Studio, cx: &mut Context<Studio>) -> AnyElement {
                 .flex_1()
                 .min_h(px(0.))
                 .overflow_y_scroll()
+                .track_scroll(&s.panels.inspector_scroll)
                 .child(contents),
         )
         .into_any_element()
@@ -2756,7 +3171,7 @@ fn theme_overlay(t: Colors, s: &Studio, cx: &mut Context<Studio>) -> AnyElement 
 }
 
 fn command_overlay(t: Colors, s: &Studio, cx: &mut Context<Studio>) -> AnyElement {
-    let commands = crate::app::palette_commands(&s.palette_query);
+    let commands = s.palette_items();
     let selected = s.palette_index;
     div()
         .absolute()
@@ -2805,7 +3220,11 @@ fn command_overlay(t: Colors, s: &Studio, cx: &mut Context<Studio>) -> AnyElemen
                                     t.text
                                 }))
                                 .child(if s.palette_query.is_empty() {
-                                    "Type a command…".into()
+                                    if s.palette_exports_only {
+                                        "Export format…".into()
+                                    } else {
+                                        "Type a command…".into()
+                                    }
                                 } else {
                                     format!("{}│", s.palette_query)
                                 }),
@@ -2817,12 +3236,13 @@ fn command_overlay(t: Colors, s: &Studio, cx: &mut Context<Studio>) -> AnyElemen
                         .p(px(6.))
                         .gap(px(1.))
                         .when(commands.is_empty(), |d| {
-                            d.child(
-                                div()
-                                    .p(px(12.))
-                                    .text_color(rgb(t.muted))
-                                    .child("No matching commands"),
-                            )
+                            d.child(div().p(px(12.)).text_color(rgb(t.muted)).child(
+                                if s.palette_exports_only {
+                                    "No matching export formats"
+                                } else {
+                                    "No matching commands"
+                                },
+                            ))
                         })
                         .children(
                             commands
@@ -2876,7 +3296,9 @@ fn help_overlay(t: Colors, cx: &mut Context<Studio>) -> AnyElement {
                         "Zoom",
                     ),
                     ("` / . / F", "Focus selection"),
+                    ("Home", "Frame all visible geometry"),
                     ("1 / 3 / 7", "Front / right / top"),
+                    ("Alt + 1 / 3 / 7", "Back / left / bottom"),
                     ("5", "Toggle projection"),
                 ],
             ),
@@ -2894,6 +3316,10 @@ fn help_overlay(t: Colors, cx: &mut Context<Studio>) -> AnyElement {
                     ("Tab", "Object / component edit"),
                     ("1 / 2 / 3", "Vertex / edge / face in edit mode"),
                     ("E / I", "Extrude / inset region"),
+                    (
+                        platform_shortcut("⌘ B", "Ctrl+B"),
+                        "Bevel convex mesh edges",
+                    ),
                     ("Shift + D", "Duplicate object"),
                 ],
             ),
@@ -2904,6 +3330,7 @@ fn help_overlay(t: Colors, cx: &mut Context<Studio>) -> AnyElement {
                 ("Z", "Shading pie · hold and flick"),
                 ("4 / 6 / 2 / 8", "Modes inside the pie"),
                 ("X / C / V", "Solid / material / rendered"),
+                ("Shift + M", "Selection measurements"),
                 (
                     platform_shortcut("⌘ Z / ⇧ ⌘ Z", "Ctrl+Z / Ctrl+Shift+Z"),
                     "Undo / redo",
@@ -3207,7 +3634,7 @@ pub fn render(
         .text_size(px(11.))
         .font_family(".SystemUIFont")
         .child(sidebar_resize_events(cx))
-        .child(titlebar(t, studio, cx))
+        .child(titlebar(t, studio, window, cx))
         .child(
             row()
                 .flex_1()
@@ -3245,6 +3672,9 @@ pub fn render(
         })
         .when(studio.shading_pie.is_some(), |d| {
             d.child(shading_overlay(t, studio, cx))
+        })
+        .when(studio.stl_dialog.is_some(), |d| {
+            d.child(crate::exchange::overlay(studio, cx))
         })
         .when(studio.panels.sidebar_resize.is_some(), |d| {
             d.child(

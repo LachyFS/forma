@@ -9,32 +9,50 @@ use gpui::Context;
 pub(crate) enum MeshTool {
     Extrude,
     Inset,
+    Bevel,
 }
 
 impl Studio {
     pub(crate) fn start_mesh_tool(&mut self, tool: MeshTool, cx: &mut Context<Self>) {
-        if !self.edit_mode.is_component() || self.selected_faces().is_empty() {
-            self.status = "Select a face region first".into();
-            cx.notify();
-            return;
-        }
-        let faces = self.selected_faces();
-        let selection_before = self.component_elements();
-        let mode_before = self.edit_mode;
-        self.edit_mode = EditMode::Face;
-        self.set_components(
-            faces
-                .iter()
-                .copied()
-                .map(forma_core::MeshElement::Face)
-                .collect(),
-        );
-        self.start_transform(Tool::Move, None, true, cx);
-        if let Some(drag) = self.transform_drag.as_mut() {
-            drag.mesh_tool = Some(tool);
-            drag.mesh_faces = faces;
-            drag.selection_before = selection_before;
-            drag.selection_mode_before = mode_before;
+        if tool == MeshTool::Bevel {
+            if self.edit_mode != EditMode::Object || self.selected_object().is_none() {
+                self.status = "Bevel · Select a mesh object in Object mode first".into();
+                cx.notify();
+                return;
+            }
+            if self.selected_ids().len() != 1 {
+                self.status = "Select one mesh object to bevel".into();
+                cx.notify();
+                return;
+            }
+            self.start_transform(Tool::Move, None, true, cx);
+            if let Some(drag) = self.transform_drag.as_mut() {
+                drag.mesh_tool = Some(tool);
+            }
+        } else {
+            if !self.edit_mode.is_component() || self.selected_faces().is_empty() {
+                self.status = "Select a face region first".into();
+                cx.notify();
+                return;
+            }
+            let faces = self.selected_faces();
+            let selection_before = self.component_elements();
+            let mode_before = self.edit_mode;
+            self.edit_mode = EditMode::Face;
+            self.set_components(
+                faces
+                    .iter()
+                    .copied()
+                    .map(forma_core::MeshElement::Face)
+                    .collect(),
+            );
+            self.start_transform(Tool::Move, None, true, cx);
+            if let Some(drag) = self.transform_drag.as_mut() {
+                drag.mesh_tool = Some(tool);
+                drag.mesh_faces = faces;
+                drag.selection_before = selection_before;
+                drag.selection_mode_before = mode_before;
+            }
         }
         self.status = format!(
             "{tool:?} · Move pointer or type a distance · Ctrl snap · Enter confirm · Esc cancel"
@@ -55,11 +73,11 @@ impl Studio {
         let tool = drag.mesh_tool.unwrap();
         drag.motion.update(position, drag.motion.start, precise);
         let delta = drag.motion.effective - drag.motion.start;
-        let explicit = crate::transform::numeric_value(&drag.numeric);
+        let explicit = crate::transform::distance_value(&drag.numeric);
         if !drag.numeric.is_empty() && explicit.is_none() {
-            drag.error = Some("Finish the numeric expression".into());
+            drag.error = Some("Enter a distance expression (m, cm, mm, in or ft)".into());
             self.status = format!(
-                "{tool:?} · {} · Finish the numeric expression",
+                "{tool:?} · {} · Enter a distance expression (m, cm, mm, in or ft)",
                 drag.numeric
             );
             cx.notify();
@@ -91,7 +109,9 @@ impl Studio {
             direction.dot(inverse_view.x_axis.truncate()),
             -direction.dot(inverse_view.y_axis.truncate()),
         );
-        let raw = if tool == MeshTool::Inset || projected.length_squared() < 0.02 {
+        let raw = if matches!(tool, MeshTool::Inset | MeshTool::Bevel)
+            || projected.length_squared() < 0.02
+        {
             (delta.x - delta.y) * pixel_scale
         } else {
             delta.dot(projected) / projected.length_squared() * pixel_scale
@@ -100,9 +120,37 @@ impl Studio {
         if snapping && explicit.is_none() {
             amount = crate::transform::snap(amount, if precise { 0.01 } else { 0.1 });
         }
+        if tool == MeshTool::Bevel && amount < 0. {
+            drag.error =
+                Some("Bevel width must be positive · Adjust distance or Esc cancel".into());
+            self.status = drag.error.clone().unwrap();
+            cx.notify();
+            return;
+        }
         let mut mesh = source.clone();
         let result = if amount.abs() < 1e-6 {
             Ok(())
+        } else if tool == MeshTool::Bevel {
+            // Chamfer width is a world-space distance even with nonuniform
+            // object/parent scale; bevel replaces the original vertices.
+            for position in &mut mesh.positions {
+                *position = world.transform_point3(*position);
+            }
+            let result = mesh.bevel_edges(amount);
+            if result.is_ok() {
+                let inverse = world.inverse();
+                for position in &mut mesh.positions {
+                    *position = inverse.transform_point3(*position);
+                }
+                // Bevel repairs outward winding in world space. Convert that
+                // orientation as well as positions back through a reflection.
+                if world.as_dmat4().determinant() < 0. {
+                    for face in &mut mesh.faces {
+                        face.reverse();
+                    }
+                }
+            }
+            result
         } else if tool == MeshTool::Inset {
             // Offset in world space so non-uniform object scale does not make
             // inset thickness vary from one side of the face to another.
@@ -142,7 +190,11 @@ impl Studio {
                 drag.changed = amount.abs() >= 1e-6;
                 self.status = format!(
                     "{tool:?} · {amount:.3} m · {} · Enter confirm · Esc cancel",
-                    if drag.constraint.axis.is_none() {
+                    if tool == MeshTool::Bevel {
+                        "All edges".into()
+                    } else if tool == MeshTool::Inset {
+                        "Face region".into()
+                    } else if drag.constraint.axis.is_none() {
                         "Normal".into()
                     } else {
                         drag.constraint.label()
@@ -203,6 +255,7 @@ impl Studio {
             original,
             before: self.scene.clone(),
             numeric: String::new(),
+            numeric_replace: false,
             modal,
             changed: false,
             vertices: self.component_vertices(),
@@ -236,7 +289,7 @@ impl Studio {
         let Some(drag) = &mut self.transform_drag else {
             return;
         };
-        use crate::transform::{Orientation, numeric_value, snap};
+        use crate::transform::{Orientation, snap};
         let camera = self.scene.camera;
         let bounds = self.bounds.get();
         let aspect = f32::from(bounds.size.width) / f32::from(bounds.size.height).max(1.);
@@ -246,9 +299,17 @@ impl Studio {
             .unwrap_or(drag.motion.start);
         drag.motion.update(position, pivot_screen, precise);
         let delta = drag.motion.effective - drag.motion.start;
-        let explicit = numeric_value(&drag.numeric);
+        let explicit = transform_numeric_value(drag);
         if !drag.numeric.is_empty() && explicit.is_none() {
-            self.status = format!("{} · Finish the numeric expression", drag.numeric);
+            drag.error = Some(
+                match drag.tool {
+                    Tool::Move => "Enter a distance expression (m, cm, mm, in or ft)",
+                    Tool::Rotate => "Enter an angle expression (degrees or rad)",
+                    _ => "Enter a unitless scale expression",
+                }
+                .into(),
+            );
+            self.status = format!("{} · {}", drag.numeric, drag.error.as_ref().unwrap());
             cx.notify();
             return;
         }
@@ -314,7 +375,7 @@ impl Studio {
                     snap(local.z, step),
                 );
         }
-        let mut angle = explicit.map(f32::to_radians).unwrap_or(drag.motion.angle);
+        let mut angle = explicit.unwrap_or(drag.motion.angle);
         if let Some(axis) = drag.constraint.axis {
             // Clockwise mouse motion should feel the same when viewing an axis
             // from either side, while numeric angles follow its positive direction.
@@ -445,9 +506,7 @@ impl Studio {
     pub(crate) fn finish_transform(&mut self, cancel: bool, cx: &mut Context<Self>) {
         if !cancel
             && self.transform_drag.as_ref().is_some_and(|d| {
-                d.error.is_some()
-                    || (!d.numeric.is_empty()
-                        && crate::transform::numeric_value(&d.numeric).is_none())
+                d.error.is_some() || (!d.numeric.is_empty() && transform_numeric_value(d).is_none())
             })
         {
             self.status = self
@@ -484,12 +543,33 @@ impl Studio {
                 self.history
                     .checkpoint(drag.history_before.as_ref().unwrap_or(&drag.before));
                 self.dirty = true;
+                if drag.mesh_tool == Some(MeshTool::Bevel) {
+                    // Object mode can retain a dormant component selection,
+                    // whose indices no longer refer to the replaced topology.
+                    self.clear_components();
+                }
                 self.status = drag
                     .mesh_tool
                     .map(|tool| format!("{tool:?} applied"))
                     .unwrap_or_else(|| format!("{:?} applied", drag.tool));
                 cx.notify();
             }
+        } else {
+            self.status = drag
+                .mesh_tool
+                .map(|tool| format!("{tool:?} unchanged"))
+                .unwrap_or_else(|| format!("{:?} unchanged", drag.tool));
+            cx.notify();
         }
+    }
+}
+
+fn transform_numeric_value(drag: &TransformDrag) -> Option<f32> {
+    if drag.mesh_tool.is_some() || drag.tool == Tool::Move {
+        crate::transform::distance_value(&drag.numeric)
+    } else if drag.tool == Tool::Rotate {
+        crate::transform::angle_value(&drag.numeric)
+    } else {
+        crate::transform::numeric_value(&drag.numeric)
     }
 }
