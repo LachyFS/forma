@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/forma-core", "crates/forma-render", "crates/forma-app"]
+members = ["crates/forma-core", "crates/forma-render", "crates/forma-app", "crates/forma-update"]
 resolver = "2"
 
 [workspace.package]

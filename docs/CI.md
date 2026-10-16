@@ -9,6 +9,7 @@ checked when a PR is opened, avoiding duplicate push and PR builds.
 | --- | --- |
 | Quality | Rust formatting; actionlint validation of every workflow; ShellCheck on packaging scripts; JavaScript syntax and offline website tests; macOS bundle signing and relocated denoiser loading; Windows preference path tests. |
 | Platforms | Strict Clippy on every workspace target, executable builds, core/application tests, and shader validation on Ubuntu 24.04, Windows 2025, and macOS 14. Linux also runs renderer tests serially through Mesa software Vulkan and renders all four viewport modes. |
+| Update installation | Authenticated metadata, corrupted packages, preferences, and restart guards; package, install, upgrade and relaunch a fixture on all four release platforms, verifying both its executable and companion runtime. Uses an ephemeral signing key, never the production secret. |
 | Release | On version tags, requires a passing Security audit, tests and packages four native platforms, then publishes archives, checksums, and generated notes. Manual runs audit and build artifacts without publishing. See [releasing](RELEASING.md). |
 | Security | Audits `Cargo.lock` against the current RustSec database on each change and daily at 03:23 UTC. No application build or GPU is needed. |
 | Deploy Forma website | Tests and packages `site/`, then publishes to GitHub Pages after relevant changes on `main` or a manual run on `main`. |
@@ -84,7 +85,7 @@ rustup toolchain install
 cargo fmt --all -- --check
 cargo clippy --locked --workspace --all-targets -- -D warnings
 cargo build --locked --workspace --bins
-cargo test --locked -p forma-core -p forma
+cargo test --locked -p forma-core -p forma -p forma-update
 node --check site/app.js
 node --check site/releases.mjs
 node --test scripts/tests/*.test.mjs
@@ -96,6 +97,11 @@ cargo audit
 Node 24 is used in CI. Install actionlint, ShellCheck, and cargo-audit separately
 to run their checks locally. `cargo audit` reads the existing lockfile without
 updating it.
+
+The native updater test additionally needs .NET SDK 8, `vpk` 1.2.161, Python 3.12,
+and OpenSSL. Linux needs `squashfs-tools`; the test uses AppImage extraction mode
+without requiring a FUSE mount. Run `python scripts/test-update-install.py
+linux-x86_64` (or `macos-arm64`, `macos-x86_64`, `windows-x64` on that host).
 
 For the same Linux software renderer used in CI:
 

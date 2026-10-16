@@ -8,6 +8,7 @@ default-run = "forma"
 [dependencies]
 forma-core = { path = "../forma-core" }
 forma-render = { path = "../forma-render" }
+forma-update = { path = "../forma-update" }
 anyhow.workspace = true
 glam.workspace = true
 image.workspace = true

@@ -18,7 +18,8 @@ gh workflow run release.yml --ref YOUR_BRANCH
 ```
 
 Manual runs never create a tag or GitHub release. Download `release-complete`
-from the run to inspect the four archives and `SHA256SUMS`. Extract and launch
+from the run to inspect the four installable packages, four full update packages,
+four signed manifests and `SHA256SUMS`. Install and launch
 the packages on the appropriate machines before cutting a release. Hosted tests
 do not establish native GUI or GPU compatibility. Linux packages target Ubuntu
 24.04 or compatible newer systems and still require system desktop libraries.
@@ -60,12 +61,31 @@ sha256sum --check SHA256SUMS  # Linux
 shasum -a 256 --check SHA256SUMS  # macOS
 ```
 
-On Windows use `Get-FileHash .\Forma-v0.2.0-windows-x64.zip -Algorithm SHA256`
+On Windows use `Get-FileHash .\Forma-v0.2.0-windows-x64.exe -Algorithm SHA256`
 and compare with its entry in `SHA256SUMS`. Asset names include the tag, OS,
-and processor. Keep the entire extracted bundle together.
+and processor. macOS uses an application ZIP, Windows a per-user installer,
+and Linux an AppImage. Keep the macOS application bundle intact. The `.nupkg`
+files and signed `update-*.json` manifests are updater inputs.
 
 Only the final assembly/publication job has `contents: write`; package builds
-have read-only repository access. No signing secrets or personal access token
-are required. Protect `v*` tags with a repository ruleset to restrict who can
+have read-only repository access. The assembly job requires the repository secret
+`FORMA_UPDATE_SIGNING_KEY`, an Ed25519 private key in PEM format. Its public key
+must match `crates/forma-update/update-public-key.txt`; the signer rejects a
+mismatch. A key and secret are configured for this repository. Back up the
+private key securely: GitHub does not allow retrieving secret values. No personal
+access token is required in Actions. Protect `v*` tags with a repository ruleset to restrict who can
 release. Normal branch CI and tag protection are repository settings; the release
 workflow does not enforce that a tag's commit has already passed branch CI.
+
+The update signature is separate from paid OS code signing. Without Apple or
+Windows credentials, the pipeline preserves ad-hoc macOS signatures and unsigned
+Windows installers. Initial installation can show OS trust warnings. To add
+platform signing later, provision certificates in the appropriate build job and
+set `FORMA_MAC_SIGN_IDENTITY` (and optionally `FORMA_MAC_INSTALL_IDENTITY` and
+`FORMA_MAC_NOTARY_PROFILE`), or `FORMA_WINDOWS_SIGN_PARAMS`. These are packager
+hooks; certificate provisioning is not configured in this repository.
+
+See [update design and recovery](UPDATES.md) for channels, key rotation, rollback,
+and native upgrade tests. The release version is embedded from the complete tag,
+including preview suffixes; a local build without `FORMA_RELEASE_VERSION` cannot
+offer updates.

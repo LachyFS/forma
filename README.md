@@ -13,8 +13,11 @@ rounded cube, plinth and emissive area light.
 
 Get platform packages from [GitHub Releases](https://github.com/lachyfs/forma/releases).
 Tagged releases include macOS Apple silicon/Intel, Windows x64, and Linux x86_64
-archives with the AI denoiser and SHA-256 checksums. See
-[releasing Forma](docs/RELEASING.md) for publishing and testing the pipeline.
+packages with the AI denoiser and SHA-256 checksums. Packaged releases check for
+authenticated updates in the background; choose **Updates → Restart to update**
+when ready. Existing portable builds need one manual installation of a release
+with the updater. See [automatic updates](docs/UPDATES.md) and
+[releasing Forma](docs/RELEASING.md).
 
 
 The standalone [download site](site/README.md) lives in `site/`. It can be served
@@ -340,7 +343,9 @@ open target/release/Forma.app
 
 The macOS script creates `Forma.app`; Linux and Windows scripts create portable
 directories and archives under `target/<profile>/`. They package the host
-architecture and do not sign, notarize or install the application. Release builds use thin
+architecture; macOS receives an ad-hoc signature. These local bundles do not
+include automatic updates. The release workflow wraps them with Velopack and
+signs update metadata. Release builds use thin
 LTO and may take longer than development builds.
 
 See [architecture](docs/ARCHITECTURE.md) for crate boundaries, frame ownership,

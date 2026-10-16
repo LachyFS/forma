@@ -1,4 +1,5 @@
 use crate::code_editor::{CodeEditor, EditorEvent};
+mod update_flow;
 use crate::exchange::{MeshImport, StlDialog, StlDirection, StlUnit};
 use crate::render_worker::{RenderWorker, Request};
 use crate::shading_pie::ShadingPie;
@@ -138,6 +139,13 @@ pub enum Command {
     TogglePalette,
     ToggleTheme,
     ToggleHelp,
+    CheckForUpdates,
+    ToggleUpdates,
+    DownloadUpdate,
+    RestartUpdate,
+    SkipUpdate,
+    ToggleUpdateChecks,
+    ToggleUpdateDownloads,
     TogglePreviewSettings,
     SetPreviewStudio(StudioLight),
     TogglePreviewWorld,
@@ -202,6 +210,7 @@ pub struct Studio {
     pub palette_query: String,
     pub palette_index: usize,
     pub help_open: bool,
+    pub(crate) updates: crate::updater::Updater,
     pub preview_open: bool,
     pub preview_loading: bool,
     pub shader_editor: Option<Entity<CodeEditor>>,
@@ -289,6 +298,59 @@ impl Studio {
                 .unwrap_or(true)
         });
         let scene_snapshot = Arc::new(scene.clone());
+        let update_path = theme_path
+            .as_ref()
+            .and_then(|path| path.parent())
+            .map(|path| path.join("updates.json"));
+        let smoke_session = std::env::args().any(|arg| arg == "--smoke-test");
+        let (updates, update_events) = crate::updater::Updater::new(update_path, !smoke_session);
+        let update_window = window.window_handle();
+        cx.spawn(async move |this, cx| {
+            while let Ok(event) = update_events.recv().await {
+                match event {
+                    crate::updater::Event::State(state) => {
+                        if this
+                            .update(cx, |s, cx| {
+                                s.updates.receive(state);
+                                cx.notify();
+                            })
+                            .is_err()
+                        {
+                            break;
+                        }
+                    }
+                    crate::updater::Event::Exit => {
+                        let _ = update_window.update(cx, |_, window, _| window.remove_window());
+                        break;
+                    }
+                }
+            }
+        })
+        .detach();
+        if !smoke_session {
+            cx.spawn(async move |this, cx| {
+                cx.background_executor()
+                    .timer(std::time::Duration::from_secs(30))
+                    .await;
+                loop {
+                    if this
+                        .update(cx, |s, cx| {
+                            s.updates.check(false);
+                            cx.notify();
+                        })
+                        .is_err()
+                    {
+                        break;
+                    }
+                    // Spread checks from different installations across a ten-minute window.
+                    let jitter = std::process::id() as u64 % 600;
+                    cx.background_executor()
+                        .timer(std::time::Duration::from_secs(6 * 60 * 60 + jitter))
+                        .await;
+                }
+            })
+            .detach();
+        }
         cx.observe_window_activation(window, |s, w, cx| {
             if !w.is_window_active() {
                 s.close_shading_pie(cx);
@@ -349,6 +411,7 @@ impl Studio {
             palette_query: String::new(),
             palette_index: 0,
             help_open: false,
+            updates,
             preview_open: false,
             preview_loading: false,
             shader_editor: None,
@@ -594,6 +657,9 @@ impl Studio {
     }
 
     pub(crate) fn should_close(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        if self.updates.restart_pending {
+            return false;
+        }
         if !self.dirty {
             return true;
         }
@@ -783,6 +849,22 @@ impl Studio {
     }
 
     pub fn execute(&mut self, command: Command, window: &mut Window, cx: &mut Context<Self>) {
+        if self.updates.restart_pending {
+            return;
+        }
+        if matches!(
+            command,
+            Command::CheckForUpdates
+                | Command::ToggleUpdates
+                | Command::DownloadUpdate
+                | Command::RestartUpdate
+                | Command::SkipUpdate
+                | Command::ToggleUpdateChecks
+                | Command::ToggleUpdateDownloads
+        ) {
+            self.execute_update(command, window, cx);
+            return;
+        }
         if let Some(editor) = &self.shader_editor {
             if matches!(command, Command::Undo | Command::Redo) {
                 editor.update(cx, |editor, cx| editor.undo(command == Command::Redo, cx));
@@ -822,6 +904,13 @@ impl Studio {
             self.help_open = false;
         }
         match command {
+            Command::CheckForUpdates
+            | Command::ToggleUpdates
+            | Command::DownloadUpdate
+            | Command::RestartUpdate
+            | Command::SkipUpdate
+            | Command::ToggleUpdateChecks
+            | Command::ToggleUpdateDownloads => unreachable!(),
             Command::New | Command::Open if self.dirty => {
                 if self.prompt_open {
                     return;
@@ -1914,6 +2003,7 @@ impl Studio {
         let generation = self.generation;
         let epoch = self.project_epoch;
         let destination = path.clone();
+        let restart_after_save = self.updates.restart_pending;
         let save = cx
             .background_executor()
             .spawn(async move { scene.save(&destination) });
@@ -1922,8 +2012,12 @@ impl Studio {
             let _ = this.update(cx, |s, cx| {
                 s.saving = false;
                 if s.project_epoch != epoch {
+                    if restart_after_save {
+                        s.updates.restart_pending = false;
+                    }
                     return;
                 }
+                let saved = result.is_ok();
                 match result {
                     Ok(()) => {
                         s.project_name = file_stem(&path);
@@ -1936,6 +2030,9 @@ impl Studio {
                         }
                     }
                     Err(error) => s.status = format!("Save failed: {error:#}"),
+                }
+                if restart_after_save {
+                    s.finish_update_save(saved, (epoch, generation), cx);
                 }
                 cx.notify();
             });
@@ -2408,6 +2505,18 @@ impl Studio {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.updates.restart_pending {
+            cx.stop_propagation();
+            return;
+        }
+        if self.updates.open {
+            if event.keystroke.key == "escape" {
+                self.updates.open = false;
+                cx.notify();
+            }
+            cx.stop_propagation();
+            return;
+        }
         let key = event.keystroke.key.as_str();
         let mods = event.keystroke.modifiers;
         if let Some(dialog) = self.stl_dialog.as_mut() {
@@ -2834,6 +2943,8 @@ pub(crate) fn palette_commands(query: &str) -> Vec<(&'static str, &'static str, 
             Command::SaveAs,
         ),
         ("Add cube", "", Command::Add(Primitive::Cube)),
+        ("Check for Updates…", "", Command::CheckForUpdates),
+        ("Update preferences…", "", Command::ToggleUpdates),
         ("Add sphere", "", Command::Add(Primitive::Sphere)),
         ("Add cylinder", "", Command::Add(Primitive::Cylinder)),
         ("Add torus", "", Command::Add(Primitive::Torus)),

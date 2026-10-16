@@ -403,6 +403,13 @@ impl Render for Tooltip {
 
 fn command_hint(command: Command) -> &'static str {
     match command {
+        Command::CheckForUpdates => "Check for a newer version of Forma",
+        Command::ToggleUpdates => "Updates and download preferences",
+        Command::DownloadUpdate => "Download the available update",
+        Command::RestartUpdate => "Save your work and restart to update",
+        Command::SkipUpdate => "Skip this update until a newer version is released",
+        Command::ToggleUpdateChecks => "Enable or disable automatic update checks",
+        Command::ToggleUpdateDownloads => "Enable or disable automatic update downloads",
         Command::New => platform_shortcut("New project · ⌘ N", "New project · Ctrl+N"),
         Command::Open => platform_shortcut("Open project · ⌘ O", "Open project · Ctrl+O"),
         Command::Save => platform_shortcut("Save project · ⌘ S", "Save project · Ctrl+S"),
@@ -2510,6 +2517,20 @@ fn footer(t: Colors, s: &Studio, cx: &mut Context<Studio>) -> AnyElement {
         )
         .child(divider(t).h(px(12.)))
         .child(s.device_name.clone())
+        .child(button(
+            t,
+            "footer-updates",
+            match &s.updates.state {
+                crate::updater::State::Ready(_) => "Update ready",
+                crate::updater::State::Downloading(_) => "Downloading update…",
+                crate::updater::State::Available(_) => "Update available",
+                _ => "Updates",
+            },
+            None,
+            Command::ToggleUpdates,
+            matches!(s.updates.state, crate::updater::State::Ready(_)),
+            cx,
+        ))
         .child(icon_button(
             t,
             "footer-help",
@@ -3685,6 +3706,82 @@ pub fn render(
                     .cursor(CursorStyle::ResizeLeftRight),
             )
         })
+        .when(studio.updates.open || studio.updates.restart_pending, |d| {
+            d.child(update_overlay(t, studio, cx))
+        })
+        .into_any_element()
+}
+
+fn update_overlay(t: Colors, s: &Studio, cx: &mut Context<Studio>) -> AnyElement {
+    use crate::updater::State;
+    let locked = s.updates.restart_pending;
+    let mut controls = row().gap(px(8.));
+    if !locked {
+        controls = controls.child(button(
+            t,
+            "update-check",
+            "Check now",
+            None,
+            Command::CheckForUpdates,
+            false,
+            cx,
+        ));
+        if matches!(s.updates.state, State::Available(_)) {
+            controls = controls.child(button(
+                t,
+                "update-download",
+                "Download",
+                None,
+                Command::DownloadUpdate,
+                true,
+                cx,
+            ));
+        }
+        if matches!(s.updates.state, State::Ready(_)) {
+            controls = controls.child(button(
+                t,
+                "update-restart",
+                "Restart to update",
+                None,
+                Command::RestartUpdate,
+                true,
+                cx,
+            ));
+        }
+        if matches!(s.updates.state, State::Ready(_) | State::Available(_)) {
+            controls = controls.child(button(
+                t,
+                "update-skip",
+                "Skip this version",
+                None,
+                Command::SkipUpdate,
+                false,
+                cx,
+            ));
+        }
+        controls = controls.child(button(
+            t,
+            "update-later",
+            "Later",
+            None,
+            Command::ToggleUpdates,
+            false,
+            cx,
+        ));
+    }
+    div().absolute().inset_0().occlude().bg(rgba(0x00000066))
+        .flex().items_center().justify_center()
+        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+        .on_mouse_down(MouseButton::Right, |_, _, cx| cx.stop_propagation())
+        .on_scroll_wheel(|_, _, cx| cx.stop_propagation())
+        .child(col().w(px(510.)).p(px(20.)).gap(px(16.)).bg(rgb(t.panel)).rounded(px(8.)).border_1().border_color(rgb(t.edge)).shadow_lg()
+            .child(div().text_size(px(16.)).font_weight(FontWeight::SEMIBOLD).child("Forma updates"))
+            .child(div().child(if locked { "Saving and preparing to restart…".into() } else { s.updates.state.label() }))
+            .when(!locked, |d| d
+                .child(button(t, "update-auto-check", "Check automatically", None, Command::ToggleUpdateChecks, s.updates.preferences.automatic_checks, cx))
+                .child(button(t, "update-auto-download", "Download automatically", None, Command::ToggleUpdateDownloads, s.updates.preferences.automatic_downloads, cx))
+                .child(div().text_color(rgb(t.muted)).child("Updates install only when you choose to restart. Your projects and preferences are kept.")))
+            .child(controls))
         .into_any_element()
 }
 
