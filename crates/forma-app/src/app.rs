@@ -1,5 +1,6 @@
 use crate::code_editor::{CodeEditor, EditorEvent};
 mod update_flow;
+pub(crate) mod update_smoke;
 use crate::exchange::{MeshImport, StlDialog, StlDirection, StlUnit};
 use crate::render_worker::{RenderWorker, Request};
 use crate::shading_pie::ShadingPie;
@@ -863,6 +864,9 @@ impl Studio {
                 | Command::ToggleUpdateDownloads
         ) {
             self.execute_update(command, window, cx);
+            return;
+        }
+        if self.updates.open {
             return;
         }
         if let Some(editor) = &self.shader_editor {

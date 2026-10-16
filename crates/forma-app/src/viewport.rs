@@ -1238,7 +1238,9 @@ impl Studio {
     }
 
     pub(crate) fn navigation_blocked(&self) -> bool {
-        self.transform_drag.is_some()
+        self.updates.open
+            || self.updates.restart_pending
+            || self.transform_drag.is_some()
             || self.shading_pie.is_some()
             || self.preview_open
             || self.help_open
@@ -1253,6 +1255,10 @@ impl Studio {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.updates.open || self.updates.restart_pending {
+            cx.stop_propagation();
+            return;
+        }
         if self.stl_dialog.is_some() {
             cx.stop_propagation();
             return;

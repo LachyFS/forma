@@ -3773,6 +3773,7 @@ fn update_overlay(t: Colors, s: &Studio, cx: &mut Context<Studio>) -> AnyElement
         .flex().items_center().justify_center()
         .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
         .on_mouse_down(MouseButton::Right, |_, _, cx| cx.stop_propagation())
+        .on_mouse_down(MouseButton::Middle, |_, _, cx| cx.stop_propagation())
         .on_scroll_wheel(|_, _, cx| cx.stop_propagation())
         .child(col().w(px(510.)).p(px(20.)).gap(px(16.)).bg(rgb(t.panel)).rounded(px(8.)).border_1().border_color(rgb(t.edge)).shadow_lg()
             .child(div().text_size(px(16.)).font_weight(FontWeight::SEMIBOLD).child("Forma updates"))

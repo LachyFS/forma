@@ -20,7 +20,8 @@ def package(tag, platform, source, destination, executable="forma", vpk="vpk", k
         output = Path(temporary)
         command = [vpk, "pack", "--packId", "Forma", "--packTitle", "Forma", "--packVersion", version,
                    "--packDir", str(source.resolve()), "--outputDir", str(output),
-                   "--channel", f"{channel}-{platform}", "--runtime", RUNTIMES[platform]]
+                   "--channel", f"{channel}-{platform}", "--runtime", RUNTIMES[platform],
+                   "--mainExe", executable + (".exe" if platform.startswith("windows") else "")]
         if platform.startswith("macos"):
             command += ["--signAppIdentity", os.environ.get("FORMA_MAC_SIGN_IDENTITY") or "-"]
             if os.environ.get("FORMA_MAC_INSTALL_IDENTITY"):
@@ -28,8 +29,7 @@ def package(tag, platform, source, destination, executable="forma", vpk="vpk", k
             if os.environ.get("FORMA_MAC_NOTARY_PROFILE"):
                 command += ["--notaryProfile", os.environ["FORMA_MAC_NOTARY_PROFILE"]]
         else:
-            command += ["--mainExe", executable + (".exe" if platform.startswith("windows") else ""),
-                        "--icon", str(Path("assets/Forma.ico" if platform.startswith("windows") else "assets/Forma-64.png").resolve())]
+            command += ["--icon", str(Path("assets/Forma.ico" if platform.startswith("windows") else "assets/Forma-64.png").resolve())]
         if platform.startswith("windows") and os.environ.get("FORMA_WINDOWS_SIGN_PARAMS"):
             command += ["--signParams", os.environ["FORMA_WINDOWS_SIGN_PARAMS"]]
         subprocess.run(command, check=True)

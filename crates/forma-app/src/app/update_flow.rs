@@ -29,6 +29,10 @@ impl Studio {
             Command::RestartUpdate => self.request_update_restart(window, cx),
             _ => unreachable!(),
         }
+        if self.updates.open {
+            self.navigation = None;
+            self.focus.focus(window);
+        }
         cx.notify();
     }
 
