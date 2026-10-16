@@ -55,6 +55,10 @@ pub(crate) async fn check(
         s.dirty = true;
         s.updates.restart_pending = true;
         s.save_to(path.clone(), cx);
+        ensure!(
+            !s.accepts_document_result(original.0, original.1),
+            "late file dialog could change the project during restart"
+        );
         s.execute(Command::New, w, cx);
         ensure!(
             original == (s.project_epoch, s.generation),

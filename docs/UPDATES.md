@@ -65,10 +65,12 @@ accounts, but unsigned/ad-hoc initial installs can still display OS warnings.
   reverted code. Automatic downgrades are rejected. A manual reinstall remains
   the recovery path; projects and preferences are outside the application bundle.
   Future document migrations must preserve compatibility or provide backups.
-- Keep an offline backup of the signing key. To rotate it normally, first ship a
-  bridge version signed by the old key that trusts the new key, then switch
-  release signing. Losing the only key requires a manual reinstall. A compromised
-  key requires incident recovery, not a silent key replacement in CI.
+- Keep an offline backup of the signing key. Rotation needs a migration release
+  signed by the old key, support for the new key, and a discovery plan that also
+  reaches users who skip that migration release. This single-key implementation
+  does not yet automate rotation; simply changing the key strands old installs.
+  Losing the only key requires a manual reinstall. A compromised key requires
+  incident recovery, not a silent key replacement in CI.
 
 ## Verification
 
@@ -76,8 +78,12 @@ accounts, but unsigned/ad-hoc initial installs can still display OS warnings.
 package rejection, truncated or modified downloads, persisted preferences, and
 restart rejection after failed saves or changed documents. Python release tests
 exercise real OpenSSL signatures and fail incomplete or mismatched asset sets.
+The native editor smoke test exercises modal input blocking, export guards,
+successful saves before installation, and preservation of dirty work after a
+failed save. Late file-dialog results are rejected while restart is pending.
 The Update installation workflow packages versions A and B on each native target,
 installs A, verifies and applies B through the real helper, and checks the
 restarted executable and companion runtime are both B. These fixtures validate
+both stable and preview upgrades. They validate
 native replacement; they do not establish GPU compatibility or remove the need
 to test native file pickers and first-install OS warnings on end-user machines.

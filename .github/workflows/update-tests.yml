@@ -60,3 +60,5 @@ jobs:
         run: cargo test --locked -p forma-update
       - name: Upgrade and restart an installed application and companion library
         run: python scripts/test-update-install.py ${{ matrix.platform }}
+      - name: Upgrade between complete preview versions
+        run: python scripts/test-update-install.py ${{ matrix.platform }} --preview

@@ -1655,7 +1655,8 @@ impl Studio {
     }
 
     fn accepts_document_result(&self, epoch: u64, generation: u64) -> bool {
-        self.project_epoch == epoch
+        !self.updates.restart_pending
+            && self.project_epoch == epoch
             && self.generation == generation
             && self.transform_drag.is_none()
             && self.active_field.is_none()

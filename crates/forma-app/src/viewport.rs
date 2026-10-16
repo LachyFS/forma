@@ -1444,6 +1444,10 @@ impl Studio {
         _: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.updates.open || self.updates.restart_pending {
+            cx.stop_propagation();
+            return;
+        }
         if self.stl_dialog.is_some() {
             cx.stop_propagation();
             return;
