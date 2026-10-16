@@ -56,7 +56,11 @@ async fn settle(window: WindowHandle<Studio>, cx: &mut AsyncApp) -> Result<()> {
     }
 }
 
-async fn keys(window: WindowHandle<Studio>, sequence: &[&str], cx: &mut AsyncApp) -> Result<()> {
+pub(crate) async fn keys(
+    window: WindowHandle<Studio>,
+    sequence: &[&str],
+    cx: &mut AsyncApp,
+) -> Result<()> {
     for key in sequence {
         let key = if cfg!(target_os = "macos") {
             (*key).to_owned()
@@ -73,7 +77,7 @@ async fn keys(window: WindowHandle<Studio>, sequence: &[&str], cx: &mut AsyncApp
     Ok(())
 }
 
-async fn wait_for(
+pub(crate) async fn wait_for(
     window: WindowHandle<Studio>,
     cx: &mut AsyncApp,
     ready: impl Fn(&Studio) -> bool,
@@ -1169,6 +1173,7 @@ async fn run(window: WindowHandle<Studio>, output: PathBuf, cx: &mut AsyncApp) -
     })?;
     check_panel_resize(window, cx).await?;
     check_theme_workflow(window, &output, cx).await?;
+    crate::app::update_smoke::check(window, &output, cx).await?;
     check_preview_workflow(window, &output, cx).await?;
     check_shader_workflow(window, cx).await?;
     check_export_formats(window, cx).await?;
@@ -1660,7 +1665,7 @@ async fn run(window: WindowHandle<Studio>, output: PathBuf, cx: &mut AsyncApp) -
 /// AppKit may suspend display-link ticks for a background smoke window. Ask its
 /// own layer to display before capture, without activating or focusing the app.
 #[cfg(target_os = "macos")]
-async fn prepare_capture(window: WindowHandle<Studio>, cx: &mut AsyncApp) -> Result<()> {
+pub(crate) async fn prepare_capture(window: WindowHandle<Studio>, cx: &mut AsyncApp) -> Result<()> {
     use objc2::{msg_send, runtime::AnyObject};
     use raw_window_handle::{HasWindowHandle, RawWindowHandle};
     let handle: AnyWindowHandle = window.into();
@@ -1688,7 +1693,11 @@ async fn prepare_capture(window: WindowHandle<Studio>, cx: &mut AsyncApp) -> Res
 
 /// Captures only this application's own window. Never requests screen recording access.
 #[cfg(target_os = "macos")]
-fn capture_window(_studio: &Studio, window: &gpui::Window, path: &std::path::Path) -> Result<()> {
+pub(crate) fn capture_window(
+    _studio: &Studio,
+    window: &gpui::Window,
+    path: &std::path::Path,
+) -> Result<()> {
     use core_graphics::{
         color_space::CGColorSpace,
         context::CGContext,
@@ -1882,14 +1891,18 @@ async fn check_shader_workflow(window: WindowHandle<Studio>, cx: &mut AsyncApp) 
 /// Frame captures are explicitly labelled because GPUI does not expose a portable
 /// window screenshot API; compositor routing remains a platform manual check.
 #[cfg(not(target_os = "macos"))]
-async fn prepare_capture(window: WindowHandle<Studio>, cx: &mut AsyncApp) -> Result<()> {
+pub(crate) async fn prepare_capture(window: WindowHandle<Studio>, cx: &mut AsyncApp) -> Result<()> {
     window.update(cx, |_, window, _| window.refresh())?;
     Timer::after(Duration::from_millis(100)).await;
     Ok(())
 }
 
 #[cfg(not(target_os = "macos"))]
-fn capture_window(studio: &Studio, _window: &gpui::Window, path: &std::path::Path) -> Result<()> {
+pub(crate) fn capture_window(
+    studio: &Studio,
+    _window: &gpui::Window,
+    path: &std::path::Path,
+) -> Result<()> {
     let frame = studio
         .frame
         .as_ref()

@@ -29,6 +29,7 @@ jobs:
     outputs:
       tag: ${{ steps.version.outputs.tag }}
       prerelease: ${{ steps.version.outputs.prerelease }}
+      version: ${{ steps.version.outputs.version }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -42,8 +43,11 @@ jobs:
           if [[ "$EVENT" == workflow_dispatch ]]; then
             tag="$(python3 -c 'import tomllib; print("v" + tomllib.load(open("Cargo.toml", "rb"))["workspace"]["package"]["version"])')"
           fi
-          python3 scripts/release.py "$tag" >> "$GITHUB_OUTPUT"
-          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          {
+            python3 scripts/release.py "$tag"
+            echo "tag=$tag"
+            echo "version=${tag#v}"
+          } >> "$GITHUB_OUTPUT"
 
   build:
     name: Package (${{ matrix.platform }})
@@ -65,6 +69,7 @@ jobs:
     env:
       RELEASE_TAG: ${{ needs.version.outputs.tag }}
       RELEASE_PLATFORM: ${{ matrix.platform }}
+      FORMA_RELEASE_VERSION: ${{ needs.version.outputs.version }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -74,6 +79,11 @@ jobs:
           python-version: '3.12'
       - name: Install repository Rust toolchain
         run: rustup toolchain install --no-self-update
+      - uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5
+        with:
+          dotnet-version: '8.0.x'
+      - name: Install pinned update packager
+        run: dotnet tool install --global vpk --version 1.2.161
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           key: release-${{ matrix.platform }}
@@ -85,33 +95,28 @@ jobs:
           sudo apt-get install --no-install-recommends -y \
             build-essential clang libclang-dev cmake pkg-config libssl-dev \
             libzstd-dev libasound2-dev libfontconfig1-dev libwayland-dev \
-            libxkbcommon-dev libxkbcommon-x11-dev libx11-xcb-dev libvulkan-dev
+            libxkbcommon-dev libxkbcommon-x11-dev libx11-xcb-dev libvulkan-dev squashfs-tools
       - name: Test core and application
-        run: cargo test --locked -p forma-core -p forma
+        run: cargo test --locked -p forma-core -p forma -p forma-update
       - name: Validate shaders
         run: cargo test --locked -p forma-render --test shaders
       - name: Package macOS application
         if: runner.os == 'macOS'
         run: |
           bash scripts/bundle-macos.sh release
-          # Ad-hoc signing supports local execution on Apple silicon; this is
-          # not Developer ID signing or notarization.
-          bash scripts/sign-macos.sh target/release/Forma.app
-          mkdir -p dist
-          ditto -c -k --sequesterRsrc --keepParent target/release/Forma.app "dist/Forma-$RELEASE_TAG-$RELEASE_PLATFORM.zip"
+          python3 scripts/package-update.py "$RELEASE_TAG" "$RELEASE_PLATFORM" target/release/Forma.app
       - name: Package Linux application
         if: runner.os == 'Linux'
         run: |
           bash scripts/bundle-linux.sh release
-          mkdir -p dist
-          cp target/release/forma-linux-x86_64.tar.gz "dist/Forma-$RELEASE_TAG-$RELEASE_PLATFORM.tar.gz"
+          python3 scripts/package-update.py "$RELEASE_TAG" "$RELEASE_PLATFORM" target/release/forma-linux-x86_64/bin
       - name: Package Windows application
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
           ./scripts/bundle-windows.ps1 -Profile release
-          New-Item -ItemType Directory -Force dist | Out-Null
-          Copy-Item target/release/forma-windows-x64.zip "dist/Forma-$env:RELEASE_TAG-$env:RELEASE_PLATFORM.zip"
+          python scripts/package-update.py "$env:RELEASE_TAG" "$env:RELEASE_PLATFORM" target/release/forma-windows-x64
+          if ($LASTEXITCODE -ne 0) { throw "Update packaging failed" }
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: release-${{ matrix.platform }}
@@ -142,6 +147,13 @@ jobs:
           mkdir -p dist
           gh run download "$GITHUB_RUN_ID" --pattern 'release-macos-*' --pattern 'release-windows-*' --pattern 'release-linux-*' --dir downloaded
           find downloaded -type f -exec mv -t dist -- {} +
+          python3 scripts/release.py "$RELEASE_TAG" --assets dist --unsigned
+      - name: Sign update metadata
+        env:
+          FORMA_UPDATE_SIGNING_KEY: ${{ secrets.FORMA_UPDATE_SIGNING_KEY }}
+        run: python3 scripts/sign-updates.py dist
+      - name: Verify signed release
+        run: |
           python3 scripts/release.py "$RELEASE_TAG" --assets dist
           (cd dist && sha256sum --check SHA256SUMS)
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1

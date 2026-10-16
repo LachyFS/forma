@@ -1,0 +1,17 @@
+[package]
+name = "forma-update"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+base64 = "0.22"
+ed25519-dalek = "2.2"
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls"] }
+semver = "1"
+serde.workspace = true
+serde_json.workspace = true
+sha2 = "0.10"
+tempfile = "3"
+velopack = "=1.2.161"

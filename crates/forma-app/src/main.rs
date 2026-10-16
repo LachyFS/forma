@@ -12,6 +12,7 @@ mod theme;
 mod trackpad;
 mod transform;
 mod ui;
+mod updater;
 mod viewport;
 
 use anyhow::{Context as _, Result};
@@ -48,17 +49,19 @@ actions!(
         ApplyRotationScale,
         CenterOrigin,
         Help,
+        CheckForUpdates,
         Quit
     ]
 );
 
-const USAGE: &str = "Forma — 3D modelling and GPU rendering\n\nUsage: forma [--renderer BACKEND] [--smoke-test [DIRECTORY]]\n\nBackends: auto, wgpu, native-metal, metal, dx12, vulkan\n  auto          Native Metal on macOS; wgpu DX12 on Windows; wgpu Vulkan on Linux\n  wgpu          wgpu using the platform's default GPU backend\n  native-metal  Existing native Metal renderer (macOS)\n  metal         wgpu Metal (macOS)\n  dx12          wgpu DirectX 12 (Windows)\n  vulkan        wgpu Vulkan (Windows/Linux)\n\nFORMA_RENDERER sets the default backend; --renderer overrides it.\n";
+const USAGE: &str = "Forma — 3D modelling and GPU rendering\n\nUsage: forma [--open PROJECT] [--renderer BACKEND] [--smoke-test [DIRECTORY]]\n\nBackends: auto, wgpu, native-metal, metal, dx12, vulkan\n  auto          Native Metal on macOS; wgpu DX12 on Windows; wgpu Vulkan on Linux\n  wgpu          wgpu using the platform's default GPU backend\n  native-metal  Existing native Metal renderer (macOS)\n  metal         wgpu Metal (macOS)\n  dx12          wgpu DirectX 12 (Windows)\n  vulkan        wgpu Vulkan (Windows/Linux)\n\nFORMA_RENDERER sets the default backend; --renderer overrides it.\n";
 
 #[derive(Debug)]
 struct LaunchOptions {
     backend: Backend,
     smoke_output: Option<std::path::PathBuf>,
     help: bool,
+    project: Option<std::path::PathBuf>,
 }
 
 impl LaunchOptions {
@@ -67,6 +70,7 @@ impl LaunchOptions {
         let mut backend = None;
         let mut smoke_output = None;
         let mut help = false;
+        let mut project = None;
         while let Some(arg) = args.next() {
             match arg.as_str() {
                 "--renderer" => {
@@ -81,6 +85,13 @@ impl LaunchOptions {
                     });
                 }
                 "--help" | "-h" => help = true,
+                "--open" => {
+                    project = Some(
+                        args.next()
+                            .context("--open requires a project path")?
+                            .into(),
+                    )
+                }
                 _ if arg.starts_with("--renderer=") => {
                     backend = Some(
                         arg["--renderer=".len()..]
@@ -103,6 +114,7 @@ impl LaunchOptions {
             backend,
             smoke_output,
             help,
+            project,
         })
     }
 }
@@ -125,6 +137,7 @@ pub(crate) fn command_modifier(modifiers: gpui::Modifiers) -> bool {
 }
 
 fn main() -> Result<()> {
+    forma_update::startup();
     let environment = std::env::var("FORMA_RENDERER").ok();
     let options = LaunchOptions::parse(std::env::args().skip(1), environment.as_deref())?;
     if options.help {
@@ -133,6 +146,7 @@ fn main() -> Result<()> {
     }
     let smoke_output = options.smoke_output;
     let backend = options.backend;
+    let project = options.project;
     Application::new().run(move |cx: &mut App| {
         cx.on_window_closed(|cx| {
             if cx.windows().is_empty() {
@@ -193,6 +207,7 @@ fn main() -> Result<()> {
         register!(ApplyRotationScale, Command::ApplyRotationScale);
         register!(CenterOrigin, Command::CenterOrigin);
         register!(Help, Command::ToggleHelp);
+        register!(CheckForUpdates, Command::CheckForUpdates);
         cx.on_action(move |_: &Quit, cx| {
             let _ = window.update(cx, |s, w, cx| {
                 if s.should_close(w, cx) {
@@ -209,6 +224,7 @@ fn main() -> Result<()> {
                 name: "Forma".into(),
                 items: vec![
                     MenuItem::action("Keyboard shortcuts", Help),
+                    MenuItem::action("Check for Updates…", CheckForUpdates),
                     MenuItem::separator(),
                     MenuItem::action("Quit Forma", Quit),
                 ],
@@ -268,6 +284,11 @@ fn main() -> Result<()> {
         if let Some(output) = smoke_output {
             smoke::start(window, output, cx);
         } else {
+            let _ = window.update(cx, |s, _, cx| {
+                if let Some(path) = project {
+                    s.open_from(path, false, cx);
+                }
+            });
             cx.activate(true);
         }
     });
@@ -311,6 +332,21 @@ mod tests {
         assert!(options(&[], Some("bogus")).is_err());
         assert!(options(&["--unknown"], None).is_err());
         assert!(options(&["--help"], Some("bogus")).unwrap().help);
+        assert!(options(&["--open"], None).is_err());
+        assert_eq!(
+            options(
+                &[
+                    "--open",
+                    "project with spaces.forma",
+                    "--renderer",
+                    "vulkan"
+                ],
+                None
+            )
+            .unwrap()
+            .project,
+            Some(std::path::PathBuf::from("project with spaces.forma"))
+        );
     }
 
     #[test]
