@@ -161,15 +161,47 @@ impl Studio {
     fn begin_update_install(&mut self, cx: &mut Context<Self>) {
         let mut args = vec!["--renderer".into(), self.renderer_backend.to_string()];
         if let Some(path) = &self.path {
-            let Some(path) = path.to_str() else {
-                self.updates.restart_pending = false;
-                self.status = "Save to a Unicode project path before restarting".into();
-                return;
+            let path = match project_argument(path) {
+                Ok(path) => path,
+                Err(error) => {
+                    self.updates.restart_pending = false;
+                    self.status = format!("Could not prepare restart: {error:#}");
+                    return;
+                }
             };
-            args.extend(["--open".into(), path.into()]);
+            args.extend(["--open".into(), path]);
         }
         self.updates.restart_pending = true;
         self.updates.install(args);
         cx.notify();
+    }
+}
+
+fn project_argument(path: &std::path::Path) -> Result<String> {
+    // Native helpers relaunch from the installation directory, not the editor's
+    // original working directory. This also preserves CLI-opened relative paths.
+    let path = std::path::absolute(path)?;
+    path.into_os_string()
+        .into_string()
+        .map_err(|_| anyhow::anyhow!("Save to a Unicode project path before restarting"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::project_argument;
+
+    #[test]
+    fn restart_preserves_relative_paths_and_spaces_across_working_directories() {
+        let expected = std::env::current_dir()
+            .unwrap()
+            .join("project with spaces.forma");
+        assert_eq!(
+            project_argument(std::path::Path::new("project with spaces.forma")).unwrap(),
+            expected.to_str().unwrap()
+        );
+        assert_eq!(
+            project_argument(&expected).unwrap(),
+            expected.to_str().unwrap()
+        );
     }
 }
