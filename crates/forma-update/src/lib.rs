@@ -6,7 +6,13 @@ use reqwest::blocking::Client;
 use semver::Version;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::{fs, io::Read, path::Path, sync::mpsc::Sender, time::Duration};
+use std::{
+    fs,
+    io::Read,
+    path::{Path, PathBuf},
+    sync::mpsc::Sender,
+    time::Duration,
+};
 use velopack::locator::{LocationContext, auto_locate_app_manifest};
 use velopack::{UpdateInfo, UpdateManager, UpdateOptions, VelopackAsset, sources::HttpSource};
 
@@ -253,16 +259,22 @@ impl Candidate {
     }
 
     pub fn download(&self, progress: Sender<i16>) -> Result<()> {
+        // Velopack returns early for an existing cache entry without hashing it.
+        // Remove invalid entries so a retry can actually fetch a fresh package.
+        clear_invalid_cache(&self.package_path()?, &self.manifest.asset)?;
         self.manager
             .download_updates(&self.info(), Some(progress))?;
         self.verify_download()
     }
 
-    fn verify_download(&self) -> Result<()> {
-        let file = auto_locate_app_manifest(LocationContext::FromCurrentExe)?
+    fn package_path(&self) -> Result<PathBuf> {
+        Ok(auto_locate_app_manifest(LocationContext::FromCurrentExe)?
             .get_packages_dir()
-            .join(&self.manifest.asset.FileName);
-        verify_package(&file, &self.manifest.asset)
+            .join(&self.manifest.asset.FileName))
+    }
+
+    fn verify_download(&self) -> Result<()> {
+        verify_package(&self.package_path()?, &self.manifest.asset)
     }
 
     /// Must be called only after the editor has completed saving and locked input.
@@ -272,6 +284,24 @@ impl Candidate {
             .wait_exit_then_apply_updates(self.info(), false, true, args)?;
         Ok(())
     }
+}
+
+fn clear_invalid_cache(path: &Path, asset: &VelopackAsset) -> Result<()> {
+    match fs::symlink_metadata(path) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error.into()),
+        Ok(_) => {}
+    }
+    if verify_package(path, asset).is_err() {
+        // Remove only this cache entry, including a symlink itself. Never recurse
+        // into directories or follow a link to delete its destination.
+        match fs::remove_file(path) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error).context("Could not clear the invalid cached update"),
+        }
+    }
+    Ok(())
 }
 
 pub fn verify_package(path: &Path, asset: &VelopackAsset) -> Result<()> {

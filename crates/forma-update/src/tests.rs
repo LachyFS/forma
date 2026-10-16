@@ -119,6 +119,34 @@ fn interrupted_or_modified_download_cannot_install() {
 }
 
 #[test]
+fn retry_removes_invalid_cache_but_keeps_verified_packages() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("update");
+    let asset = manifest().asset;
+    clear_invalid_cache(&path, &asset).unwrap();
+    for bytes in [b"ab".as_slice(), b"abd".as_slice()] {
+        fs::write(&path, bytes).unwrap();
+        clear_invalid_cache(&path, &asset).unwrap();
+        assert!(!path.exists());
+    }
+    fs::write(&path, b"abc").unwrap();
+    clear_invalid_cache(&path, &asset).unwrap();
+    verify_package(&path, &asset).unwrap();
+    #[cfg(unix)]
+    {
+        let link = dir.path().join("linked-update");
+        std::os::unix::fs::symlink(&path, &link).unwrap();
+        clear_invalid_cache(&link, &asset).unwrap();
+        assert!(fs::symlink_metadata(link).is_err());
+        assert_eq!(fs::read(&path).unwrap(), b"abc");
+    }
+    let directory = dir.path().join("directory");
+    fs::create_dir(&directory).unwrap();
+    assert!(clear_invalid_cache(&directory, &asset).is_err());
+    assert!(directory.is_dir());
+}
+
+#[test]
 fn failed_save_new_edits_new_document_or_active_export_cancel_restart() {
     assert!(may_restart(true, false, false, (1, 2), (1, 2)));
     assert!(!may_restart(false, false, false, (1, 2), (1, 2)));
