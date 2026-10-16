@@ -84,6 +84,6 @@ failed save. Late file-dialog results are rejected while restart is pending.
 The Update installation workflow packages versions A and B on each native target,
 installs A, verifies and applies B through the real helper, and checks the
 restarted executable and companion runtime are both B. These fixtures validate
-both stable and preview upgrades. They validate
-native replacement; they do not establish GPU compatibility or remove the need
+native replacement for stable and preview upgrades; they do not establish GPU
+compatibility or remove the need
 to test native file pickers and first-install OS warnings on end-user machines.

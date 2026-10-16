@@ -99,7 +99,8 @@ to run their checks locally. `cargo audit` reads the existing lockfile without
 updating it.
 
 The native updater test additionally needs .NET SDK 8, `vpk` 1.2.161, Python 3.12,
-and OpenSSL. Linux needs `squashfs-tools`; the test uses AppImage extraction mode
+and OpenSSL 3 (on macOS, put Homebrew's `openssl@3/bin` on `PATH` rather than the
+system LibreSSL). Linux needs `squashfs-tools`; the test uses AppImage extraction mode
 without requiring a FUSE mount. Run `python scripts/test-update-install.py
 linux-x86_64` (or `macos-arm64`, `macos-x86_64`, `windows-x64` on that host).
 

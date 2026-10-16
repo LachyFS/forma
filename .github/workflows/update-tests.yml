@@ -56,6 +56,11 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: '"$env:ProgramFiles\Git\usr\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append'
+      - name: macOS OpenSSL
+        if: runner.os == 'macOS'
+        run: |
+          brew list --versions openssl@3 || brew install openssl@3
+          echo "$(brew --prefix openssl@3)/bin" >> "$GITHUB_PATH"
       - name: Test authenticated metadata and restart decisions
         run: cargo test --locked -p forma-update
       - name: Upgrade and restart an installed application and companion library
