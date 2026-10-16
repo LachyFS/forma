@@ -343,7 +343,7 @@ open target/release/Forma.app
 
 The macOS script creates `Forma.app`; Linux and Windows scripts create portable
 directories and archives under `target/<profile>/`. They package the host
-architecture; macOS receives an ad-hoc signature. These local bundles do not
+architecture without signing, notarizing or installing the application. These local bundles do not
 include automatic updates. The release workflow wraps them with Velopack and
 signs update metadata. Release builds use thin
 LTO and may take longer than development builds.
