@@ -17,13 +17,18 @@ the same renderer selection. A failed save leaves the editor open.
 
 ## Packaging and authenticity
 
-Forma uses [Velopack](https://docs.velopack.io/) 1.2.161 for native packaging,
+Forma uses [Velopack](https://docs.velopack.io/) 1.3.39-g8d2844f for native packaging,
 download caching, application replacement and relaunch. A full package includes
 the executable, update helper and denoiser runtime. macOS ships an application
 ZIP, Windows a per-user installer, and Linux a writable AppImage. Existing builds
 without this packaging require one manual installation. Development builds,
 standalone binaries and sessions with `FORMA_DISABLE_UPDATES` set do not update.
 Package managers should set that environment variable.
+
+The runtime and packager are pinned together to the upstream 1.3.39-g8d2844f
+prerelease. The lockfile now uses ZIP 9.0.5, fixing RUSTSEC-2026-0367, RUSTSEC-2026-0368
+and RUSTSEC-2026-0369; the previous stable Velopack 1.2.161 used ZIP 8.6.
+CI exercises native installation and restart on all four platforms.
 
 GitHub's release listing discovers versions; it is not the trust authority.
 Each platform has an Ed25519-signed manifest. Forma authenticates the exact

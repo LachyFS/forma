@@ -98,7 +98,7 @@ Node 24 is used in CI. Install actionlint, ShellCheck, and cargo-audit separatel
 to run their checks locally. `cargo audit` reads the existing lockfile without
 updating it.
 
-The native updater test additionally needs .NET SDK 8, `vpk` 1.2.161, Python 3.12,
+The native updater test additionally needs .NET SDK 8, `vpk` 1.3.39-g8d2844f, Python 3.12,
 and OpenSSL 3 (on macOS, put Homebrew's `openssl@3/bin` on `PATH` rather than the
 system LibreSSL). Linux needs `squashfs-tools`; the test uses AppImage extraction mode
 without requiring a FUSE mount. Run `python scripts/test-update-install.py
