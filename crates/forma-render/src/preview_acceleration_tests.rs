@@ -2,12 +2,241 @@ use super::*;
 use forma_core::Primitive;
 use glam::Vec3;
 
-fn renderer_pair() -> Option<(Renderer, Renderer)> {
+/// Retain the old selection traversal with identical accelerated lighting, so
+/// selection correctness and its performance can be compared independently.
+fn software_selection(renderer: &mut Renderer) {
+    objc::rc::autoreleasepool(|| {
+        let source = format!(
+            "#define FORMA_PREVIEW_SELECTION_ACCELERATED 0\n{}",
+            shader_source(&[], renderer.accelerated_preview)
+        );
+        let options = CompileOptions::new();
+        options.set_fast_math_enabled(false);
+        let library = renderer
+            .device
+            .new_library_with_source(&source, &options)
+            .unwrap();
+        let function = library.get_function("preview_main", None).unwrap();
+        renderer.preview_pipeline = renderer
+            .device
+            .new_compute_pipeline_state_with_function(&function)
+            .unwrap();
+    });
+}
+
+#[test]
+fn accelerated_selection_preserves_holes_occlusion_and_cache_lifetime() {
+    let Some(mut hardware) = accelerated_renderer() else {
+        return;
+    };
+    let mut reference = Renderer::with_preview_acceleration(true).unwrap();
+    software_selection(&mut reference);
+    let mut scene = Scene::empty();
+    let hidden = scene.add(Primitive::Cube);
+    scene.object_mut(hidden).unwrap().visible = false;
+    let torus = scene.add(Primitive::Torus);
+    scene.object_mut(torus).unwrap().transform.rotation.x = std::f32::consts::FRAC_PI_2;
+    let occluder = scene.add(Primitive::Cube);
+    scene.object_mut(occluder).unwrap().transform.translation = Vec3::new(0.4, 0.0, 1.0);
+    scene.object_mut(occluder).unwrap().transform.scale = Vec3::splat(0.55);
+    scene.camera.target = Vec3::ZERO;
+    scene.camera.distance = 4.5;
+    scene.camera.yaw = 0.0;
+    scene.camera.pitch = 0.0;
+    let mut settings = settings();
+    settings.selected = Some(torus);
+    compare(
+        "selected torus behind cube",
+        &mut hardware,
+        &mut reference,
+        &scene,
+        &settings,
+        1,
+    );
+    let original = hardware
+        .geometry
+        .as_ref()
+        .unwrap()
+        .preview_selection_acceleration
+        .as_ref()
+        .unwrap()
+        .1
+        .clone();
+    let scene_acceleration = hardware
+        .geometry
+        .as_ref()
+        .unwrap()
+        .preview_acceleration
+        .clone()
+        .unwrap();
+    for orthographic in [false, true] {
+        scene.camera.orthographic = orthographic;
+        scene.camera.yaw += 0.1;
+        compare(
+            "selected camera update",
+            &mut hardware,
+            &mut reference,
+            &scene,
+            &settings,
+            1,
+        );
+        assert_eq!(
+            original.as_ptr(),
+            hardware
+                .geometry
+                .as_ref()
+                .unwrap()
+                .preview_selection_acceleration
+                .as_ref()
+                .unwrap()
+                .1
+                .as_ptr()
+        );
+        let actual = hardware.read_linear_pixels().unwrap();
+        let expected = reference.read_linear_pixels().unwrap();
+        assert!(
+            actual
+                .iter()
+                .flatten()
+                .zip(expected.iter().flatten())
+                .all(|(a, b)| (a - b).abs() < 1e-5 * b.abs().max(1.0)),
+            "Selection acceleration must preserve the scene-linear film"
+        );
+    }
+    for selected in [
+        None,
+        Some(torus),
+        Some(occluder),
+        Some(hidden),
+        Some(u64::MAX),
+    ] {
+        settings.selected = selected;
+        compare(
+            "selection change",
+            &mut hardware,
+            &mut reference,
+            &scene,
+            &settings,
+            1,
+        );
+        assert_eq!(
+            scene_acceleration.as_ptr(),
+            hardware
+                .geometry
+                .as_ref()
+                .unwrap()
+                .preview_acceleration
+                .as_ref()
+                .unwrap()
+                .as_ptr()
+        );
+        if selected == Some(torus) {
+            assert_eq!(
+                original.as_ptr(),
+                hardware
+                    .geometry
+                    .as_ref()
+                    .unwrap()
+                    .preview_selection_acceleration
+                    .as_ref()
+                    .unwrap()
+                    .1
+                    .as_ptr()
+            );
+        }
+    }
+    settings.selected = Some(torus);
+    scene.object_mut(torus).unwrap().visible = false;
+    compare(
+        "hidden selected torus",
+        &mut hardware,
+        &mut reference,
+        &scene,
+        &settings,
+        2,
+    );
+    assert_ne!(
+        original.as_ptr(),
+        hardware
+            .geometry
+            .as_ref()
+            .unwrap()
+            .preview_selection_acceleration
+            .as_ref()
+            .unwrap()
+            .1
+            .as_ptr()
+    );
+    scene.objects.clear();
+    compare(
+        "deleted selection",
+        &mut hardware,
+        &mut reference,
+        &scene,
+        &settings,
+        3,
+    );
+}
+
+#[test]
+#[ignore = "Run on a Mac with a Metal GPU to measure selection acceleration"]
+fn accelerated_selection_navigation_benchmark() {
+    let Some(mut hardware) = accelerated_renderer() else {
+        return;
+    };
+    let mut reference = Renderer::with_preview_acceleration(true).unwrap();
+    software_selection(&mut reference);
+    let mut scene = Scene::default();
+    let settings = RenderSettings {
+        width: 2020,
+        height: 1390,
+        mode: RenderMode::MaterialPreview,
+        selected: Some(scene.objects[0].id),
+        ..Default::default()
+    };
+    let mut timings = [Vec::new(), Vec::new()];
+    for i in 0..48 {
+        scene.camera.orbit(glam::Vec2::new(1.4, 0.0));
+        // Alternate submission order to reduce clock/thermal ordering bias.
+        for index in if i % 2 == 0 { [0, 1] } else { [1, 0] } {
+            let renderer = if index == 0 {
+                &mut reference
+            } else {
+                &mut hardware
+            };
+            let frame = renderer.render(&scene, &settings, 1).unwrap();
+            if i >= 8 {
+                timings[index].push(frame.elapsed_ms);
+            }
+        }
+    }
+    eprintln!(
+        "device={} resolution=2020x1390 frames=40 warmup=8",
+        hardware.device_name()
+    );
+    for (name, mut samples) in ["software selection", "accelerated selection"]
+        .into_iter()
+        .zip(timings)
+    {
+        samples.sort_by(f64::total_cmp);
+        eprintln!(
+            "{name}: median_ms={:.2} p95_ms={:.2}",
+            samples[20], samples[37]
+        );
+    }
+}
+
+fn accelerated_renderer() -> Option<Renderer> {
     let hardware = Renderer::with_preview_acceleration(true).unwrap();
     if !hardware.accelerated_preview {
         eprintln!("Skipping acceleration parity: this Metal device has no ray tracing support");
         return None;
     }
+    Some(hardware)
+}
+
+fn renderer_pair() -> Option<(Renderer, Renderer)> {
+    let hardware = accelerated_renderer()?;
     let software = Renderer::with_preview_acceleration(false).unwrap();
     assert!(!software.accelerated_preview);
     Some((hardware, software))

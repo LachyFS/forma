@@ -74,7 +74,9 @@ struct GpuGeometry {
     texture_pixels: Buffer,
     texture_levels: Buffer,
     counts: [u32; 3],
+    triangle_objects: Vec<u32>,
     preview_acceleration: Option<AccelerationStructure>,
+    preview_selection_acceleration: Option<(u32, AccelerationStructure)>,
 }
 
 /// Create and use on one worker thread. GPU completion is synchronous, while the
@@ -300,6 +302,12 @@ impl Renderer {
                         geometry.lights.len() as u32,
                     ],
                     preview_acceleration: None,
+                    triangle_objects: geometry
+                        .triangles
+                        .iter()
+                        .map(|t| t.params[2] as u32)
+                        .collect(),
+                    preview_selection_acceleration: None,
                 });
                 self.geometry_hash = Some(hash);
             }
@@ -331,6 +339,13 @@ impl Renderer {
             self.samples,
             geometry.counts,
         );
+        if environment_key.is_some() && self.accelerated_preview && uniforms.settings[2] > 0.0 {
+            geometry.prepare_preview_selection(
+                &self.device,
+                &self.queue,
+                uniforms.settings[2] as u32,
+            )?;
+        }
         let mut hasher = DefaultHasher::new();
         // Sample count and stopping target don't change the estimator. Increasing
         // max_samples therefore resumes the existing film without throwing it away.
@@ -442,6 +457,14 @@ impl Renderer {
             if let Some(key) = &environment_key {
                 if self.accelerated_preview {
                     encoder.set_acceleration_structure(5, geometry.preview_acceleration.as_deref());
+                    // Bind a valid structure even with no selection; the shader
+                    // skips these rays when the selected object index is zero.
+                    let selected = geometry
+                        .preview_selection_acceleration
+                        .as_ref()
+                        .map(|(_, acceleration)| acceleration.as_ref())
+                        .or(geometry.preview_acceleration.as_deref());
+                    encoder.set_acceleration_structure(11, selected);
                 }
                 let env = self
                     .preview_resources
@@ -618,31 +641,74 @@ impl GpuGeometry {
         if self.preview_acceleration.is_some() {
             return Ok(());
         }
-        let count = self.counts[0];
+        self.preview_acceleration = Some(self.build_preview_acceleration(
+            device,
+            queue,
+            0..self.counts[0],
+            "Forma preview geometry",
+        )?);
+        Ok(())
+    }
+
+    fn prepare_preview_selection(
+        &mut self,
+        device: &DeviceRef,
+        queue: &CommandQueueRef,
+        selected: u32,
+    ) -> Result<()> {
+        if self
+            .preview_selection_acceleration
+            .as_ref()
+            .is_some_and(|(id, _)| *id == selected)
+        {
+            return Ok(());
+        }
+        let indices = self
+            .triangle_objects
+            .iter()
+            .enumerate()
+            .filter_map(|(index, object)| (*object == selected).then_some(index as u32));
+        let acceleration = self.build_preview_acceleration(
+            device,
+            queue,
+            indices,
+            "Forma preview selected object",
+        )?;
+        self.preview_selection_acceleration = Some((selected, acceleration));
+        Ok(())
+    }
+
+    fn build_preview_acceleration(
+        &self,
+        device: &DeviceRef,
+        queue: &CommandQueueRef,
+        triangle_indices: impl Iterator<Item = u32>,
+        label: &str,
+    ) -> Result<AccelerationStructure> {
+        let stride = (std::mem::size_of::<crate::bvh::Triangle>() / 16) as u32;
+        let mut indices: Vec<u32> = triangle_indices
+            .flat_map(|i| [i * stride, i * stride + 1, i * stride + 2])
+            .collect();
+        let count = indices.len() as u64 / 3;
         // A valid binding is required even when the shader skips an empty scene.
         let dummy = (count == 0).then(|| upload(device, &[[0.0f32; 4]; 3]));
-        let stride = (std::mem::size_of::<crate::bvh::Triangle>() / 16) as u32;
-        let indices: Vec<u32> = if count == 0 {
-            vec![0, 1, 2]
-        } else {
-            (0..count)
-                .flat_map(|i| [i * stride, i * stride + 1, i * stride + 2])
-                .collect()
-        };
+        if count == 0 {
+            indices.extend([0, 1, 2]);
+        }
         let indices = upload(device, &indices);
         let triangles = AccelerationStructureTriangleGeometryDescriptor::descriptor();
         triangles.set_vertex_buffer(Some(dummy.as_deref().unwrap_or(&self.triangles)));
         triangles.set_vertex_stride(16);
         triangles.set_index_buffer(Some(&indices));
         triangles.set_index_type(MTLIndexType::UInt32);
-        triangles.set_triangle_count(count.max(1) as u64);
+        triangles.set_triangle_count(count.max(1));
         triangles.set_opaque(true);
         let descriptor = PrimitiveAccelerationStructureDescriptor::descriptor();
         descriptor.set_geometry_descriptors(Array::from_owned_slice(&[triangles.into()]));
         let sizes = device.acceleration_structure_sizes_with_descriptor(&descriptor);
         let acceleration =
             device.new_acceleration_structure_with_size(sizes.acceleration_structure_size);
-        acceleration.set_label("Forma preview geometry");
+        acceleration.set_label(label);
         let scratch = device.new_buffer(
             sizes.build_scratch_buffer_size.max(16),
             MTLResourceOptions::StorageModePrivate,
@@ -661,8 +727,7 @@ impl GpuGeometry {
         );
         // Build inputs and scratch remain alive until GPU completion. The built
         // structure owns the traversal data needed by subsequent preview frames.
-        self.preview_acceleration = Some(acceleration);
-        Ok(())
+        Ok(acceleration)
     }
 }
 

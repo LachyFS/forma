@@ -2,6 +2,11 @@
 // cached environment; scene emitters remain visible but do not illuminate peers.
 // Diffuse E/pi, GGX-prefiltered reflection and the Smith GGX split-sum LUT remain
 // scene-linear until the shared display transform at the end of the pixel.
+// The independent switch lets native regression/benchmark tests retain the
+// previous selection path while using identical accelerated primary/AO rays.
+#ifndef FORMA_PREVIEW_SELECTION_ACCELERATED
+#define FORMA_PREVIEW_SELECTION_ACCELERATED FORMA_PREVIEW_ACCELERATED
+#endif
 #if FORMA_PREVIEW_ACCELERATED
 #define PREVIEW_ACCEL_PARAM , raytracing::primitive_acceleration_structure acceleration
 #define PREVIEW_ACCEL_ARG , acceleration
@@ -36,6 +41,39 @@ Hit preview_trace(Ray r, float limit, device const Triangle *triangles,
     return trace(r, limit, triangles, nodes, u);
 #endif
 }
+
+#if FORMA_PREVIEW_SELECTION_ACCELERATED
+bool preview_selected_hit(Ray r, raytracing::primitive_acceleration_structure selected) {
+    raytracing::ray ray;
+    ray.origin = r.origin;
+    ray.direction = r.direction;
+    ray.min_distance = 1.0000001e-7f;
+    ray.max_distance = INFINITY;
+    raytracing::intersector<raytracing::triangle_data> intersector;
+    intersector.assume_geometry_type(raytracing::geometry_type::triangle);
+    intersector.force_opacity(raytracing::forced_opacity::opaque);
+    intersector.set_triangle_cull_mode(raytracing::triangle_cull_mode::none);
+    intersector.accept_any_intersection(true);
+    return intersector.intersect(ray, selected).type != raytracing::intersection_type::none;
+}
+float preview_selection_coverage(float2 pixel, Hit hit, device const Triangle *triangles,
+                                 constant Uniforms &u,
+                                 raytracing::primitive_acceleration_structure selected) {
+    if (u.settings.z <= 0.0f || hit.triangle == NO_HIT) return 0.0f;
+    if (!is_selected(hit, triangles, u) && !preview_selected_hit(camera_ray(pixel, u), selected)) return 0.0f;
+    // The selected-only structure preserves holes and silhouettes through
+    // occluders, without bringing a software BVH stack into this kernel.
+    const float2 offsets[8] = {
+        float2(-1, 0), float2(1, 0), float2(0, -1), float2(0, 1),
+        float2(-0.70710678f, -0.70710678f), float2(0.70710678f, -0.70710678f),
+        float2(-0.70710678f, 0.70710678f), float2(0.70710678f, 0.70710678f),
+    };
+    for (uint i = 0u; i < 8u; ++i) {
+        if (!preview_selected_hit(camera_ray(pixel + offsets[i] * SELECTION_WIDTH, u), selected)) return 0.92f;
+    }
+    return 0.0f;
+}
+#endif
 
 constant sampler preview_env_sampler(coord::normalized, s_address::repeat,
                                       t_address::clamp_to_edge, filter::linear,
@@ -159,6 +197,9 @@ kernel void preview_main(device const Triangle *triangles [[buffer(0)]],
 #if FORMA_PREVIEW_ACCELERATED
                           raytracing::primitive_acceleration_structure acceleration [[buffer(5)]],
 #endif
+#if FORMA_PREVIEW_SELECTION_ACCELERATED
+                          raytracing::primitive_acceleration_structure selected_acceleration [[buffer(11)]],
+#endif
                           texture2d<float, access::write> output [[texture(0)]],
                           texture2d<float, access::sample> environment [[texture(1)]],
                           texture2d<float, access::sample> diffuse [[texture(2)]],
@@ -195,7 +236,10 @@ kernel void preview_main(device const Triangle *triangles [[buffer(0)]],
     }
     accumulation[gid.y * u.image.x + gid.x] = float4(color, 1.0f);
     float3 display = composite_edit(display_transform(color, u.settings.x), center_ray, center_hit, pixel, triangles, u);
-    // Selection uses the shared object-filtered BVH, including in hardware preview.
+#if FORMA_PREVIEW_SELECTION_ACCELERATED
+    float coverage = preview_selection_coverage(pixel, center_hit, triangles, u, selected_acceleration);
+#else
     float coverage = selection_coverage(pixel, center_hit, triangles, nodes, u);
+#endif
     output.write(float4(composite_selection(display, coverage), 1.0f), gid);
 }
