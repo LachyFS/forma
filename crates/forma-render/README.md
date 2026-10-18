@@ -22,12 +22,18 @@ has its own immediate shading pipeline; Rendered performs progressive path traci
 Primary visibility uses the same triangle geometry and smooth normals as the
 other modes. On the native macOS backend with devices supporting Metal ray tracing, a cached primitive acceleration
 structure handles preview primary, antialiasing and AO rays. Other native devices and all wgpu backends use the same BVH in GPU compute.
-Selection rays use the shared BVH filtered to the selected object in every mode,
-so its outline stays visible through occluders without following their contours.
+Native accelerated preview uses a second cached acceleration structure containing
+only the selected object's triangles. Selection rays use opaque any-hit queries,
+keeping the software BVH traversal stack out of the accelerated preview kernel.
+Other modes and backends use the shared BVH filtered to the selected object.
+Both approaches keep the outline visible through occluders without following
+their contours.
  Both paths keep four fixed antialiasing samples and eight
 nearest-hit contact rays; navigation never reduces resolution or sampling quality.
 The acceleration structure is built only when needed after geometry changes and
-is reused by camera updates. This follows [Metal's acceleration-structure model](https://developer.apple.com/documentation/metal/ray-tracing-with-acceleration-structures).
+is reused by camera updates. The selected-object structure is also reused across
+camera updates and deselection; selecting a different object replaces it.
+This follows [Metal's acceleration-structure model](https://developer.apple.com/documentation/metal/ray-tracing-with-acceleration-structures).
 Actual base color, metallic weight, roughness and visible emission
 drive a split-sum GGX environment response and diffuse irradiance. Cached GPU
 textures contain the diffuse convolution, nine directional specular roughness slices,
@@ -148,6 +154,7 @@ current mode and its current sample count.
 cargo test -p forma-render
 cargo run -p forma-render --bin render-smoke -- artifacts/render 128
 cargo run --release -p forma-render --bin navigation-bench -- artifacts/navigation
+cargo test --locked --release -p forma-render --lib accelerated_selection_navigation_benchmark -- --ignored --nocapture --test-threads=1
 cargo test --locked --release -p forma-render --lib geometry_preparation_benchmark -- --ignored --nocapture
 ```
 
@@ -160,6 +167,11 @@ failed-import recovery. Hardware/software comparisons cover two-sided and transf
 geometry, contact AO, selection occlusion, cache lifetime, empty scenes and Rendered
 compatibility. The navigation benchmark measures 40 warmed camera updates at
 2020 × 1390 and reports median/p95 latency without imposing device-specific thresholds.
+The native selection benchmark alternates the previous software-selection kernel
+and the accelerated-selection kernel over those same camera updates. Both use
+accelerated primary/AO rays, isolating the selection change. Native regression
+tests compare the two paths through occlusion, torus holes, projection changes,
+deselection, hidden/deleted objects and acceleration cache invalidation.
 The CPU geometry benchmark alternates the previous and current preparation paths
 across default, V8, linked-instance and dense-grid scenes, including BVH building
 and destruction. Differential tests compare triangle bytes, BVH nodes and light

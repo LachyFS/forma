@@ -48,7 +48,7 @@ jobs:
           key: update-${{ matrix.platform }}
           save-if: ${{ github.event_name == 'push' }}
       - name: Install update packager
-        run: dotnet tool install --global vpk --version 1.2.161
+        run: dotnet tool install --global vpk --version 1.3.39-g8d2844f
       - name: Linux AppImage packaging tools
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y squashfs-tools libfuse2

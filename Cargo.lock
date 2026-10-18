@@ -1323,17 +1323,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "derivative"
-version = "2.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fcc3dd5e9e9c0b295d6e1e4d811fb6f157d5ffd784b8d202fc62eac8035a770b"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn 1.0.109",
-]
-
-[[package]]
 name = "derive_more"
 version = "0.99.20"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1894,7 +1883,7 @@ dependencies = [
 
 [[package]]
 name = "forma"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "anyhow",
  "async-channel 2.5.0",
@@ -1915,7 +1904,7 @@ dependencies = [
 
 [[package]]
 name = "forma-core"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -1927,7 +1916,7 @@ dependencies = [
 
 [[package]]
 name = "forma-render"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "anyhow",
  "bytemuck",
@@ -1947,7 +1936,7 @@ dependencies = [
 
 [[package]]
 name = "forma-update"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -6356,13 +6345,12 @@ dependencies = [
 
 [[package]]
 name = "velopack"
-version = "1.2.161"
+version = "1.3.39-g8d2844f"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4295172ffaad78f9adbab35f7ffefa97e4ceefee9d2c38bda37fdce4d6c66e5a"
+checksum = "cbfbd9ee9818d1155813c4a1024a459763c3782405d5c1ad8f116bd8adaf0b88"
 dependencies = [
  "anyhow",
  "bitflags 2.13.1",
- "derivative",
  "glob",
  "lazy_static",
  "libc",
@@ -7938,14 +7926,15 @@ dependencies = [
 
 [[package]]
 name = "zip"
-version = "8.6.0"
+version = "9.0.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2d04a6b5381502aa6087c94c669499eb1602eb9c5e8198e534de571f7154809b"
+checksum = "6e04976da629d3b04204ba8105b396a193af8ad2583b2c79bfb3ab8af580a11e"
 dependencies = [
  "crc32fast",
  "flate2",
  "indexmap",
  "memchr",
+ "nix 0.31.3",
  "typed-path",
  "zopfli",
 ]
