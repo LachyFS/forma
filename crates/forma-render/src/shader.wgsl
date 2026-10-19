@@ -195,10 +195,19 @@ struct ShaderInput {
 // FORMA_CUSTOM_FUNCTIONS
 fn forma_custom(index: u32, surface: Surface, input: ShaderInput) -> Surface { return surface; }
 
+fn direction_uv(direction: vec3<f32>) -> vec2<f32> {
+    // Longitude is arbitrary at either pole. atan2(0, 0) is not portable and
+    // can turn a horizontal surface's environment lookup into a black texel.
+    var longitude = 0.0;
+    if direction.x != 0.0 || direction.z != 0.0 {
+        longitude = atan2(direction.z, direction.x);
+    }
+    return vec2(longitude / (2.0 * PI_F) + 0.5, acos(clamp(direction.y, -1.0, 1.0)) / PI_F);
+}
 fn generated_uv(p: vec3<f32>, face_normal: vec3<f32>, mapping: u32) -> vec2<f32> {
     if mapping == 1u {
         let d = safe_normalize(p - vec3(0.5), vec3(0.0, 1.0, 0.0));
-        return vec2(atan2(d.z, d.x) / (2.0 * PI_F) + 0.5, acos(clamp(d.y, -1.0, 1.0)) / PI_F);
+        return direction_uv(d);
     }
     if mapping == 2u { return vec2(p.x, 1.0 - p.z); }
     let a = abs(face_normal);
@@ -225,38 +234,47 @@ fn image_texture(index: u32, uv: vec2<f32>, footprint: f32) -> vec4<f32> {
 fn evaluate_surface(ray: Ray, hit: Hit) -> Surface {
     var s = surface_at(ray, hit);
     let tri = triangles[hit.triangle]; let m = materials[u32(tri.generated0.w)];
-    let weights = vec3(1.0 - hit.bary.x - hit.bary.y, hit.bary.x, hit.bary.y);
-    let q0 = tri.generated0.xyz; let q1 = tri.generated1.xyz; let q2 = tri.generated2.xyz;
-    let generated = q0 * weights.x + q1 * weights.y + q2 * weights.z;
-    let face = safe_normalize(cross(q1 - q0, q2 - q0), vec3(0.0, 1.0, 0.0));
-    let uv = generated_uv(generated, face, m.info.y) * m.mapping.xy + m.mapping.zw;
-    let uv0 = generated_uv(q0, face, m.info.y);
-    var uv1 = generated_uv(q1, face, m.info.y); var uv2 = generated_uv(q2, face, m.info.y);
-    if m.info.y == 1u { uv1.x -= round(uv1.x - uv0.x); uv2.x -= round(uv2.x - uv0.x); }
-    let d1 = (uv1 - uv0) * m.mapping.xy; let d2 = (uv2 - uv0) * m.mapping.xy;
-    let e1 = tri.v1.xyz - tri.v0.xyz; let e2 = tri.v2.xyz - tri.v0.xyz;
-    let density = max(length(d1) / max(length(e1), 1e-6), length(d2) / max(length(e2), 1e-6));
-    let pixel_width = 2.0 * select(hit.distance * u.camera.x, u.camera.z, u.camera.w > 0.5) / f32(u.image.y);
-    let footprint = density * pixel_width / max(0.15, abs(dot(s.normal, ray.direction)));
-    s.color = m.color.xyz * image_texture(m.textures[0], uv, footprint).xyz;
-    s.emission = m.emission.xyz * image_texture(m.textures[4], uv, footprint).xyz;
+    s.color = m.color.xyz; s.emission = m.emission.xyz;
     s.metallic = m.params.x; s.roughness = m.params.y;
-    if m.textures[2] != NO_HIT { s.metallic = image_texture(m.textures[2], uv, footprint).x; }
-    if m.textures[1] != NO_HIT { s.roughness = image_texture(m.textures[1], uv, footprint).x; }
     s.ior = m.params.z; s.glass = m.info.x == 1u;
-    let determinant = d1.x * d2.y - d1.y * d2.x;
-    if m.textures[3] != NO_HIT && abs(determinant) > 1e-8 {
-        var t = (e1 * d2.y - e2 * d1.y) / determinant;
-        t = safe_normalize(t - s.normal * dot(t, s.normal), vec3(1.0, 0.0, 0.0));
-        var b = cross(s.normal, t);
-        let dpdv = (e2 * d1.x - e1 * d2.x) / determinant;
-        if dot(b, dpdv) > 0.0 { b = -b; }
-        var map = image_texture(m.textures[3], uv, footprint).xyz * 2.0 - vec3(1.0);
-        map.x *= m.params.w; map.y *= m.params.w;
-        s.normal = safe_normalize(t * map.x + b * map.y + s.normal * map.z, s.normal);
+    var before = s;
+    // Plain materials need neither generated UVs nor texture derivatives.
+    // Custom shaders still receive the complete ShaderInput without textures.
+    if m.info.x == 2u || m.textures[0] != NO_HIT || m.textures[1] != NO_HIT
+        || m.textures[2] != NO_HIT || m.textures[3] != NO_HIT || m.textures[4] != NO_HIT {
+        let weights = vec3(1.0 - hit.bary.x - hit.bary.y, hit.bary.x, hit.bary.y);
+        let q0 = tri.generated0.xyz; let q1 = tri.generated1.xyz; let q2 = tri.generated2.xyz;
+        let generated = q0 * weights.x + q1 * weights.y + q2 * weights.z;
+        let face = safe_normalize(cross(q1 - q0, q2 - q0), vec3(0.0, 1.0, 0.0));
+        let uv = generated_uv(generated, face, m.info.y) * m.mapping.xy + m.mapping.zw;
+        let uv0 = generated_uv(q0, face, m.info.y);
+        var uv1 = generated_uv(q1, face, m.info.y); var uv2 = generated_uv(q2, face, m.info.y);
+        if m.info.y == 1u { uv1.x -= round(uv1.x - uv0.x); uv2.x -= round(uv2.x - uv0.x); }
+        let d1 = (uv1 - uv0) * m.mapping.xy; let d2 = (uv2 - uv0) * m.mapping.xy;
+        let e1 = tri.v1.xyz - tri.v0.xyz; let e2 = tri.v2.xyz - tri.v0.xyz;
+        let density = max(length(d1) / max(length(e1), 1e-6), length(d2) / max(length(e2), 1e-6));
+        let pixel_width = 2.0 * select(hit.distance * u.camera.x, u.camera.z, u.camera.w > 0.5) / f32(u.image.y);
+        let footprint = density * pixel_width / max(0.15, abs(dot(s.normal, ray.direction)));
+        s.color = m.color.xyz * image_texture(m.textures[0], uv, footprint).xyz;
+        s.emission = m.emission.xyz * image_texture(m.textures[4], uv, footprint).xyz;
+        s.metallic = m.params.x; s.roughness = m.params.y;
+        if m.textures[2] != NO_HIT { s.metallic = image_texture(m.textures[2], uv, footprint).x; }
+        if m.textures[1] != NO_HIT { s.roughness = image_texture(m.textures[1], uv, footprint).x; }
+        s.ior = m.params.z; s.glass = m.info.x == 1u;
+        let determinant = d1.x * d2.y - d1.y * d2.x;
+        if m.textures[3] != NO_HIT && abs(determinant) > 1e-8 {
+            var t = (e1 * d2.y - e2 * d1.y) / determinant;
+            t = safe_normalize(t - s.normal * dot(t, s.normal), vec3(1.0, 0.0, 0.0));
+            var b = cross(s.normal, t);
+            let dpdv = (e2 * d1.x - e1 * d2.x) / determinant;
+            if dot(b, dpdv) > 0.0 { b = -b; }
+            var map = image_texture(m.textures[3], uv, footprint).xyz * 2.0 - vec3(1.0);
+            map.x *= m.params.w; map.y *= m.params.w;
+            s.normal = safe_normalize(t * map.x + b * map.y + s.normal * map.z, s.normal);
+        }
+        before = s;
+        if m.info.x == 2u { s = forma_custom(m.info.z, s, ShaderInput(uv, generated, s.position, s.normal, -ray.direction)); }
     }
-    let before = s;
-    if m.info.x == 2u { s = forma_custom(m.info.z, s, ShaderInput(uv, generated, s.position, s.normal, -ray.direction)); }
     // Protect geometry and film from malformed numerical output.
     s.position = before.position; s.geometric_normal = before.geometric_normal; s.front_face = before.front_face;
     s.color = select(before.color, clamp(s.color, vec3(0.0), vec3(1.0)), finite3(s.color));

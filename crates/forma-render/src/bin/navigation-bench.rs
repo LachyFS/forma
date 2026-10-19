@@ -12,28 +12,65 @@ fn main() -> Result<()> {
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("artifacts/navigation"));
     std::fs::create_dir_all(&output)?;
+    let scene = std::env::args()
+        .nth(2)
+        .filter(|path| path != "-")
+        .map(|path| Scene::load(std::path::Path::new(&path)))
+        .transpose()?
+        .unwrap_or_default();
+    let width = std::env::args()
+        .nth(3)
+        .map(|s| s.parse())
+        .transpose()?
+        .unwrap_or(2020);
+    let height = std::env::args()
+        .nth(4)
+        .map(|s| s.parse())
+        .transpose()?
+        .unwrap_or(1390);
     let mut renderer = Renderer::new()?;
     println!(
-        "device={} resolution=2020x1390 frames=40 warmup=8",
-        renderer.device_name()
+        "device={} resolution={width}x{height} objects={} frames=40 warmup=8",
+        renderer.device_name(),
+        scene.objects.len()
     );
-    for (name, mode, ao, selected) in [
-        ("preview", RenderMode::MaterialPreview, true, true),
+    for (name, mode, ao, selected, grid) in [
+        ("preview", RenderMode::MaterialPreview, true, true, true),
         (
             "preview-no-selection",
             RenderMode::MaterialPreview,
             true,
             false,
+            true,
         ),
-        ("preview-no-ao", RenderMode::MaterialPreview, false, true),
-        ("solid", RenderMode::Solid, true, true),
+        (
+            "preview-no-ao",
+            RenderMode::MaterialPreview,
+            false,
+            true,
+            true,
+        ),
+        (
+            "preview-no-grid",
+            RenderMode::MaterialPreview,
+            true,
+            true,
+            false,
+        ),
+        ("solid", RenderMode::Solid, true, true, true),
+        ("solid-no-selection", RenderMode::Solid, true, false, true),
     ] {
-        let mut scene = Scene::default();
+        let mut scene = scene.clone();
         let mut settings = RenderSettings {
-            width: 2020,
-            height: 1390,
+            width,
+            height,
             mode,
-            selected: selected.then(|| scene.objects[0].id),
+            show_grid: grid,
+            selected: scene
+                .objects
+                .first()
+                .filter(|_| selected)
+                .map(|object| object.id),
             ..Default::default()
         };
         settings.preview.ambient_occlusion = ao;

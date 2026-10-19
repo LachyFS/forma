@@ -1612,7 +1612,9 @@ fn axis_ink(t: Colors, label: &str) -> u32 {
     }
 }
 
-/// Editable numeric well. Callers give it its width.
+/// Editable numeric well. Callers give it its width. Clip single-line editing
+/// text: GPUI 0.2.2's ellipsis layout mutates run lengths across measurements
+/// and can split the UTF-8 caret when the field width changes.
 fn field(
     t: Colors,
     s: &Studio,
@@ -1658,7 +1660,7 @@ fn field(
                 .flex_1()
                 .min_w(px(0.))
                 .overflow_hidden()
-                .text_ellipsis()
+                .whitespace_nowrap()
                 .text_color(rgb(if active { t.accent } else { t.text }))
                 .when(s.field_selection_active(f), |d| d.bg(rgb(t.active)))
                 .text_right()
@@ -3087,7 +3089,7 @@ fn theme_overlay(t: Colors, s: &Studio, cx: &mut Context<Studio>) -> AnyElement 
                                 .flex_1()
                                 .min_w(px(0.))
                                 .overflow_hidden()
-                                .text_ellipsis()
+                                .whitespace_nowrap()
                                 .text_color(rgb(if picker.query.is_empty() {
                                     t.faint
                                 } else {
@@ -3233,7 +3235,7 @@ fn command_overlay(t: Colors, s: &Studio, cx: &mut Context<Studio>) -> AnyElemen
                                 .flex_1()
                                 .min_w(px(0.))
                                 .overflow_hidden()
-                                .text_ellipsis()
+                                .whitespace_nowrap()
                                 .text_size(px(13.))
                                 .text_color(rgb(if s.palette_query.is_empty() {
                                     t.faint

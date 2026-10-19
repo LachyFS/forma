@@ -9,8 +9,7 @@ fn preview_direction(direction: vec3<f32>) -> vec3<f32> {
     return vec3(c * direction.x - s * direction.z, direction.y, s * direction.x + c * direction.z);
 }
 fn preview_uv(direction: vec3<f32>) -> vec2<f32> {
-    return vec2(atan2(direction.z, direction.x) / (2.0 * PI_F) + 0.5,
-        acos(clamp(direction.y, -1.0, 1.0)) / PI_F);
+    return direction_uv(direction);
 }
 fn preview_world(direction: vec3<f32>, blur: f32) -> vec3<f32> {
     if u.preview_lighting.w > 0.5 { return max(u.world.xyz, vec3(0.0)) * max(u.world.w, 0.0); }
