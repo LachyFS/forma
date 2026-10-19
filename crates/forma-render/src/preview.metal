@@ -75,6 +75,37 @@ float preview_selection_coverage(float2 pixel, Hit hit, device const Triangle *t
 }
 #endif
 
+// Solid has no material evaluation or path-tracing state. Keep it in a small
+// kernel so primary visibility and selection can share preview acceleration.
+kernel void solid_main(device const Triangle *triangles [[buffer(0)]],
+                       device const BvhNode *nodes [[buffer(1)]],
+                       constant Uniforms &u [[buffer(2)]],
+                       device float4 *accumulation [[buffer(3)]],
+#if FORMA_PREVIEW_ACCELERATED
+                       raytracing::primitive_acceleration_structure acceleration [[buffer(5)]],
+#endif
+#if FORMA_PREVIEW_SELECTION_ACCELERATED
+                       raytracing::primitive_acceleration_structure selected_acceleration [[buffer(11)]],
+#endif
+                       texture2d<float, access::write> output [[texture(0)]],
+                       uint2 gid [[thread_position_in_grid]]) {
+    if (gid.x >= u.image.x || gid.y >= u.image.y) return;
+    float2 pixel = float2(gid) + 0.5f;
+    Ray ray = camera_ray(pixel, u);
+    Hit hit = preview_trace(ray, INFINITY, triangles, nodes, u PREVIEW_ACCEL_ARG);
+    float3 color = hit.triangle == NO_HIT ? viewport_background(ray)
+        : solid_shading(surface_at(ray, hit, triangles), ray, u);
+    color = add_grid(color, ray, hit, pixel, u);
+    accumulation[gid.y * u.image.x + gid.x] = float4(color, 1.0f);
+    float3 display = composite_edit(display_transform(color, 0.0f), ray, hit, pixel, triangles, u);
+#if FORMA_PREVIEW_SELECTION_ACCELERATED
+    float coverage = preview_selection_coverage(pixel, hit, triangles, u, selected_acceleration);
+#else
+    float coverage = selection_coverage(pixel, hit, triangles, nodes, u);
+#endif
+    output.write(float4(composite_selection(display, coverage), 1.0f), gid);
+}
+
 constant sampler preview_env_sampler(coord::normalized, s_address::repeat,
                                       t_address::clamp_to_edge, filter::linear,
                                       mip_filter::linear);
@@ -159,6 +190,10 @@ float3 preview_surface(Ray ray, Hit hit, float ao, device const Triangle *triang
                        texture2d<float, access::sample> diffuse,
                        texture2d_array<float, access::sample> specular,
                        texture2d<float, access::sample> brdf PREVIEW_ACCEL_PARAM) {
+#if FORMA_PREVIEW_OPAQUE
+    Surface s = evaluate_surface(ray, hit, triangles, u, MATERIAL_PASS);
+    return preview_pbr(s, ray, ao, u, diffuse, specular, brdf);
+#else
     float3 color(0), throughput(1);
     float blur = u.preview_display.y;
     // Follow glass interfaces deterministically. Reflections use the studio
@@ -185,6 +220,7 @@ float3 preview_surface(Ray ray, Hit hit, float ao, device const Triangle *triang
         hit = preview_trace(ray, INFINITY, triangles, nodes, u PREVIEW_ACCEL_ARG);
     }
     return color + throughput * preview_reflection(ray.direction, blur, u, specular);
+#endif
 }
 
 kernel void preview_main(device const Triangle *triangles [[buffer(0)]],
@@ -216,6 +252,7 @@ kernel void preview_main(device const Triangle *triangles [[buffer(0)]],
     const float2 offsets[4] = { float2(-0.25f, -0.25f), float2(0.25f, -0.25f),
                                float2(-0.25f, 0.25f), float2(0.25f, 0.25f) };
     float3 color(0);
+    #pragma unroll
     for (uint i = 0u; i < 4u; ++i) {
         float2 p = pixel + offsets[i];
         Ray ray = camera_ray(p, u);

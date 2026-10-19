@@ -18,8 +18,7 @@ fn ibl_hammersley(index: u32, count: u32) -> vec2<f32> {
     return vec2((f32(index) + 0.5) / f32(count), ibl_radical_inverse(index));
 }
 fn ibl_direction_uv(direction: vec3<f32>) -> vec2<f32> {
-    return vec2(atan2(direction.z, direction.x) / (2.0 * PI_F) + 0.5,
-        acos(clamp(direction.y, -1.0, 1.0)) * INV_PI_F);
+    return direction_uv(direction);
 }
 fn ibl_texel_direction(pixel: vec2<u32>, size: vec2<u32>) -> vec3<f32> {
     let uv = (vec2<f32>(pixel) + vec2(0.5)) / vec2<f32>(size);

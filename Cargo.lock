@@ -1883,7 +1883,7 @@ dependencies = [
 
 [[package]]
 name = "forma"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "anyhow",
  "async-channel 2.5.0",
@@ -1904,7 +1904,7 @@ dependencies = [
 
 [[package]]
 name = "forma-core"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -1916,7 +1916,7 @@ dependencies = [
 
 [[package]]
 name = "forma-render"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "anyhow",
  "bytemuck",
@@ -1936,7 +1936,7 @@ dependencies = [
 
 [[package]]
 name = "forma-update"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "anyhow",
  "base64 0.22.1",

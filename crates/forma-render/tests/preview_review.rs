@@ -22,6 +22,47 @@ impl Drop for Fixture {
     }
 }
 
+#[test]
+fn horizontal_surfaces_receive_constant_hdr_light_from_both_poles() {
+    let hdr = Fixture::new("poles.hdr");
+    image::codecs::hdr::HdrEncoder::new(std::fs::File::create(&hdr.0).unwrap())
+        .encode(&vec![image::Rgb([1.0; 3]); 64 * 32], 64, 32)
+        .unwrap();
+    let mut scene = Scene::empty();
+    let plane = scene.add(Primitive::Plane);
+    scene.object_mut(plane).unwrap().transform.scale = Vec3::splat(100.0);
+    scene.camera.target = Vec3::ZERO;
+    scene.camera.distance = 4.0;
+    scene.world.color = Vec3::ONE;
+    scene.world.strength = 1.0;
+    let mut settings = RenderSettings {
+        width: 32,
+        height: 32,
+        mode: RenderMode::MaterialPreview,
+        show_grid: false,
+        ..Default::default()
+    };
+    settings.preview.hdri_path = Some(hdr.0.clone());
+    settings.preview.ambient_occlusion = false;
+    let mut renderer = Renderer::new().unwrap();
+    for pitch in [-0.8, 0.8] {
+        scene.camera.pitch = pitch;
+        settings.preview.use_scene_world = false;
+        renderer.render(&scene, &settings, 1).unwrap();
+        let environment = renderer.read_linear_pixels().unwrap();
+        settings.preview.use_scene_world = true;
+        renderer.render(&scene, &settings, 1).unwrap();
+        let world = renderer.read_linear_pixels().unwrap();
+        assert!(world.iter().all(|pixel| pixel[0] > 0.1));
+        for (a, b) in environment.iter().flatten().zip(world.iter().flatten()) {
+            assert!(
+                (a - b).abs() < 1e-3,
+                "pitch={pitch}: HDR {a} differs from constant world {b}"
+            );
+        }
+    }
+}
+
 /// A perfectly rough metal still reflects only its front hemisphere. Roughness
 /// filtering may broaden the light, but must not collapse all environment
 /// directions into a single scalar or erase environment rotation.

@@ -577,3 +577,77 @@ single-frame preview PNG export completed in 62.3 ms with a 4096-sample target.
 At 2020 × 1390, the release input-to-surface median was 9.31 ms (p95 10.40 ms),
 including a 9.05 ms median render cost. The mode-switch preview measured 10.33 ms.
 The separate 80-event continuous-navigation check adopted 80 completed surfaces.
+
+## Solid and Material Preview performance — 0.2.3
+
+Measured on 2026-10-19 with Rust 1.92.0 release builds on an Apple M4 Pro
+(24 GB), comparing the 0.2.2 renderer at `4adf710` with 0.2.3. Each case uses
+eight warmups and 40 identical camera updates. The following paired run was
+repeated with candidate/baseline order reversed; the listed medians reproduced
+within 2%. These are warmed renderer frame costs, excluding initial shader/HDR
+preparation and compositor scanout, not guarantees for every GPU or document.
+
+| Scene / resolution | Mode, selection enabled | Before median / p95 (ms) | After median / p95 (ms) |
+| --- | --- | --- | --- |
+| Default, 2020 × 1390 | Material Preview | 10.31 / 10.51 | 7.75 / 7.99 |
+| Default, 2020 × 1390 | Solid | 4.65 / 4.84 | 2.25 / 2.48 |
+| V8, 276 objects, 2560 × 1600 | Material Preview | 14.08 / 14.33 | 11.22 / 11.51 |
+| V8, 276 objects, 2560 × 1600 | Solid | 25.88 / 27.05 | 3.33 / 3.56 |
+
+Solid now has a dedicated Metal kernel using the same cached primary/selection
+acceleration structures as Material Preview. Opaque preview pipelines omit glass
+continuation state; an additional untextured variant omits texture sampling state.
+Glass, textured and custom materials retain the appropriate full evaluation path.
+Untextured built-in materials also skip UV/derivative calculation in both native
+Metal and WGSL. Resolution, four fixed preview AA samples, eight nearest-hit AO
+rays, grid shading and precise floating-point lighting math are retained.
+
+The default and V8 preview exports match the baseline byte-for-byte, including
+selection-disabled and AO-disabled cases. Accelerated Solid differs at sparse
+triangle boundaries: 2 of 2,807,800 default-scene pixels and 15 of 4,096,000 V8
+pixels differ by more than eight channel levels. Mean differences are 0.000081
+and 0.000186 out of 255 respectively, consistent with hardware/software triangle
+intersection tie rules. Native differential tests cover selection occlusion and
+holes, reflected transforms, component overlays, projection changes, mode
+switches, cache reuse/invalidation, hidden/deleted objects and empty scenes.
+Opaque/full-pipeline comparisons cover small and padded dimensions, glass and
+custom-material transitions, display bytes and the scene-linear film. Identity
+texture comparisons cover every mapping in Preview and Rendered, and separate
+tests ensure that each texture slot activates coordinate evaluation.
+
+The full suite also exposed an existing portable preview defect: `atan2(0, 0)`
+at an environment-map pole could produce invalid coordinates and make horizontal
+surfaces black on wgpu Metal. The shared WGSL direction-to-UV helper now explicitly
+chooses longitude zero at either pole. Constant-HDR tests compare top/bottom plane
+lighting against the equivalent scene world, and native/wgpu four-mode parity
+passes without weakening its tolerance.
+
+Validation: 237 workspace tests pass (two manual benchmarks and one runtime test
+are ignored by the default command); the ignored neural denoiser runtime test was
+then run successfully. Ten additional grid/material/preview-review tests pass
+with `FORMA_RENDERER=metal`. Strict workspace/all-target Clippy, formatting,
+release-version validation, Python release tests and website tests pass. A native
+optimized application bundle was built with the verified OIDN 2.4.1 runtime.
+
+Reproduce the renderer measurements with:
+
+```sh
+cargo run --locked --release -p forma-render --bin navigation-bench -- artifacts/navigation
+cargo run --locked --release -p forma-render --bin navigation-bench -- artifacts/navigation-v8 docs/scenes/v8-engine.forma 2560 1600
+```
+
+The benchmark accepts `OUTPUT [PROJECT|-] [WIDTH] [HEIGHT]`; `-` selects the
+default scene when specifying dimensions. It also reports no-selection, no-AO
+and no-grid cases. Local logs and images are under
+`artifacts/preview-performance/`.
+
+The packaged native app's complete smoke workflow passes when launched through
+LaunchServices with `open -n -W ... --args --smoke-test ...`. It covers panel
+resizing, themes and update state, HDR and shader editing, all four shading modes,
+continuous pointer/trackpad navigation, precision modelling, Unicode/clipboard
+entry, STL exchange, project persistence and concurrent image export. Continuous
+navigation delivered 79 of 80 sampled pointer presentations and 80 of 80 trackpad
+presentations. The run also exposed and fixed a GPUI ellipsis-layout crash on
+narrow fields containing the multibyte caret: numeric/name/search inputs now clip
+single-line text without mutating shaped text-run lengths. The complete rerun,
+including narrow-field and Unicode entry cases, ends in `FORMA_NATIVE_SMOKE_PASS`.

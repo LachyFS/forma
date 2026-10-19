@@ -25,14 +25,22 @@ structure handles preview primary, antialiasing and AO rays. Other native device
 Native accelerated preview uses a second cached acceleration structure containing
 only the selected object's triangles. Selection rays use opaque any-hit queries,
 keeping the software BVH traversal stack out of the accelerated preview kernel.
-Other modes and backends use the shared BVH filtered to the selected object.
+Solid uses a dedicated kernel with the same cached primary and selection
+acceleration structures. Other modes and backends use the shared BVH filtered
+to the selected object.
 Both approaches keep the outline visible through occluders without following
 their contours.
- Both paths keep four fixed antialiasing samples and eight
+Both preview paths keep four fixed antialiasing samples and eight
 nearest-hit contact rays; navigation never reduces resolution or sampling quality.
 The acceleration structure is built only when needed after geometry changes and
 is reused by camera updates. The selected-object structure is also reused across
 camera updates and deselection; selecting a different object replaces it.
+Solid and Material Preview share these structures across mode switches.
+Opaque built-in materials use specialized preview pipelines without glass
+continuation state. Untextured opaque scenes also omit texture sampling state;
+glass and custom shaders keep the full material pipeline.
+Both Metal and wgpu skip UV/texture derivative preparation for untextured built-in
+materials. Custom shaders always receive their complete coordinate inputs.
 This follows [Metal's acceleration-structure model](https://developer.apple.com/documentation/metal/ray-tracing-with-acceleration-structures).
 Actual base color, metallic weight, roughness and visible emission
 drive a split-sum GGX environment response and diffuse irradiance. Cached GPU
@@ -154,6 +162,7 @@ current mode and its current sample count.
 cargo test -p forma-render
 cargo run -p forma-render --bin render-smoke -- artifacts/render 128
 cargo run --release -p forma-render --bin navigation-bench -- artifacts/navigation
+cargo run --release -p forma-render --bin navigation-bench -- artifacts/navigation-v8 docs/scenes/v8-engine.forma 2560 1600
 cargo test --locked --release -p forma-render --lib accelerated_selection_navigation_benchmark -- --ignored --nocapture --test-threads=1
 cargo test --locked --release -p forma-render --lib geometry_preparation_benchmark -- --ignored --nocapture
 ```

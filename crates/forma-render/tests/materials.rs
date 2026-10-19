@@ -1,5 +1,7 @@
 use forma_core::ShaderLanguage;
-use forma_core::{Material, Primitive, Scene, ShaderKind, TextureImage, TextureSlot, Vec3};
+use forma_core::{
+    Material, Primitive, Scene, ShaderKind, TextureImage, TextureMapping, TextureSlot, Vec3,
+};
 use forma_render::{Backend, RenderMode, RenderSettings, Renderer, validate_custom_shaders};
 use std::sync::{
     Arc,
@@ -82,6 +84,82 @@ fn textures_custom_code_and_glass_change_both_render_modes() {
         let custom = pixels(&mut renderer);
         let center = (24 * 48 + 24) * 3;
         assert!(custom[center + 1] > custom[center] + 50);
+    }
+}
+
+#[test]
+fn untextured_materials_match_identity_textures_in_every_mapping() {
+    let white = Arc::new(TextureImage {
+        name: "identity.png".into(),
+        width: 1,
+        height: 1,
+        rgba: vec![255; 4],
+    });
+    let mut renderer = Renderer::new().unwrap();
+    let mut revision = 0;
+    for mode in [RenderMode::MaterialPreview, RenderMode::Rendered] {
+        for mapping in [
+            TextureMapping::Box,
+            TextureMapping::Sphere,
+            TextureMapping::Plane,
+        ] {
+            for glass in [false, true] {
+                let (mut scene, id) = scene();
+                let material = scene.object_material_mut(id).unwrap();
+                if glass {
+                    *material = Material::glass();
+                }
+                material.mapping = mapping;
+                material.base_color = Vec3::new(0.23, 0.47, 0.71);
+                material.emission = Vec3::new(0.02, 0.01, 0.03);
+                material.roughness = 0.005;
+                revision += 1;
+                renderer.render(&scene, &settings(mode), revision).unwrap();
+                let plain = renderer.read_linear_pixels().unwrap();
+                let material = scene.object_material_mut(id).unwrap();
+                material.textures[TextureSlot::BaseColor as usize] = Some(white.clone());
+                material.textures[TextureSlot::Emission as usize] = Some(white.clone());
+                revision += 1;
+                renderer.render(&scene, &settings(mode), revision).unwrap();
+                let textured = renderer.read_linear_pixels().unwrap();
+                for (a, b) in plain.iter().flatten().zip(textured.iter().flatten()) {
+                    assert!(a.is_finite() && b.is_finite());
+                    assert!(
+                        (a - b).abs() <= 1e-5 * a.abs().max(1.0),
+                        "{mode:?} {mapping:?} glass={glass}: {a} != {b}"
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn each_texture_slot_activates_material_coordinates() {
+    let (mut scene, id) = scene();
+    let settings = settings(RenderMode::MaterialPreview);
+    let mut renderer = Renderer::new().unwrap();
+    scene.object_material_mut(id).unwrap().emission = Vec3::splat(0.2);
+    let plain = scene.object_material(id).unwrap().clone();
+    renderer.render(&scene, &settings, 1).unwrap();
+    let baseline = pixels(&mut renderer);
+    for (index, slot) in TextureSlot::ALL.into_iter().enumerate() {
+        let material = scene.object_material_mut(id).unwrap();
+        *material = plain.clone();
+        material.textures[slot as usize] = Some(Arc::new(TextureImage {
+            name: "slot.png".into(),
+            width: 1,
+            height: 1,
+            rgba: if slot == TextureSlot::Normal {
+                vec![200, 128, 235, 255]
+            } else {
+                vec![180, 70, 20, 255]
+            },
+        }));
+        renderer
+            .render(&scene, &settings, index as u64 + 2)
+            .unwrap();
+        assert_ne!(baseline, pixels(&mut renderer), "{slot:?} was ignored");
     }
 }
 #[test]

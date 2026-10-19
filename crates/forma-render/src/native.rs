@@ -74,6 +74,8 @@ struct GpuGeometry {
     texture_pixels: Buffer,
     texture_levels: Buffer,
     counts: [u32; 3],
+    opaque_preview: bool,
+    plain_preview: bool,
     triangle_objects: Vec<u32>,
     preview_acceleration: Option<AccelerationStructure>,
     preview_selection_acceleration: Option<(u32, AccelerationStructure)>,
@@ -85,7 +87,10 @@ pub struct Renderer {
     device: Device,
     queue: CommandQueue,
     render_pipeline: ComputePipelineState,
+    solid_pipeline: ComputePipelineState,
     preview_pipeline: ComputePipelineState,
+    opaque_preview_pipeline: ComputePipelineState,
+    plain_preview_pipeline: ComputePipelineState,
     custom_pipelines: Option<(ComputePipelineState, ComputePipelineState)>,
     compiled_codes: Vec<(ShaderLanguage, String)>,
     shader_error: Option<String>,
@@ -166,7 +171,29 @@ impl Renderer {
             let preview_pipeline = device
                 .new_compute_pipeline_state_with_function(&preview_function)
                 .map_err(|e| anyhow!(e))?;
+            let specialized_preview = |defines: &str| -> Result<ComputePipelineState> {
+                let source = format!("{defines}\n{source}");
+                let library = device
+                    .new_library_with_source(&source, &options)
+                    .map_err(|e| anyhow!(e))?;
+                let function = library
+                    .get_function("preview_main", None)
+                    .map_err(|e| anyhow!(e))?;
+                device
+                    .new_compute_pipeline_state_with_function(&function)
+                    .map_err(|e| anyhow!(e))
+            };
+            let opaque_preview_pipeline = specialized_preview("#define FORMA_PREVIEW_OPAQUE 1")?;
+            let plain_preview_pipeline = specialized_preview(
+                "#define FORMA_PREVIEW_OPAQUE 1\n#define FORMA_PREVIEW_PLAIN 1",
+            )?;
             let preview_resources = PreviewResources::new(&device, &library)?;
+            let solid_function = library
+                .get_function("solid_main", None)
+                .map_err(|e| anyhow!(e))?;
+            let solid_pipeline = device
+                .new_compute_pipeline_state_with_function(&solid_function)
+                .map_err(|e| anyhow!(e))?;
             let render_pipeline = device
                 .new_compute_pipeline_state_with_function(&render_function)
                 .map_err(|error| anyhow!(error))?;
@@ -182,7 +209,10 @@ impl Renderer {
                 device,
                 queue,
                 render_pipeline,
+                solid_pipeline,
                 preview_pipeline,
+                opaque_preview_pipeline,
+                plain_preview_pipeline,
                 custom_pipelines: None,
                 compiled_codes: Vec::new(),
                 shader_error: None,
@@ -301,6 +331,14 @@ impl Renderer {
                         geometry.nodes.len() as u32,
                         geometry.lights.len() as u32,
                     ],
+                    plain_preview: scene.materials.iter().all(|m| {
+                        m.material.shader == forma_core::ShaderKind::Pbr
+                            && m.material.textures.iter().all(Option::is_none)
+                    }),
+                    opaque_preview: scene
+                        .materials
+                        .iter()
+                        .all(|m| m.material.shader == forma_core::ShaderKind::Pbr),
                     preview_acceleration: None,
                     triangle_objects: geometry
                         .triangles
@@ -328,7 +366,12 @@ impl Renderer {
             self.texture_cache.flush(0);
         }
         let geometry = self.geometry.as_mut().context("Missing GPU geometry")?;
-        if environment_key.is_some() && self.accelerated_preview {
+        let accelerated_viewport = self.accelerated_preview
+            && matches!(
+                settings.mode,
+                RenderMode::Solid | RenderMode::MaterialPreview
+            );
+        if accelerated_viewport {
             geometry.prepare_preview_acceleration(&self.device, &self.queue)?;
         }
         let mut uniforms = Uniforms::new(
@@ -339,7 +382,7 @@ impl Renderer {
             self.samples,
             geometry.counts,
         );
-        if environment_key.is_some() && self.accelerated_preview && uniforms.settings[2] > 0.0 {
+        if accelerated_viewport && uniforms.settings[2] > 0.0 {
             geometry.prepare_preview_selection(
                 &self.device,
                 &self.queue,
@@ -424,10 +467,18 @@ impl Renderer {
         {
             let encoder = command.new_compute_command_encoder();
             let pipeline = if settings.mode == RenderMode::MaterialPreview {
-                self.custom_pipelines
-                    .as_ref()
-                    .map(|p| &p.1)
-                    .unwrap_or(&self.preview_pipeline)
+                if geometry.plain_preview {
+                    &self.plain_preview_pipeline
+                } else if geometry.opaque_preview {
+                    &self.opaque_preview_pipeline
+                } else {
+                    self.custom_pipelines
+                        .as_ref()
+                        .map(|p| &p.1)
+                        .unwrap_or(&self.preview_pipeline)
+                }
+            } else if settings.mode == RenderMode::Solid && accelerated_viewport {
+                &self.solid_pipeline
             } else if settings.mode == RenderMode::Rendered {
                 self.custom_pipelines
                     .as_ref()
@@ -454,18 +505,18 @@ impl Renderer {
                 encoder.set_buffer(10, Some(&film.normal), 0);
             }
             encoder.set_texture(0, Some(&film.rgba));
+            if accelerated_viewport {
+                encoder.set_acceleration_structure(5, geometry.preview_acceleration.as_deref());
+                // Bind a valid structure even with no selection; the shader
+                // skips these rays when the selected object index is zero.
+                let selected = geometry
+                    .preview_selection_acceleration
+                    .as_ref()
+                    .map(|(_, acceleration)| acceleration.as_ref())
+                    .or(geometry.preview_acceleration.as_deref());
+                encoder.set_acceleration_structure(11, selected);
+            }
             if let Some(key) = &environment_key {
-                if self.accelerated_preview {
-                    encoder.set_acceleration_structure(5, geometry.preview_acceleration.as_deref());
-                    // Bind a valid structure even with no selection; the shader
-                    // skips these rays when the selected object index is zero.
-                    let selected = geometry
-                        .preview_selection_acceleration
-                        .as_ref()
-                        .map(|(_, acceleration)| acceleration.as_ref())
-                        .or(geometry.preview_acceleration.as_deref());
-                    encoder.set_acceleration_structure(11, selected);
-                }
                 let env = self
                     .preview_resources
                     .get(key)

@@ -306,8 +306,9 @@ The public renderer permits up to 8192 × 8192; the UI currently exports at the
 active mode's viewport resolution. Core document limits protect
 resource use but are not tested interactive-performance guarantees.
 
-Wireframe, Solid and Rendered use software BVH traversal; Material Preview can
-use native Metal ray-tracing acceleration structures. wgpu modes use the shared
+Wireframe and Rendered use software BVH traversal; Solid and Material Preview can
+share native Metal ray-tracing acceleration structures. Opaque preview scenes
+use a specialized pipeline without glass continuation state. wgpu modes use the shared
 software BVH on the GPU. Geometry validation, triangulation, BVH construction,
 OBJ/STL I/O and history cloning remain CPU work. Project/OBJ/STL parsing and disk writes
 run on background executors. Snapshot cloning, picking, subdivision and transform

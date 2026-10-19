@@ -12,16 +12,91 @@ fn software_selection(renderer: &mut Renderer) {
         );
         let options = CompileOptions::new();
         options.set_fast_math_enabled(false);
-        let library = renderer
-            .device
-            .new_library_with_source(&source, &options)
-            .unwrap();
-        let function = library.get_function("preview_main", None).unwrap();
-        renderer.preview_pipeline = renderer
-            .device
-            .new_compute_pipeline_state_with_function(&function)
-            .unwrap();
+        let pipeline = |source: &str| {
+            let library = renderer
+                .device
+                .new_library_with_source(source, &options)
+                .unwrap();
+            let function = library.get_function("preview_main", None).unwrap();
+            renderer
+                .device
+                .new_compute_pipeline_state_with_function(&function)
+                .unwrap()
+        };
+        renderer.preview_pipeline = pipeline(&source);
+        renderer.opaque_preview_pipeline =
+            pipeline(&format!("#define FORMA_PREVIEW_OPAQUE 1\n{source}"));
+        renderer.plain_preview_pipeline = pipeline(&format!(
+            "#define FORMA_PREVIEW_OPAQUE 1\n#define FORMA_PREVIEW_PLAIN 1\n{source}"
+        ));
     });
+}
+
+#[test]
+fn opaque_preview_preserves_materials_and_transmission_changes() {
+    let Some(mut optimized) = accelerated_renderer() else {
+        return;
+    };
+    let mut reference = Renderer::with_preview_acceleration(true).unwrap();
+    reference.opaque_preview_pipeline = reference.preview_pipeline.clone();
+    reference.plain_preview_pipeline = reference.preview_pipeline.clone();
+    let mut scene = Scene::default();
+    let id = scene.objects[0].id;
+    let mut settings = RenderSettings {
+        selected: Some(id),
+        show_grid: true,
+        ..settings()
+    };
+    for (width, height) in [(2, 2), (18, 10), (130, 98), (320, 240)] {
+        settings.width = width;
+        settings.height = height;
+        for orthographic in [false, true] {
+            scene.camera.orthographic = orthographic;
+            compare(
+                "opaque preview",
+                &mut optimized,
+                &mut reference,
+                &scene,
+                &settings,
+                1,
+            );
+            assert_eq!(pixels(&optimized), pixels(&reference));
+            for (a, b) in optimized
+                .read_linear_pixels()
+                .unwrap()
+                .iter()
+                .flatten()
+                .zip(reference.read_linear_pixels().unwrap().iter().flatten())
+            {
+                assert!((a - b).abs() < 1e-5 * b.abs().max(1.0));
+            }
+        }
+    }
+    for (revision, material) in [
+        (2, forma_core::Material::glass()),
+        (3, forma_core::Material::default()),
+        (
+            4,
+            forma_core::Material {
+                shader: forma_core::ShaderKind::Custom,
+                ..Default::default()
+            },
+        ),
+        (5, forma_core::Material::default()),
+    ] {
+        let opaque = material.shader == forma_core::ShaderKind::Pbr;
+        *scene.object_material_mut(id).unwrap() = material;
+        compare(
+            "transmission changed",
+            &mut optimized,
+            &mut reference,
+            &scene,
+            &settings,
+            revision,
+        );
+        assert_eq!(optimized.geometry.as_ref().unwrap().opaque_preview, opaque);
+        assert_eq!(pixels(&optimized), pixels(&reference));
+    }
 }
 
 #[test]
@@ -242,6 +317,112 @@ fn renderer_pair() -> Option<(Renderer, Renderer)> {
     Some((hardware, software))
 }
 
+#[test]
+fn accelerated_solid_preserves_shading_overlays_and_mode_changes() {
+    let Some((mut hardware, mut software)) = renderer_pair() else {
+        return;
+    };
+    let mut scene = Scene::empty();
+    let hidden = scene.add(Primitive::Cube);
+    scene.object_mut(hidden).unwrap().visible = false;
+    let torus = scene.add(Primitive::Torus);
+    let object = scene.object_mut(torus).unwrap();
+    object.transform.rotation.x = std::f32::consts::FRAC_PI_2;
+    object.transform.scale = Vec3::new(-1.0, 0.8, 1.2);
+    let cube = scene.add(Primitive::Cube);
+    let object = scene.object_mut(cube).unwrap();
+    object.transform.translation = Vec3::new(0.5, 0.0, 1.0);
+    object.transform.scale = Vec3::splat(0.55);
+    scene.camera.target = Vec3::ZERO;
+    scene.camera.distance = 4.5;
+    scene.camera.yaw = 0.0;
+    scene.camera.pitch = 0.1;
+    let mut settings = RenderSettings {
+        mode: RenderMode::Solid,
+        selected: Some(torus),
+        show_grid: true,
+        ..settings()
+    };
+    for orthographic in [false, true] {
+        scene.camera.orthographic = orthographic;
+        for edit_mode in 0..3 {
+            settings.edit_wireframe = edit_mode == 1;
+            settings.edit_vertices = edit_mode == 2;
+            compare(
+                "solid overlays",
+                &mut hardware,
+                &mut software,
+                &scene,
+                &settings,
+                1,
+            );
+        }
+    }
+    let acceleration = hardware
+        .geometry
+        .as_ref()
+        .unwrap()
+        .preview_acceleration
+        .clone()
+        .unwrap();
+    settings.edit_vertices = false;
+    for mode in [RenderMode::MaterialPreview, RenderMode::Solid] {
+        settings.mode = mode;
+        for selected in [Some(cube), None, Some(hidden), Some(u64::MAX), Some(torus)] {
+            settings.selected = selected;
+            scene.camera.yaw += 0.1;
+            compare(
+                "solid/preview switching",
+                &mut hardware,
+                &mut software,
+                &scene,
+                &settings,
+                1,
+            );
+            assert_eq!(
+                acceleration.as_ptr(),
+                hardware
+                    .geometry
+                    .as_ref()
+                    .unwrap()
+                    .preview_acceleration
+                    .as_ref()
+                    .unwrap()
+                    .as_ptr()
+            );
+        }
+    }
+    scene.object_mut(torus).unwrap().visible = false;
+    compare(
+        "solid hidden selection",
+        &mut hardware,
+        &mut software,
+        &scene,
+        &settings,
+        2,
+    );
+    assert_ne!(
+        acceleration.as_ptr(),
+        hardware
+            .geometry
+            .as_ref()
+            .unwrap()
+            .preview_acceleration
+            .as_ref()
+            .unwrap()
+            .as_ptr()
+    );
+    scene.objects.clear();
+    compare(
+        "solid empty",
+        &mut hardware,
+        &mut software,
+        &scene,
+        &settings,
+        3,
+    );
+}
+
 fn settings() -> RenderSettings {
     RenderSettings {
         width: 128,
@@ -327,6 +508,11 @@ fn compare(
 ) -> Vec<[u8; 4]> {
     for renderer in [&mut *hardware, &mut *software] {
         let frame = renderer.render(scene, settings, revision).unwrap();
+        assert!(
+            frame.shader_error.is_none(),
+            "{name}: {:?}",
+            frame.shader_error
+        );
         assert_eq!(frame.samples, 1);
         assert_eq!(frame.surface.get_width(), settings.width as usize);
         assert_eq!(frame.surface.get_height(), settings.height as usize);
