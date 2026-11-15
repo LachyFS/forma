@@ -178,6 +178,15 @@ pub(super) fn statusbar(
         _ => None,
     };
     let rendered = s.settings.mode == RenderMode::Rendered;
+    let message_width = if wide { 420. } else { 260. };
+    // The dot and its gap sit inside the message's width.
+    let status = fit_text(cx, s.status.clone().into(), TEXT_SM, message_width - 12.);
+    let device_name = fit_text(
+        cx,
+        s.device_name.clone().into(),
+        TEXT_SM,
+        device_width - 16.,
+    );
     row()
         .h(px(STATUSBAR_HEIGHT))
         .flex_shrink_0()
@@ -204,7 +213,7 @@ pub(super) fn statusbar(
         .child(
             row()
                 .id("status-message")
-                .max_w(px(if wide { 420. } else { 260. }))
+                .max_w(px(message_width))
                 .min_w(px(0.))
                 .gap(px(SP_1_5))
                 .child(dot(health, 6.))
@@ -212,14 +221,13 @@ pub(super) fn statusbar(
                     div()
                         .min_w(px(0.))
                         .overflow_hidden()
-                        .text_ellipsis()
                         .whitespace_nowrap()
                         .text_color(rgb(if s.render_error.is_some() {
                             t.danger
                         } else {
                             t.text
                         }))
-                        .child(s.status.clone()),
+                        .child(status),
                 )
                 .tooltip(tip(t, s.status.clone(), None)),
         )
@@ -271,9 +279,8 @@ pub(super) fn statusbar(
                     div()
                         .min_w(px(0.))
                         .overflow_hidden()
-                        .text_ellipsis()
                         .whitespace_nowrap()
-                        .child(s.device_name.clone()),
+                        .child(device_name),
                 )
                 .tooltip(tip(t, s.device_name.clone(), None)),
         )

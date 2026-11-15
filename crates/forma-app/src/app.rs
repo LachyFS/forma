@@ -1959,7 +1959,7 @@ impl Studio {
                     && selection.as_ref().is_none_or(|ids| ids.contains(&mesh.id))
             })
         {
-            self.status = "No visible mesh objects in the export scope".into();
+            self.status = "Nothing visible in the export scope".into();
             cx.notify();
             return;
         }
@@ -2164,7 +2164,11 @@ impl Studio {
                 | Field::Scale(_)
                 | Field::Dimensions(_)
                 | Field::CadAdjust(_)
-                | Field::Feature(_) => crate::transform::format_precision_value(value),
+                | Field::Feature(_)
+                // Whole degrees and percentages read better without "0.00".
+                | Field::PreviewRotation
+                | Field::PreviewOpacity
+                | Field::PreviewBlur => crate::transform::format_precision_value(value),
                 Field::Samples | Field::Bounces | Field::DenoiseStart => value.to_string(),
                 _ => format!("{value:.2}"),
             })

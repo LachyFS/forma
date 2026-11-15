@@ -84,12 +84,12 @@ pub(super) fn overlay(t: Colors, studio: &Studio, cx: &mut Context<Studio>) -> A
             (
                 true,
                 "Selection",
-                format!("{selected} mesh {}", plural(selected)),
+                format!("{selected} {}", plural(selected)),
             ),
             (
                 false,
                 "Visible scene",
-                format!("{visible} mesh {}", plural(visible)),
+                format!("{visible} {}", plural(visible)),
             ),
         ]
         .into_iter()
@@ -154,7 +154,7 @@ pub(super) fn overlay(t: Colors, studio: &Studio, cx: &mut Context<Studio>) -> A
                     .text_size(px(TEXT_SM))
                     .text_color(rgb(t.warning))
                     .child(icon(Icon::Warning, ICON_SM, t.warning))
-                    .child("No visible mesh objects in this scope. Choose another scope or cancel."),
+                    .child("Nothing visible in this scope. Choose another scope or cancel."),
             )
         });
     let footer = dialog_footer(t)

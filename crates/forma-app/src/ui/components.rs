@@ -35,6 +35,25 @@ pub(crate) fn hrule(t: Colors) -> Div {
     div().h(px(1.)).w_full().flex_shrink_0().bg(rgb(t.hairline))
 }
 
+/// Shorten `text` to fit `width` at the UI font and `size`, ending in "…".
+/// GPUI 0.2 caches a no-wrap text's first, unconstrained measurement, so
+/// `text_ellipsis` only works when the text's width is known up front;
+/// text in content-sized rows (the status bar) is fitted here instead.
+pub(crate) fn fit_text(cx: &App, text: SharedString, size: f32, width: f32) -> SharedString {
+    let face = font(FONT_UI);
+    let mut runs = vec![TextRun {
+        len: text.len(),
+        font: face.clone(),
+        color: Hsla::default(),
+        background_color: None,
+        underline: None,
+        strikethrough: None,
+    }];
+    cx.text_system()
+        .line_wrapper(face, px(size))
+        .truncate_line(text, px(width), "…", &mut runs)
+}
+
 /// Secondary text, for counts and context next to a primary label.
 pub(crate) fn caption(t: Colors, text: impl Into<SharedString>) -> Div {
     div()

@@ -68,6 +68,17 @@ fn groups() -> [Vec<Group>; 3] {
                     ("Apply / cancel", "Return / Esc"),
                 ],
             ),
+            (
+                "Part",
+                vec![
+                    ("Extrude / revolve a sketch", "E / ⇧ R"),
+                    ("Push/pull a face", "P"),
+                    ("Edit faces and edges", "Tab"),
+                    ("Faces / edges", "3 / 2"),
+                    ("Chamfer selected edges", platform_shortcut("⌘ B", "Ctrl B")),
+                    ("Sketch on selected face", "D"),
+                ],
+            ),
         ],
         vec![
             (
