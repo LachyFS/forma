@@ -4,6 +4,7 @@
 use super::assets::Icon;
 use crate::app::{Command, EditMode, Tool};
 use crate::cad::{CadCommand, PartShape};
+use crate::cad_tools::{Operation, ToolCommand};
 use crate::platform_shortcut;
 use crate::sketch::{DrawCommand, DrawTool};
 use crate::timeline::TimelineCommand;
@@ -168,7 +169,69 @@ pub(crate) fn command_info(command: Command) -> CommandInfo {
         Command::ResetPreview => info("Reset preview lighting"),
         Command::Draw(command) => draw_info(command),
         Command::Cad(command) => cad_info(command),
+        Command::CadTool(command) => tool_info(command),
         Command::Timeline(command) => timeline_info(command),
+    }
+}
+
+fn tool_info(command: ToolCommand) -> CommandInfo {
+    match command {
+        ToolCommand::Extrude => explained_keyed(
+            "Extrude",
+            "Pull sketch regions into a part · joins or cuts on a part's face",
+            "E",
+        ),
+        ToolCommand::Revolve => explained_keyed(
+            "Revolve",
+            "Spin sketch regions around a line or sketch axis",
+            "⇧ R",
+        ),
+        ToolCommand::PushPull => explained_keyed(
+            "Push/Pull",
+            "Drag a flat face of a part or mesh along its normal",
+            "P",
+        ),
+        ToolCommand::Chamfer => CommandInfo {
+            label: "Chamfer edges",
+            shortcut: Some(platform_shortcut("⌘ B", "Ctrl+B")),
+            detail: Some("Selected straight edges of a part · part edit mode"),
+        },
+        ToolCommand::SketchOnFace => explained_keyed(
+            "Sketch on face",
+            "Draw on the selected or pointed-at flat face",
+            "D",
+        ),
+        ToolCommand::Done => keyed("Apply", "Return"),
+        ToolCommand::Cancel => keyed("Cancel", "Esc"),
+        ToolCommand::SetOperation(operation) => match operation {
+            Operation::NewPart => explained_keyed("New part", "Make a separate part", "N"),
+            Operation::Join => explained_keyed("Join", "Add material to the part", "J"),
+            Operation::Cut => explained_keyed("Cut", "Remove material from the part", "K"),
+            Operation::Intersect => {
+                explained_keyed("Intersect", "Keep only where they overlap", "I")
+            }
+        },
+        ToolCommand::ToggleSymmetric => explained_keyed(
+            "Symmetric",
+            "Extend equally to both sides of the sketch",
+            "S",
+        ),
+        ToolCommand::Flip => {
+            explained_keyed("Flip direction", "Extrude or turn the other way", "F")
+        }
+        ToolCommand::SketchAxis(false) => {
+            explained_keyed("Sketch X axis", "Revolve around the sketch's x axis", "X")
+        }
+        ToolCommand::SketchAxis(true) => {
+            explained_keyed("Sketch Y axis", "Revolve around the sketch's y axis", "Y")
+        }
+        ToolCommand::AdjustOperation(operation) => match operation {
+            Operation::Cut => info("Cut instead"),
+            Operation::Intersect => info("Intersect instead"),
+            _ => info("Join instead"),
+        },
+        ToolCommand::AdjustSymmetric => info("Extend equally to both sides"),
+        ToolCommand::AdjustFlip => info("Reverse the direction"),
     }
 }
 
@@ -398,6 +461,20 @@ pub(crate) fn command_icon(command: Command) -> Option<Icon> {
         Command::Cad(CadCommand::ConvertToMesh) => Icon::Mesh,
         Command::Cad(CadCommand::ImportStep) => Icon::Import,
         Command::Cad(CadCommand::ExportStep) => Icon::Export,
+        Command::CadTool(ToolCommand::Extrude) => Icon::Extrude,
+        Command::CadTool(ToolCommand::Revolve) => Icon::Revolve,
+        Command::CadTool(ToolCommand::PushPull) => Icon::PushPull,
+        Command::CadTool(ToolCommand::Chamfer) => Icon::Bevel,
+        Command::CadTool(ToolCommand::SketchOnFace) => Icon::DrawMode,
+        Command::CadTool(ToolCommand::Done) => Icon::Check,
+        Command::CadTool(ToolCommand::Cancel) => Icon::Close,
+        Command::CadTool(ToolCommand::SetOperation(operation)) => {
+            crate::cad_tools::hud_operation_icon(operation)
+        }
+        Command::CadTool(ToolCommand::ToggleSymmetric | ToolCommand::AdjustSymmetric) => {
+            Icon::Symmetric
+        }
+        Command::CadTool(ToolCommand::Flip | ToolCommand::AdjustFlip) => Icon::FlipDirection,
         Command::Timeline(command) => return timeline_icon(command),
         _ => return None,
     })
@@ -451,7 +528,7 @@ pub(crate) fn command_group(command: Command) -> &'static str {
         | Command::ExportImage => "File",
         Command::Add(_) => "Add",
         Command::Draw(_) => "Draw",
-        Command::Cad(_) => "Part",
+        Command::Cad(_) | Command::CadTool(_) => "Part",
         Command::Timeline(_) => "Timeline",
         Command::Duplicate
         | Command::Delete

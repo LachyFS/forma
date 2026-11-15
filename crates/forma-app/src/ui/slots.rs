@@ -33,15 +33,19 @@ pub(crate) fn viewport_dock(
     if let Some(toolbar) = studio.draw_toolbar(t, cx) {
         return Some(toolbar);
     }
-    // CAD tool HUD slot: see the priority list above.
+    // A running modelling tool's HUD sits between the Draw toolbar and the
+    // timeline.
+    if let Some(hud) = studio.cad_tool_hud(t, cx) {
+        return Some(hud);
+    }
     super::timeline::timeline(studio, t, cx)
 }
 
 /// Bottom-left "adjust last operation" panel.
 pub(crate) fn adjust_last_operation(
-    _studio: &Studio,
-    _t: Colors,
-    _cx: &mut Context<Studio>,
+    studio: &Studio,
+    t: Colors,
+    cx: &mut Context<Studio>,
 ) -> Option<AnyElement> {
-    None
+    studio.adjust_panel(t, cx)
 }

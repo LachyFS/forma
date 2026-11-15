@@ -274,8 +274,47 @@ UI thread; the status line reports regeneration results and issues.
   edits whatever its visibility, so hidden sources stay hidden and no visibility
   toggles enter history. Finishing returns to the part and feature.
 - **Dock arbitration.** `ui::slots::viewport_dock` shows one occupant: the Draw
-  toolbar while sketching, then an active CAD tool's HUD (reserved branch), then
-  the timeline whenever a part is active.
+  toolbar while sketching, then an active CAD tool's HUD, then the timeline
+  whenever a part is active.
+
+### Direct modelling tools
+
+`crates/forma-app/src/cad_tools/` holds Extrude, Revolve, Push/Pull, part edit
+mode with Chamfer, and the adjust-last-operation panel. Hooks in shared code are
+single calls: `cad_tool_key`, `cad_tool_mouse_down|move|up` (viewport and window
+input, before the generic handlers), `cad_tool_before_command` (in
+`Studio::execute`, after Draw's), `cad_tool_overlay` / `overlay::paint` (the
+viewport canvas), `cad_tool_hud` and `adjust_panel` (the reserved slots), and
+`cad_tool_hints` / `cad_tool_summary` (the status bar).
+
+- **Ghosts, not kernel calls, during drags.** `geometry.rs` is pure: closest
+  point between the pointer ray and the drag axis, adaptive snapping, ear
+  clipping with hole bridging, and `Prism`/`Lathe` ghosts cached per pick (each
+  frame only offsets cached base points and projects them). Front faces of a
+  ghost are filled as one non-zero path, so overlaps tint once.
+- **Sessions.** Extrude and Revolve keep `Session::before`. On release (or
+  after typing settles) the candidate feature is applied to a copy of that
+  scene, so the worker regenerates the real result while the tool is still
+  open; starting another drag restores `before` first. Commit records `before`
+  as the one checkpoint; cancel restores it. Push/Pull and Chamfer commit on
+  release/click from ghost previews. Until a committed part's new stamp is
+  evaluated, its ghost stays (`PendingGhost`), so geometry never snaps back.
+- **Features.** New features go in at `timeline::marker` (keeping the marker
+  after them) via `insert_feature`, carry `source` for sketch features, and map
+  sketches into part space with `timeline::links::map_sketch`, exactly as
+  associativity does. Join/Cut inference finds a part face coplanar with the
+  sketch that contains the picked regions (`find_coplanar_face`) and compares
+  the extrusion direction with its outward normal.
+- **Part edit mode** is component mode with a part active (`part_editing`).
+  Selections are stored as `FaceRef`s and end-point/mid-point edge references
+  in part space and re-resolved after each regeneration. B-rep edges come from
+  the tessellation after welding positions (`geometry::weld`): part
+  tessellations repeat edge points per face group.
+- **Adjust panel.** `LastOperation` records what was committed; panel fields
+  are `Field::CadAdjust`, read and written through `timeline::params`, and
+  amend the feature without a checkpoint (so undo removes the operation whole);
+  scrubs skip the usual release checkpoint. Any other command, selection
+  click, tool, or change to the object hides it.
 
 ## Interaction and scheduling
 

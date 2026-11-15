@@ -462,6 +462,7 @@ fn scrub_step(field: Field) -> (f32, usize) {
         Field::DenoiseStart => (1., 0),
         Field::Feature(field) => field.scrub_step(),
         Field::Name => (0., 0),
+        Field::CadAdjust(param) => param.scrub_step(),
     }
 }
 
@@ -782,8 +783,11 @@ impl Studio {
         if let PanelDrag::Scrub {
             before,
             moved: true,
+            field,
             ..
         } = drag
+            // Adjust-panel scrubs amend the last operation's own undo step.
+            && !matches!(field, Field::CadAdjust(_))
             && *before != self.scene
         {
             self.history.checkpoint(&before);

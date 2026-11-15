@@ -891,6 +891,7 @@ impl Studio {
             .unwrap_or(glam::Mat3::IDENTITY);
         let transforming = self.transform_drag.is_some();
         let sketch_overlay = self.sketch_overlay();
+        let tool_overlay = self.cad_tool_overlay();
         let canvas = canvas(
             move |bounds, _, cx| {
                 if bounds_cell.replace(bounds).size != bounds.size {
@@ -963,6 +964,9 @@ impl Studio {
                 }
                 if let Some(overlay) = sketch_overlay.as_ref() {
                     crate::sketch::overlay::paint(overlay, matrix, bounds, window, cx);
+                }
+                if let Some(overlay) = tool_overlay.as_ref() {
+                    crate::cad_tools::overlay::paint(overlay, matrix, bounds, window, cx);
                 }
                 if let Some(center) = &geometry
                     && tool != Tool::Select
@@ -1224,6 +1228,9 @@ impl Studio {
             self.finish_transform(event.button == MouseButton::Right, cx);
             return;
         }
+        if self.cad_tool_mouse_down(event, window, cx) {
+            return;
+        }
         if event.button != MouseButton::Left || event.modifiers.alt {
             self.navigation = Some((
                 event.button,
@@ -1382,6 +1389,10 @@ impl Studio {
             return;
         }
         if self.draw_mouse_move(event, cx) {
+            self.last_mouse = position;
+            return;
+        }
+        if self.cad_tool_mouse_move(event, cx) {
             self.last_mouse = position;
             return;
         }

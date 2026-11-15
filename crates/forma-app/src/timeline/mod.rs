@@ -116,7 +116,7 @@ impl TimelineState {
         self.menu = None;
     }
 
-    fn select(&mut self, selection: Selection) {
+    pub(crate) fn select(&mut self, selection: Selection) {
         self.selection = Some(selection);
         self.reveal.set(true);
     }

@@ -50,7 +50,30 @@ fn tool_palette(t: Colors, s: &Studio, cx: &mut Context<Studio>) -> Div {
         }),
     );
     palette = palette.child(separator());
-    palette = if s.edit_mode.is_component() {
+    let push_pull = Command::CadTool(crate::cad_tools::ToolCommand::PushPull);
+    let pushing = matches!(s.cad_tool.tool, Some(crate::cad_tools::Tool::PushPull(_)));
+    palette = if s.part_editing().is_some() {
+        // B-rep component editing: faces push and pull, edges chamfer.
+        palette
+            .child(command_icon(
+                t,
+                "rail-push-pull",
+                Icon::PushPull,
+                push_pull,
+                pushing,
+                TOOL,
+                cx,
+            ))
+            .child(command_icon(
+                t,
+                "rail-chamfer",
+                Icon::Bevel,
+                Command::CadTool(crate::cad_tools::ToolCommand::Chamfer),
+                matches!(s.cad_tool.tool, Some(crate::cad_tools::Tool::Chamfer(_))),
+                TOOL,
+                cx,
+            ))
+    } else if s.edit_mode.is_component() {
         palette
             .child(command_icon(
                 t,
@@ -71,15 +94,25 @@ fn tool_palette(t: Colors, s: &Studio, cx: &mut Context<Studio>) -> Div {
                 cx,
             ))
     } else {
-        palette.child(command_icon(
-            t,
-            "rail-bevel",
-            Icon::Bevel,
-            Command::Bevel,
-            false,
-            TOOL,
-            cx,
-        ))
+        palette
+            .child(command_icon(
+                t,
+                "rail-push-pull",
+                Icon::PushPull,
+                push_pull,
+                pushing,
+                TOOL,
+                cx,
+            ))
+            .child(command_icon(
+                t,
+                "rail-bevel",
+                Icon::Bevel,
+                Command::Bevel,
+                false,
+                TOOL,
+                cx,
+            ))
     };
     palette.child(separator()).child(
         icon_button(t, "tool-add", Icon::Plus, menu_open, TOOL)
@@ -118,6 +151,8 @@ impl Density {
 
 fn component_filter(t: Colors, s: &Studio, density: Density, cx: &mut Context<Studio>) -> Div {
     let labels = density == Density::Full;
+    // Parts edit B-rep faces and edges; they have no free vertices.
+    let part = s.part_editing().is_some();
     hud(t)
         .when(density == Density::Tight, |d| d.flex_col())
         .children(
@@ -127,6 +162,7 @@ fn component_filter(t: Colors, s: &Studio, density: Density, cx: &mut Context<St
                 (EditMode::Face, Icon::Face, "Face"),
             ]
             .into_iter()
+            .filter(move |(mode, _, _)| !(part && *mode == EditMode::Vertex))
             .map(|(mode, glyph, label)| {
                 let active = s.edit_mode == mode;
                 on_command(
