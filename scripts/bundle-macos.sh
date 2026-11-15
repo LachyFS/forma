@@ -81,6 +81,7 @@ python3 scripts/setup-denoiser.py --output-dir "$staging/Contents/Resources/oidn
 mv -- "$staging/Contents/Resources/oidn/lib" "$staging/Contents/Frameworks/oidn/lib"
 rm -rf -- "$staging/Contents/Frameworks/oidn/lib/cmake" "$staging/Contents/Frameworks/oidn/lib/pkgconfig"
 install -m 644 "$icon" "$staging/Contents/Resources/Forma.icns"
+install -m 644 THIRD_PARTY_NOTICES.md "$staging/Contents/Resources/THIRD_PARTY_NOTICES.md"
 cat > "$staging/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">

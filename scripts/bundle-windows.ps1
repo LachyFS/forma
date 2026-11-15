@@ -20,6 +20,7 @@ try {
     & python scripts/setup-denoiser.py --output-dir (Join-Path $bundle "oidn")
     if ($LASTEXITCODE -ne 0) { throw "OIDN runtime packaging failed" }
     Copy-Item (Join-Path $repository "README.md") $bundle
+    Copy-Item (Join-Path $repository "THIRD_PARTY_NOTICES.md") $bundle
     Compress-Archive -Path $bundle -DestinationPath "$bundle.zip" -Force
     Write-Output "Bundle: $bundle.zip"
     Write-Output "Run: $bundle/forma.exe"
