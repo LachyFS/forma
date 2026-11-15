@@ -316,6 +316,15 @@ pub(crate) fn scenarios() -> Vec<Scenario> {
             },
         },
         Scenario {
+            // A mesh's surface: the torus selected in Material Preview.
+            name: "material-preview",
+            enter: |s, _, cx| {
+                select_named(s, "Torus");
+                s.invalidate(false, cx);
+            },
+            leave: |s, _, cx| select_hero(s, cx),
+        },
+        Scenario {
             name: "solid-mode",
             enter: |s, w, cx| s.execute(Command::SetMode(RenderMode::Solid), w, cx),
             leave: |s, w, cx| s.execute(Command::SetMode(RenderMode::MaterialPreview), w, cx),

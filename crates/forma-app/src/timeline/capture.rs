@@ -62,6 +62,13 @@ fn leave_draw(s: &mut Studio, w: &mut Window, cx: &mut Context<Studio>) {
 pub(crate) fn scenarios() -> Vec<Scenario> {
     vec![
         Scenario {
+            // The startup bracket with a sketch-based cut selected.
+            name: "timeline-startup",
+            enter: |s, w, cx| select(s, w, cx, crate::startup::HERO_PART, "Upright holes"),
+            // Object selection resets the feature selection.
+            leave: |s, _, cx| crate::capture::select_hero(s, cx),
+        },
+        Scenario {
             name: "timeline",
             enter: |s, w, cx| parts(s, w, cx, RenderMode::MaterialPreview, Some("Bracket")),
             leave: leave_parts,

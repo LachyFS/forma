@@ -31,6 +31,7 @@ pub(crate) fn restore(s: &mut Studio, _: &mut Window, cx: &mut Context<Studio>) 
         s.scene.camera = camera;
         s.select_objects(selected.into_iter().collect(), selected);
     }
+    s.dirty = false;
     s.sketch.revision += 1;
     s.invalidate(true, cx);
 }

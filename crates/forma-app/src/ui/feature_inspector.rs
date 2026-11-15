@@ -445,10 +445,16 @@ fn sketch_link(t: Colors, s: &Studio, feature: &Feature, cx: &mut Context<Studio
             },
         ),
         None => (
-            "Embedded sketch".to_owned(),
+            // Beside the "Sketch" label: an embedded sketch.
+            "Embedded".to_owned(),
             "Stored in this feature · Edit sketch opens it in Draw as a linked sketch",
         ),
     };
+    // Sidebar minus the section insets, label column, row padding, icon and
+    // the curve count: GPUI cannot ellipsize this nested text by itself.
+    let room =
+        s.panels.laid_out_sidebar() - 2. * SP_3 - LABEL_W - 3. * SP_2 - ICON_SM - 2. * SP_1_5 - 46.;
+    let name = fit_text(cx, name.into(), TEXT_MD, room.max(24.));
     Some(
         col()
             .gap(px(SP_1))
