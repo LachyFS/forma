@@ -285,12 +285,15 @@ part, a polygon on a mesh — and drag it along its normal; releasing applies it
 Click a face instead to select it and type an exact distance with `Return`.
 On a part this adds a push/pull feature (pulling out joins, pushing in cuts);
 on a mesh the face slides when its neighbours run along the move (the sides of
-a box stretch) and is otherwise extruded as a region. The tool stays on for the
-next face until `P` or `Esc`.
+a box stretch) and is otherwise extruded as a region (a lone face with no
+neighbours always extrudes). Typed distances take units (`2in`, `30mm`). The
+tool stays on for the next face until `P` or `Esc`.
 
 **Sketch on face** (`D`). Draw detects a part's flat face across its whole B-rep
-face (not one triangle of its tessellation), aligns the grid with the face's
-longest straight edge and shows its outline for snapping.
+face (not one triangle of its tessellation), puts the sketch on the kernel's
+exact plane for that face, aligns the grid with the face's longest straight
+edge and shows its outline for snapping. Starting a sketch ends any running
+modelling tool.
 
 #### Part edit mode
 
@@ -299,7 +302,8 @@ or **Face** picks whole faces, `2` or **Edge** picks edges (a circle's rim is
 one edge). Hover highlights only what you can see; `⇧`-click adds. With faces
 selected, `E` or `P` pushes or pulls them (the distance follows the pointer;
 click or `Return` applies). With straight edges selected, **Chamfer** (`⌘B`)
-follows the pointer the same way with a ghost of the chamfer faces. `D`
+follows the pointer the same way with a ghost of the chamfer faces (the part
+must be evenly scaled; apply an uneven scale first). `D`
 sketches on the selected face. Faces and edges cannot be deleted or moved
 directly — `Delete`, `G`, `R` and `S` explain what to use instead. Selections
 are stored by position, so they survive regeneration.
