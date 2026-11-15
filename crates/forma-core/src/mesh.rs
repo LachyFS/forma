@@ -24,10 +24,18 @@ impl Primitive {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Mesh {
     pub positions: Vec<Vec3>,
     pub faces: Vec<Vec<u32>>,
+    /// Optional face group per polygon, either empty or one entry per face.
+    /// CAD parts tessellate each B-rep face into a group of polygons: picking
+    /// maps a polygon back to its B-rep face, and wireframe/selection overlays
+    /// draw only the edges between groups ([`Mesh::display_edges`]), never the
+    /// tessellation diagonals inside a curved face. Ordinary editable meshes
+    /// leave this empty; older files deserialize without it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub groups: Vec<u32>,
 }
 
 /// Reuse face-sized scratch storage across a mesh pass. Rendering, picking and
@@ -54,7 +62,31 @@ impl Mesh {
                     Vec3::new(1., 0., -1.),
                 ],
                 faces: vec![vec![0, 1, 2, 3]],
+                groups: Vec::new(),
             },
+        }
+    }
+
+    /// A mesh without face groups.
+    pub fn new(positions: Vec<Vec3>, faces: Vec<Vec<u32>>) -> Self {
+        Self {
+            positions,
+            faces,
+            groups: Vec::new(),
+        }
+    }
+
+    /// Whether `groups` assigns a group to every face.
+    pub fn has_groups(&self) -> bool {
+        !self.groups.is_empty() && self.groups.len() == self.faces.len()
+    }
+
+    /// The group of `face`, or the face index itself for ungrouped meshes.
+    pub fn face_group(&self, face: usize) -> Option<u32> {
+        if self.has_groups() {
+            self.groups.get(face).copied()
+        } else {
+            (face < self.faces.len()).then_some(face as u32)
         }
     }
 
@@ -104,6 +136,39 @@ impl Mesh {
             }
         }
         edges.into_iter().map(|(a, b)| [a, b]).collect()
+    }
+
+    /// Edges to draw in wireframe and selection overlays. Without face groups
+    /// these are exactly [`Mesh::edges`]. With groups, an edge shared only by
+    /// polygons of one group is interior to that group (a tessellation
+    /// diagonal or a smooth seam) and is omitted.
+    pub fn display_edges(&self) -> Vec<[u32; 2]> {
+        if !self.has_groups() {
+            return self.edges();
+        }
+        // (group of the first polygon, uses, every use in that group)
+        let mut uses: BTreeMap<(u32, u32), (u32, u32, bool)> = BTreeMap::new();
+        for (face, group) in self.faces.iter().zip(&self.groups) {
+            for (&a, &b) in face
+                .iter()
+                .zip(face.iter().cycle().skip(1))
+                .take(face.len())
+            {
+                if a == b {
+                    continue;
+                }
+                uses.entry(edge_key(a, b))
+                    .and_modify(|(first, count, same)| {
+                        *count += 1;
+                        *same &= *first == *group;
+                    })
+                    .or_insert((*group, 1, true));
+            }
+        }
+        uses.into_iter()
+            .filter(|(_, (_, count, same))| *count < 2 || !same)
+            .map(|((a, b), _)| [a, b])
+            .collect()
     }
 
     pub fn face_normal(&self, face: usize) -> Vec3 {
@@ -223,7 +288,7 @@ impl Mesh {
                 ]);
             }
         }
-        let output = Self { positions, faces };
+        let output = Self::new(positions, faces);
         output.validate()?;
         *self = output;
         Ok(())
@@ -237,6 +302,8 @@ impl Mesh {
             "Extrusion distance must be finite and nonzero"
         );
         self.validate()?;
+        // Adding faces invalidates per-face groups; editable meshes have none.
+        self.groups.clear();
         let source = self
             .faces
             .get(face)
@@ -285,6 +352,10 @@ impl Mesh {
                 .iter()
                 .all(|p| p.is_finite() && p.abs().max_element() <= 1.0e8),
             "Mesh contains a non-finite or out-of-range position"
+        );
+        ensure!(
+            self.groups.is_empty() || self.groups.len() == self.faces.len(),
+            "Mesh face groups must be empty or one per face"
         );
         let mut unique = Vec::new();
         let mut scratch = Triangulation::default();
@@ -386,6 +457,7 @@ impl Mesh {
                 vec![0, 4, 7, 3],
                 vec![1, 2, 6, 5],
             ],
+            groups: Vec::new(),
         }
     }
 
@@ -420,7 +492,7 @@ impl Mesh {
             let last = 1 + (rings - 2) * segments;
             faces.push(vec![south, last + s, last + n]);
         }
-        Self { positions, faces }
+        Self::new(positions, faces)
     }
 
     fn cylinder(segments: u32) -> Self {
@@ -438,7 +510,7 @@ impl Mesh {
         }
         faces.push((0..segments).collect());
         faces.push((segments..segments * 2).rev().collect());
-        Self { positions, faces }
+        Self::new(positions, faces)
     }
 
     fn torus(segments: u32, sides: u32) -> Self {
@@ -468,7 +540,7 @@ impl Mesh {
                 ]);
             }
         }
-        Self { positions, faces }
+        Self::new(positions, faces)
     }
 }
 

@@ -28,6 +28,7 @@ fn dense_scene(size: u32) -> Scene {
     let mut mesh = Mesh {
         positions: Vec::new(),
         faces: Vec::new(),
+        groups: Vec::new(),
     };
     for y in 0..=size {
         for x in 0..=size {
@@ -77,11 +78,16 @@ fn assert_geometry_matches(scene: &Scene) {
 
 #[test]
 fn mesh_preparation_matches_reference_scenes() {
+    let mut grouped = dense_scene(8);
+    let id = grouped.objects[0].id;
+    let mesh = grouped.object_mesh_mut(id).unwrap();
+    mesh.groups = (0..mesh.faces.len() as u32).map(|face| face / 5).collect();
     for scene in [
         Scene::default(),
         bundled_v8(),
         linked_scene(6),
         dense_scene(16),
+        grouped,
     ] {
         assert_geometry_matches(&scene);
     }
@@ -261,7 +267,7 @@ fn reference_geometry(scene: &Scene) -> Geometry {
             .map(|p| transform.transform_point3(*p))
             .collect();
         let edges: HashSet<_> = mesh
-            .edges()
+            .display_edges()
             .into_iter()
             .map(|[a, b]| edge_key(a, b))
             .collect();

@@ -32,7 +32,7 @@ fn materials_textures_and_code_are_portable_and_undoable() {
     let file = directory.path().join("textured.forma");
     scene.save(&file).unwrap();
     let saved: serde_json::Value = serde_json::from_slice(&std::fs::read(&file).unwrap()).unwrap();
-    assert_eq!(saved["version"], 3);
+    assert_eq!(saved["version"], 4);
     assert!(saved["scene"]["materials"][0]["material"]["textures"][0]["rgba"].is_string());
     assert_eq!(Scene::load(&file).unwrap(), scene);
     let edited = scene.clone();

@@ -144,6 +144,7 @@ fn tiny_and_large_parented_triangles_match_reference() {
         *scene.object_mesh_mut(id).unwrap() = Mesh {
             positions: vec![Vec3::ZERO, Vec3::X, Vec3::Y],
             faces: vec![vec![0, 1, 2]],
+            groups: Vec::new(),
         };
         let parent = scene.add_empty("parent").unwrap();
         scene.object_mut(parent).unwrap().transform.rotation = Vec3::new(0.3, 0.2, -0.4);

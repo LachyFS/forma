@@ -90,6 +90,7 @@ fn concave_polygon_triangulation_preserves_area_and_winding() {
             Vec3::new(0., 3., 0.),
         ],
         faces: vec![vec![0, 1, 2, 3, 4]],
+        groups: Vec::new(),
     };
     for sign in [1.0, -1.0] {
         mesh.validate().unwrap();
@@ -293,7 +294,7 @@ fn scene_round_trip_is_versioned_atomic_and_validated() {
     let bytes = fs::read(&path).unwrap();
     assert_eq!(Scene::load(&path).unwrap(), scene);
     let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-    assert_eq!(json["version"], 3);
+    assert_eq!(json["version"], 4);
     assert_eq!(json["format"], "forma");
     let mut invalid = scene.clone();
     let id = invalid.objects[0].id;
@@ -398,6 +399,7 @@ fn crossing_polygon_with_nonzero_signed_area_is_rejected() {
             Vec3::new(2., 0., 0.),
         ],
         faces: vec![vec![0, 1, 2, 3]],
+        groups: Vec::new(),
     };
     assert!(mesh.validate().is_err());
 }
@@ -413,6 +415,7 @@ fn collinear_polygon_corner_can_be_triangulated_without_zero_area_triangles() {
             Vec3::new(0., 2., 0.),
         ],
         faces: vec![vec![0, 1, 2, 3, 4]],
+        groups: Vec::new(),
     };
     mesh.validate().unwrap();
     assert_eq!(mesh.triangles().len(), 3);

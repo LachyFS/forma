@@ -1,0 +1,27 @@
+[package]
+name = "forma-cad"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Forma's B-rep CAD kernel layer: parametric part regeneration on truck, tessellation, conversions, STEP and an isolated worker process."
+
+[dependencies]
+forma-core = { path = "../forma-core" }
+anyhow.workspace = true
+glam.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+# truck releases from crates.io, pinned exactly: truck's master branch reuses
+# these version numbers for unreleased code. Apache-2.0; see THIRD_PARTY_NOTICES.md.
+truck-modeling = "=0.6.0"
+truck-topology = "=0.6.0"
+truck-polymesh = "=0.6.0"
+truck-shapeops = { version = "=0.4.0", default-features = false }
+truck-meshalgo = { version = "=0.4.0", default-features = false, features = ["tessellation", "analyzers"] }
+truck-stepio = "=0.3.0"
+
+[[bin]]
+# Test and development host for the worker protocol. The app runs the same
+# loop as `forma --cad-worker`.
+name = "forma-cad-worker"
+path = "src/bin/forma-cad-worker.rs"

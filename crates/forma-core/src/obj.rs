@@ -10,6 +10,7 @@ pub(crate) fn read(path: &Path) -> Result<Mesh> {
     let mut mesh = Mesh {
         positions: Vec::new(),
         faces: Vec::new(),
+        groups: Vec::new(),
     };
     let mut texture_count = 0_usize;
     let mut normal_count = 0_usize;

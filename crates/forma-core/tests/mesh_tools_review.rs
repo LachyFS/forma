@@ -10,6 +10,7 @@ fn bevel_rejects_impossible_output_before_building_dense_topology() {
     let mut mesh = Mesh {
         positions: Vec::with_capacity(ring as usize + 2),
         faces: Vec::with_capacity(ring as usize * 2),
+        groups: Vec::new(),
     };
     mesh.positions.extend([Vec3::Y, Vec3::NEG_Y]);
     for i in 0..ring {

@@ -1,4 +1,4 @@
-use crate::{Camera, Material, Mesh, Primitive, Ray, Sketch};
+use crate::{Camera, Material, Mesh, PartData, PartEvaluation, Primitive, Ray, Sketch};
 use anyhow::{Context, Result, ensure};
 use glam::{EulerRot, Mat4, Quat, Vec3};
 use serde::{Deserialize, Serialize};
@@ -110,6 +110,18 @@ pub enum ObjectData {
     Sketch {
         sketch: Sketch,
     },
+    /// A parametric CAD part. `part` is a [`PartData`] block holding the
+    /// feature history; `mesh` is the cached tessellation of its last
+    /// regeneration (absent until the first one), which renders, picks and
+    /// exports like any mesh. The cache is replaced by regeneration, never
+    /// edited with mesh tools.
+    Part {
+        part: u64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        mesh: Option<u64>,
+        #[serde(default)]
+        materials: Vec<u64>,
+    },
     /// A durable extension point for object kinds Forma does not understand
     /// yet. Core graph operations preserve these properties losslessly.
     Custom {
@@ -127,22 +139,47 @@ impl ObjectData {
             Self::Light { .. } => "light",
             Self::Camera { .. } => "camera",
             Self::Sketch { .. } => "sketch",
+            Self::Part { .. } => "part",
             Self::Custom { kind, .. } => kind,
         }
     }
 
+    /// The mesh data block this object renders: an editable mesh, or a
+    /// part's cached tessellation.
     pub fn mesh_id(&self) -> Option<u64> {
         match self {
             Self::Mesh { mesh, .. } => Some(*mesh),
+            Self::Part { mesh, .. } => *mesh,
             _ => None,
         }
     }
 
     pub fn material_ids(&self) -> &[u64] {
         match self {
-            Self::Mesh { materials, .. } => materials,
+            Self::Mesh { materials, .. } | Self::Part { materials, .. } => materials,
             _ => &[],
         }
+    }
+
+    fn material_ids_mut(&mut self) -> Option<&mut Vec<u64>> {
+        match self {
+            Self::Mesh { materials, .. } | Self::Part { materials, .. } => Some(materials),
+            _ => None,
+        }
+    }
+
+    /// The part data block of a CAD part object.
+    pub fn part_id(&self) -> Option<u64> {
+        match self {
+            Self::Part { part, .. } => Some(*part),
+            _ => None,
+        }
+    }
+
+    /// Whether the mesh data may be edited with polygon tools. A part's mesh
+    /// is a regenerated cache, so it is not.
+    pub fn is_editable_mesh(&self) -> bool {
+        matches!(self, Self::Mesh { .. })
     }
 }
 
@@ -235,6 +272,14 @@ impl Object {
 
     pub fn mesh_id(&self) -> Option<u64> {
         self.data.mesh_id()
+    }
+
+    pub fn part_id(&self) -> Option<u64> {
+        self.data.part_id()
+    }
+
+    pub fn is_part(&self) -> bool {
+        self.data.part_id().is_some()
     }
 }
 
@@ -346,6 +391,9 @@ pub struct Scene {
     pub objects: Vec<Object>,
     pub meshes: Vec<MeshData>,
     pub materials: Vec<MaterialData>,
+    /// Parametric CAD part data blocks (file version 4 and later).
+    #[serde(default)]
+    pub parts: Vec<PartData>,
     pub collections: Vec<Collection>,
     pub root_collection: u64,
     pub camera: Camera,
@@ -391,7 +439,10 @@ struct LegacyObject {
     visible: bool,
 }
 
-const FILE_VERSION: u32 = 3;
+/// Version 4 added CAD parts (`Scene::parts` and `ObjectData::Part`).
+const FILE_VERSION: u32 = 4;
+/// Most CAD part data blocks in one scene.
+pub const MAX_SCENE_PARTS: usize = 10_000;
 
 impl Default for Scene {
     fn default() -> Self {
@@ -472,6 +523,7 @@ impl Scene {
             objects: Vec::new(),
             meshes: Vec::new(),
             materials: Vec::new(),
+            parts: Vec::new(),
             collections: vec![Collection {
                 id: 1,
                 name: "Scene Collection".into(),
@@ -658,6 +710,23 @@ impl Scene {
             ObjectData::Light { light } => validate_light(light)?,
             ObjectData::Camera { camera } => validate_camera_data(camera)?,
             ObjectData::Sketch { sketch } => sketch.validate()?,
+            ObjectData::Part {
+                part,
+                mesh,
+                materials,
+            } => {
+                ensure!(self.part(*part).is_some(), "Part data does not exist");
+                ensure!(
+                    mesh.is_none_or(|mesh| self.mesh(mesh).is_some()),
+                    "Mesh data does not exist"
+                );
+                ensure!(
+                    !materials.is_empty()
+                        && materials.len() <= 256
+                        && materials.iter().all(|id| self.material(*id).is_some()),
+                    "One to 256 valid materials are required"
+                );
+            }
             ObjectData::Custom { kind, properties } => {
                 ensure!(valid_name(kind), "Invalid custom object type");
                 ensure!(
@@ -725,9 +794,154 @@ impl Scene {
         Some(&self.mesh(mesh_id)?.mesh)
     }
 
+    /// Editable mesh data of a mesh object. CAD parts return `None`: their
+    /// mesh is a regenerated cache that polygon tools must not change.
     pub fn object_mesh_mut(&mut self, object_id: u64) -> Option<&mut Mesh> {
-        let mesh_id = self.object(object_id)?.mesh_id()?;
+        let object = self.object(object_id)?;
+        if !object.data.is_editable_mesh() {
+            return None;
+        }
+        let mesh_id = object.mesh_id()?;
         Some(&mut self.mesh_mut(mesh_id)?.mesh)
+    }
+
+    pub fn part(&self, id: u64) -> Option<&PartData> {
+        let index = id_index(&self.parts, id, |part| part.id)?;
+        self.parts.get(index)
+    }
+
+    pub fn part_mut(&mut self, id: u64) -> Option<&mut PartData> {
+        let index = id_index(&self.parts, id, |part| part.id)?;
+        self.parts.get_mut(index)
+    }
+
+    /// The part data of a CAD part object.
+    pub fn object_part(&self, object_id: u64) -> Option<&PartData> {
+        self.part(self.object(object_id)?.part_id()?)
+    }
+
+    pub fn object_part_mut(&mut self, object_id: u64) -> Option<&mut PartData> {
+        let part = self.object(object_id)?.part_id()?;
+        self.part_mut(part)
+    }
+
+    pub fn part_users(&self, part_id: u64) -> usize {
+        self.objects
+            .iter()
+            .filter(|object| object.part_id() == Some(part_id))
+            .count()
+    }
+
+    /// Add a part data block without an object. The block's id and name are
+    /// assigned here; its stamp is refreshed.
+    pub fn create_part_data(&mut self, mut part: PartData) -> Result<u64> {
+        ensure!(
+            self.parts.len() < MAX_SCENE_PARTS,
+            "Scene exceeds {MAX_SCENE_PARTS} parts"
+        );
+        part.restamp();
+        part.validate()?;
+        let id = self.allocate_id();
+        part.id = id;
+        part.name = unique_name(&part.name, self.parts.iter().map(|p| p.name.as_str()));
+        self.parts.push(part);
+        Ok(id)
+    }
+
+    /// Add a CAD part object with a new material. Its tessellation arrives
+    /// later through [`Scene::set_part_tessellation`]; until then the object
+    /// has no mesh and does not render.
+    pub fn add_part(&mut self, name: impl Into<String>, part: PartData) -> Result<u64> {
+        let name = name.into();
+        ensure!(valid_name(&name), "Invalid object name");
+        ensure!(self.objects.len() < 10_000, "Scene exceeds 10,000 objects");
+        let mut candidate = self.clone();
+        let part = candidate.create_part_data(PartData {
+            name: name.clone(),
+            ..part
+        })?;
+        let material = candidate.create_material_data("Material", Material::default())?;
+        let id = candidate.add_object(
+            name,
+            ObjectData::Part {
+                part,
+                mesh: None,
+                materials: vec![material],
+            },
+        )?;
+        *self = candidate;
+        Ok(id)
+    }
+
+    /// Install a regenerated tessellation for every object of `part_id`, if
+    /// the part still has content `stamp`. Returns `Ok(false)` for stale
+    /// results, which callers drop. The cache is not an undoable edit; undo
+    /// restores whichever cache the earlier scene held and the stamp check
+    /// then requests a fresh regeneration if needed.
+    pub fn set_part_tessellation(
+        &mut self,
+        part_id: u64,
+        stamp: u64,
+        mesh: Option<Mesh>,
+        issues: Vec<crate::FeatureIssue>,
+    ) -> Result<bool> {
+        let Some(part) = self.part(part_id) else {
+            return Ok(false);
+        };
+        if part.stamp != stamp {
+            return Ok(false);
+        }
+        let users: Vec<u64> = self
+            .objects
+            .iter()
+            .filter(|object| object.part_id() == Some(part_id))
+            .map(|object| object.id)
+            .collect();
+        if let Some(mesh) = mesh {
+            mesh.validate().context("Invalid part tessellation")?;
+            let mut existing: Vec<u64> = users
+                .iter()
+                .filter_map(|id| self.object(*id).and_then(Object::mesh_id))
+                .collect();
+            existing.sort_unstable();
+            existing.dedup();
+            let vertices: usize = self
+                .meshes
+                .iter()
+                .filter(|data| !existing.contains(&data.id))
+                .map(|data| data.mesh.positions.len())
+                .sum();
+            let faces: usize = self
+                .meshes
+                .iter()
+                .filter(|data| !existing.contains(&data.id))
+                .map(|data| data.mesh.faces.len())
+                .sum();
+            ensure!(
+                vertices + mesh.positions.len() <= 5_000_000
+                    && faces + mesh.faces.len() <= 5_000_000,
+                "Part tessellation would exceed five million scene vertices or faces"
+            );
+            let target = match existing.first() {
+                Some(&id) => {
+                    self.mesh_mut(id).unwrap().mesh = mesh;
+                    id
+                }
+                None => {
+                    let name = self.part(part_id).unwrap().name.clone();
+                    self.create_mesh_data(name, mesh)?
+                }
+            };
+            for id in users {
+                if let Some(ObjectData::Part { mesh, .. }) =
+                    self.object_mut(id).map(|object| &mut object.data)
+                {
+                    *mesh = Some(target);
+                }
+            }
+        }
+        self.part_mut(part_id).unwrap().evaluated = Some(PartEvaluation { stamp, issues });
+        Ok(true)
     }
 
     pub fn object_material(&self, object_id: u64) -> Option<&Material> {
@@ -774,8 +988,8 @@ impl Scene {
         let object = self
             .object_mut(object_id)
             .context("Object does not exist")?;
-        let ObjectData::Mesh { materials, .. } = &mut object.data else {
-            anyhow::bail!("Object is not a mesh");
+        let Some(materials) = object.data.material_ids_mut() else {
+            anyhow::bail!("Object has no material slots");
         };
         let target = materials
             .get_mut(slot)
@@ -792,8 +1006,8 @@ impl Scene {
         let object = self
             .object_mut(object_id)
             .context("Object does not exist")?;
-        let ObjectData::Mesh { materials, .. } = &mut object.data else {
-            anyhow::bail!("Object is not a mesh");
+        let Some(materials) = object.data.material_ids_mut() else {
+            anyhow::bail!("Object has no material slots");
         };
         ensure!(materials.len() < 256, "Object exceeds 256 material slots");
         materials.push(material_id);
@@ -833,7 +1047,7 @@ impl Scene {
         let source = self.material(material_id).unwrap().clone();
         let new_id = self.create_material_data(source.name, source.material)?;
         let object = self.object_mut(object_id).unwrap();
-        if let ObjectData::Mesh { materials, .. } = &mut object.data {
+        if let Some(materials) = object.data.material_ids_mut() {
             materials[slot] = new_id;
         }
         Ok(new_id)
@@ -1071,28 +1285,48 @@ impl Scene {
 
     fn duplicate_impl(&mut self, id: u64, linked: bool) -> Option<u64> {
         let mut object = self.object(id)?.clone();
-        if !linked && let ObjectData::Mesh { mesh, materials } = &mut object.data {
-            let source_mesh = self.mesh(*mesh)?.clone();
-            let mesh_id = self.allocate_id();
-            self.meshes.push(MeshData {
-                id: mesh_id,
-                name: self.unique_mesh_name(&source_mesh.name),
-                mesh: source_mesh.mesh,
-            });
-            *mesh = mesh_id;
-            let source_materials: Vec<_> = materials
+        if !linked {
+            if let ObjectData::Part { part, .. } = &mut object.data {
+                // A full duplicate owns its feature history.
+                let mut source = self.part(*part)?.clone();
+                let part_id = self.allocate_id();
+                source.id = part_id;
+                source.name = unique_name(&source.name, self.parts.iter().map(|p| p.name.as_str()));
+                self.parts.push(source);
+                *part = part_id;
+            }
+            let mesh = match &mut object.data {
+                ObjectData::Mesh { mesh, .. } => Some(mesh),
+                ObjectData::Part { mesh, .. } => mesh.as_mut(),
+                _ => None,
+            };
+            if let Some(mesh) = mesh {
+                let source_mesh = self.mesh(*mesh)?.clone();
+                let mesh_id = self.allocate_id();
+                self.meshes.push(MeshData {
+                    id: mesh_id,
+                    name: self.unique_mesh_name(&source_mesh.name),
+                    mesh: source_mesh.mesh,
+                });
+                *mesh = mesh_id;
+            }
+            let source_materials: Vec<_> = object
+                .data
+                .material_ids()
                 .iter()
                 .filter_map(|id| self.material(*id).cloned())
                 .collect();
-            materials.clear();
-            for source in source_materials {
-                let material_id = self.allocate_id();
-                self.materials.push(MaterialData {
-                    id: material_id,
-                    name: self.unique_material_name(&source.name),
-                    material: source.material,
-                });
-                materials.push(material_id);
+            if let Some(materials) = object.data.material_ids_mut() {
+                materials.clear();
+                for source in source_materials {
+                    let material_id = self.allocate_id();
+                    self.materials.push(MaterialData {
+                        id: material_id,
+                        name: self.unique_material_name(&source.name),
+                        material: source.material,
+                    });
+                    materials.push(material_id);
+                }
             }
         }
         let new_id = self.allocate_id();
@@ -1103,8 +1337,11 @@ impl Scene {
         Some(new_id)
     }
 
-    /// Remove mesh and material blocks that no object references.
+    /// Remove mesh and material blocks that no object references, and part
+    /// blocks without objects. Returns the removed mesh and material counts.
     pub fn purge_orphans(&mut self) -> (usize, usize) {
+        let parts: BTreeSet<_> = self.objects.iter().filter_map(Object::part_id).collect();
+        self.parts.retain(|part| parts.contains(&part.id));
         let meshes: BTreeSet<_> = self.objects.iter().filter_map(Object::mesh_id).collect();
         let materials: BTreeSet<_> = self
             .objects
@@ -1225,11 +1462,19 @@ impl Scene {
             1 => Self::from_legacy(
                 serde_json::from_value(document.scene).context("Invalid version 1 scene")?,
             )?,
-            2 | FILE_VERSION => {
-                serde_json::from_value(document.scene).context("Invalid scene data")?
-            }
-            version => anyhow::bail!("Unsupported Forma scene version {version}"),
+            2 | 3 => serde_json::from_value(migrate_v3_to_v4(document.scene))
+                .context("Invalid scene data")?,
+            FILE_VERSION => serde_json::from_value(document.scene).context("Invalid scene data")?,
+            version => anyhow::bail!(
+                "Unsupported Forma scene version {version} · This file needs a newer Forma"
+            ),
         };
+        let mut scene: Self = scene;
+        // Stamps are derived data. Recompute them so a hand-edited or
+        // foreign file can never pass off a stale tessellation as current.
+        for part in &mut scene.parts {
+            part.restamp();
+        }
         scene.validate().context("Invalid scene data")?;
         Ok(scene)
     }
@@ -1326,6 +1571,10 @@ impl Scene {
             !self.collections.is_empty() && self.collections.len() <= 10_000,
             "Scene must contain 1–10,000 collections"
         );
+        ensure!(
+            self.parts.len() <= MAX_SCENE_PARTS,
+            "Scene exceeds {MAX_SCENE_PARTS} parts"
+        );
         let mut ids = BTreeSet::new();
         let mut total_vertices = 0_usize;
         let mut total_faces = 0_usize;
@@ -1403,6 +1652,13 @@ impl Scene {
             ensure!(valid_name(&data.name), "Invalid material data-block name");
             validate_material(&data.material)
                 .with_context(|| format!("Invalid material in {}", data.name))?;
+        }
+        for part in &self.parts {
+            ensure!(
+                part.id > 0 && ids.insert(part.id),
+                "Data-block IDs must be nonzero and globally unique"
+            );
+            part.validate()?;
         }
         for object in &self.objects {
             ensure!(
@@ -1483,6 +1739,29 @@ impl Scene {
                 ObjectData::Sketch { sketch } => sketch
                     .validate()
                     .with_context(|| format!("Invalid sketch in {}", object.name))?,
+                ObjectData::Part {
+                    part,
+                    mesh,
+                    materials,
+                } => {
+                    ensure!(
+                        self.part(*part).is_some(),
+                        "Object {} has missing part data",
+                        object.name
+                    );
+                    ensure!(
+                        mesh.is_none_or(|mesh| self.mesh(mesh).is_some()),
+                        "Object {} has a missing mesh",
+                        object.name
+                    );
+                    ensure!(
+                        !materials.is_empty()
+                            && materials.len() <= 256
+                            && materials.iter().all(|id| self.material(*id).is_some()),
+                        "Object {} has missing material data",
+                        object.name
+                    );
+                }
                 ObjectData::Custom { kind, properties } => {
                     ensure!(valid_name(kind), "Invalid custom object type");
                     ensure!(
@@ -1537,6 +1816,7 @@ impl Scene {
             .map(|entry| entry.id)
             .chain(self.meshes.iter().map(|entry| entry.id))
             .chain(self.materials.iter().map(|entry| entry.id))
+            .chain(self.parts.iter().map(|entry| entry.id))
             .chain(self.collections.iter().map(|entry| entry.id))
             .max()
             .unwrap_or(0);
@@ -1603,6 +1883,7 @@ impl Scene {
             objects: Vec::new(),
             meshes: Vec::new(),
             materials: Vec::new(),
+            parts: Vec::new(),
             collections: Vec::new(),
             root_collection: 0,
             camera: legacy.camera,
@@ -1648,6 +1929,16 @@ impl Scene {
         }
         Ok(scene)
     }
+}
+
+/// Version 3 scenes predate CAD parts; give them an explicit empty part list.
+fn migrate_v3_to_v4(mut scene: serde_json::Value) -> serde_json::Value {
+    if let Some(object) = scene.as_object_mut() {
+        object
+            .entry("parts")
+            .or_insert_with(|| serde_json::Value::Array(Vec::new()));
+    }
+    scene
 }
 
 fn unique_name<'a>(stem: &str, existing: impl Iterator<Item = &'a str>) -> String {

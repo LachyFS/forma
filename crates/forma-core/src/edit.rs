@@ -419,6 +419,7 @@ mod modelling_tests {
                 Vec3::new(2., 0., 1.),
             ],
             faces: vec![vec![0, 3, 4, 1], vec![1, 4, 5, 2]],
+            groups: Vec::new(),
         }
     }
     #[test]

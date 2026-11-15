@@ -61,6 +61,7 @@ fn selected_triangulation_preserves_concave_winding_area_and_selection() {
                 Vec3::new(5., 1., 0.),
             ],
             faces: vec![vec![5, 6, 7, 8], vec![0, 1, 2, 3, 4], vec![5, 6, 7]],
+            groups: Vec::new(),
         };
         if reversed {
             mesh.faces[1].reverse();
@@ -142,7 +143,8 @@ fn normals_orient_closed_components_independently_and_preserve_open_seed() {
         assert!(
             volume(&Mesh {
                 positions: mesh.positions.clone(),
-                faces: mesh.faces[start..start + 6].to_vec()
+                faces: mesh.faces[start..start + 6].to_vec(),
+                groups: Vec::new(),
             }) > 0.
         );
     }
@@ -208,6 +210,7 @@ fn bevel_rejects_excessive_convexity_work_before_changing_geometry() {
     let mut mesh = Mesh {
         positions: vec![Vec3::Y, -Vec3::Y],
         faces: Vec::new(),
+        groups: Vec::new(),
     };
     for i in 0..segments {
         let angle = std::f32::consts::TAU * i as f32 / segments as f32;
@@ -260,6 +263,7 @@ fn normals_reject_a_nonorientable_mobius_strip_atomically() {
     let mut mesh = Mesh {
         positions: Vec::new(),
         faces: Vec::new(),
+        groups: Vec::new(),
     };
     for i in 0..segments {
         let angle = std::f32::consts::TAU * i as f32 / segments as f32;

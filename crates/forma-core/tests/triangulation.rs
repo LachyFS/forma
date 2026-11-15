@@ -16,6 +16,7 @@ fn mixed_faces_preserve_diagonals_winding_and_polygon_indices() {
             vec![0, 1, 2, 4],
             vec![4, 3, 2, 1, 0], // Reversed winding after smaller faces.
         ],
+        groups: Vec::new(),
     };
     let expected = vec![
         ([1, 2, 3], 0),
@@ -74,6 +75,7 @@ fn failed_faces_do_not_publish_partial_or_previous_triangles() {
             vec![0, 0, 0, 0],    // Zero projected area.
             vec![0, 2, 3],
         ],
+        groups: Vec::new(),
     };
     assert_eq!(
         mesh.triangles_with_faces(),
@@ -92,6 +94,7 @@ fn validation_checks_each_face_after_reusing_larger_buffers() {
             Vec3::new(0., 2., 0.),
         ],
         faces: vec![vec![0, 1, 2, 3], vec![0, 1, 2]],
+        groups: Vec::new(),
     };
     mesh.validate().unwrap();
     for (face, message) in [

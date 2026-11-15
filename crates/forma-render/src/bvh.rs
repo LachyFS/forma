@@ -118,17 +118,25 @@ impl MeshGeometry {
         let span = (max - min).max(Vec3::splat(1e-6));
         let generated = mesh.positions.iter().map(|p| (*p - min) / span).collect();
         let indices = mesh.triangles();
-        let edges: HashSet<_> = mesh
-            .faces
-            .iter()
-            .flat_map(|face| {
-                face.iter()
-                    .zip(face.iter().cycle().skip(1))
-                    .take(face.len())
-                    .filter(|(a, b)| a != b)
-                    .map(|(&a, &b)| edge_key(a, b))
-            })
-            .collect();
+        // Grouped meshes (CAD part tessellations) draw only edges between
+        // groups, never the diagonals inside a tessellated B-rep face.
+        let edges: HashSet<_> = if mesh.has_groups() {
+            mesh.display_edges()
+                .into_iter()
+                .map(|[a, b]| edge_key(a, b))
+                .collect()
+        } else {
+            mesh.faces
+                .iter()
+                .flat_map(|face| {
+                    face.iter()
+                        .zip(face.iter().cycle().skip(1))
+                        .take(face.len())
+                        .filter(|(a, b)| a != b)
+                        .map(|(&a, &b)| edge_key(a, b))
+                })
+                .collect()
+        };
         // Classify creases and angle-weight in mesh space. Nonuniform object
         // scaling must not change smoothing groups or create sphere seams.
         // Incident corners are contiguous, in the original triangle order, so
@@ -455,6 +463,50 @@ mod tests {
                 .triangles
                 .iter()
                 .all(|tri| (tri.params[3] as u32).count_ones() == 2)
+        );
+    }
+
+    #[test]
+    fn grouped_meshes_hide_edges_inside_a_group() {
+        let mut scene = Scene::default();
+        scene.objects.clear();
+        let id = scene.add(Primitive::Plane);
+        // Split the quad into two triangles of one group, plus a third
+        // triangle in another group sharing an edge with them.
+        let mesh = scene.object_mesh_mut(id).unwrap();
+        mesh.positions.push(Vec3::new(3.0, 0.0, 0.0));
+        mesh.faces = vec![vec![0, 1, 2], vec![0, 2, 3], vec![3, 2, 4]];
+        mesh.groups = vec![7, 7, 9];
+        let geometry = Geometry::from_scene(&scene);
+        assert_eq!(geometry.triangles.len(), 3);
+        let point = |v: [f32; 4]| Vec3::from_slice(&v);
+        let mut wire_edges = 0;
+        for triangle in &geometry.triangles {
+            let mask = triangle.params[3] as u32;
+            let corners = [triangle.v0, triangle.v1, triangle.v2].map(point);
+            for corner in 0..3 {
+                let (a, b) = (corners[(corner + 1) % 3], corners[(corner + 2) % 3]);
+                let diagonal = [a, b].contains(&Vec3::new(-1.0, 0.0, -1.0))
+                    && [a, b].contains(&Vec3::new(1.0, 0.0, 1.0));
+                if diagonal {
+                    assert_eq!(mask & (1 << corner), 0, "diagonal inside a group was drawn");
+                }
+                if mask & (1 << corner) != 0 {
+                    wire_edges += 1;
+                }
+            }
+        }
+        // Three outer quad edges, the third triangle's two outer edges, and
+        // the edge between the groups once from each side.
+        assert_eq!(wire_edges, 3 + 2 + 2);
+        // Without groups the same triangles draw every edge.
+        scene.object_mesh_mut(id).unwrap().groups.clear();
+        let ungrouped = Geometry::from_scene(&scene);
+        assert!(
+            ungrouped
+                .triangles
+                .iter()
+                .all(|triangle| (triangle.params[3] as u32).count_ones() == 3)
         );
     }
 
