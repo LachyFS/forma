@@ -527,13 +527,14 @@ impl PartData {
     }
 
     /// Stable 64-bit identity of everything that affects regeneration
-    /// (features, rollback and quality), independent of names elsewhere in
-    /// the scene. Computed with FNV-1a over canonical JSON, so it is equal
+    /// (features, rollback and quality). Feature and tool names and feature
+    /// provenance are excluded (see [`FeatureGeometry`]), so renaming or
+    /// relinking never invalidates the cached tessellation. Computed with FNV-1a over canonical JSON, so it is equal
     /// across processes and Forma versions that serialize identically.
     pub fn content_hash(&self) -> u64 {
         #[derive(Serialize)]
         struct Content<'a> {
-            features: &'a [Feature],
+            features: FeaturesGeometry<'a>,
             rollback: Option<usize>,
             quality: TessellationQuality,
         }
@@ -542,7 +543,7 @@ impl PartData {
         let _ = serde_json::to_writer(
             &mut hasher,
             &Content {
-                features: &self.features,
+                features: FeaturesGeometry(&self.features),
                 rollback: self.rollback,
                 quality: self.quality,
             },
@@ -639,6 +640,80 @@ impl PartData {
                         }
                 })
                 .sum::<usize>()
+    }
+}
+
+/// The parts of a feature that affect its geometry: id, suppression and
+/// parameters (recursively through combine tools), but not names or
+/// provenance. Content stamps and kernel caches hash this view, so renaming
+/// a feature or relinking its source never forces a regeneration.
+pub struct FeatureGeometry<'a>(pub &'a Feature);
+
+/// [`FeatureGeometry`] of each feature in a history.
+pub struct FeaturesGeometry<'a>(pub &'a [Feature]);
+
+struct KindGeometry<'a>(&'a FeatureKind);
+
+struct ToolGeometry<'a>(&'a ToolBody);
+
+impl Serialize for FeaturesGeometry<'_> {
+    fn serialize<S: serde::Serializer>(
+        &self,
+        serializer: S,
+    ) -> std::result::Result<S::Ok, S::Error> {
+        use serde::ser::SerializeSeq;
+        let mut seq = serializer.serialize_seq(Some(self.0.len()))?;
+        for feature in self.0 {
+            seq.serialize_element(&FeatureGeometry(feature))?;
+        }
+        seq.end()
+    }
+}
+
+impl Serialize for FeatureGeometry<'_> {
+    fn serialize<S: serde::Serializer>(
+        &self,
+        serializer: S,
+    ) -> std::result::Result<S::Ok, S::Error> {
+        use serde::ser::SerializeStruct;
+        let mut state = serializer.serialize_struct("Feature", 3)?;
+        state.serialize_field("id", &self.0.id)?;
+        state.serialize_field("suppressed", &self.0.suppressed)?;
+        state.serialize_field("kind", &KindGeometry(&self.0.kind))?;
+        state.end()
+    }
+}
+
+impl Serialize for KindGeometry<'_> {
+    fn serialize<S: serde::Serializer>(
+        &self,
+        serializer: S,
+    ) -> std::result::Result<S::Ok, S::Error> {
+        use serde::ser::SerializeStruct;
+        match self.0 {
+            FeatureKind::Combine(combine) => {
+                let tools: Vec<ToolGeometry<'_>> = combine.tools.iter().map(ToolGeometry).collect();
+                let mut state = serializer.serialize_struct("Combine", 3)?;
+                state.serialize_field("type", "combine")?;
+                state.serialize_field("operation", &combine.operation)?;
+                state.serialize_field("tools", &tools)?;
+                state.end()
+            }
+            other => other.serialize(serializer),
+        }
+    }
+}
+
+impl Serialize for ToolGeometry<'_> {
+    fn serialize<S: serde::Serializer>(
+        &self,
+        serializer: S,
+    ) -> std::result::Result<S::Ok, S::Error> {
+        use serde::ser::SerializeStruct;
+        let mut state = serializer.serialize_struct("ToolBody", 2)?;
+        state.serialize_field("transform", &self.0.transform)?;
+        state.serialize_field("features", &FeaturesGeometry(&self.0.features))?;
+        state.end()
     }
 }
 
@@ -861,6 +936,50 @@ mod tests {
         part.restamp();
         assert!(!part.is_evaluated());
         assert_eq!(part.active_features().count(), 0);
+    }
+
+    #[test]
+    fn names_and_provenance_never_change_the_stamp() {
+        // Review case: renaming a feature or relinking its sketch changed the
+        // hash without a restamp, so reopened files regenerated the part.
+        let mut part = PartData::new(1, "Part");
+        let id = part.push_feature("Box", box_feature());
+        let tool = ToolBody {
+            name: "Tool".into(),
+            transform: Mat4::IDENTITY,
+            features: vec![Feature::new(50, "Inner", box_feature())],
+        };
+        part.features.push(Feature::new(
+            40,
+            "Join",
+            FeatureKind::Combine(CombineFeature {
+                operation: FeatureOperation::Join,
+                tools: vec![tool],
+            }),
+        ));
+        part.next_feature_id = 100;
+        part.restamp();
+        let stamp = part.stamp;
+        part.features[0].name = "Renamed".into();
+        part.features[0].source = Some(77);
+        part.name = "Other".into();
+        if let FeatureKind::Combine(combine) = &mut part.features[1].kind {
+            combine.tools[0].name = "Renamed tool".into();
+            combine.tools[0].features[0].name = "Renamed inner".into();
+            combine.tools[0].features[0].source = Some(5);
+        }
+        assert_eq!(part.content_hash(), stamp);
+        // Geometry still counts, including inside tools.
+        if let FeatureKind::Combine(combine) = &mut part.features[1].kind {
+            combine.tools[0].transform = Mat4::from_translation(Vec3::X);
+        }
+        assert_ne!(part.content_hash(), stamp);
+        if let FeatureKind::Combine(combine) = &mut part.features[1].kind {
+            combine.tools[0].transform = Mat4::IDENTITY;
+        }
+        assert_eq!(part.content_hash(), stamp);
+        part.edit_feature(id, |feature| feature.suppressed = true);
+        assert_ne!(part.stamp, stamp);
     }
 
     #[test]

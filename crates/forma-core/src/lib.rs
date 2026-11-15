@@ -16,10 +16,11 @@ mod stl;
 mod surface_query;
 pub use part::{
     BaseBody, BaseBodyFeature, ChamferFeature, CombineFeature, EdgeRef, ExtrudeExtent,
-    ExtrudeFeature, FaceRef, Feature, FeatureIssue, FeatureKind, FeatureOperation,
-    MAX_FEATURE_REFERENCES, MAX_PART_FEATURES, MAX_PART_LENGTH, MAX_PART_STEP_BYTES,
-    MAX_TOOL_DEPTH, MIN_PART_LENGTH, PartData, PartEvaluation, Placement, PrimitiveFeature,
-    PrimitiveShape, PushPullFeature, RevolveFeature, TessellationQuality, ToolBody, all_features,
+    ExtrudeFeature, FaceRef, Feature, FeatureGeometry, FeatureIssue, FeatureKind, FeatureOperation,
+    FeaturesGeometry, MAX_FEATURE_REFERENCES, MAX_PART_FEATURES, MAX_PART_LENGTH,
+    MAX_PART_STEP_BYTES, MAX_TOOL_DEPTH, MIN_PART_LENGTH, PartData, PartEvaluation, Placement,
+    PrimitiveFeature, PrimitiveShape, PushPullFeature, RevolveFeature, TessellationQuality,
+    ToolBody, all_features,
 };
 pub use sketch::{
     MAX_SKETCH_COORDINATE, MAX_SKETCH_ENTITIES, Profile, ProfileLoop, SKETCH_TOLERANCE, Sketch,
