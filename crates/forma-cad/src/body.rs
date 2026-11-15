@@ -13,8 +13,8 @@ use glam::{DVec2, DVec3, Vec2};
 use std::f64::consts::{PI, TAU};
 use truck_meshalgo::tessellation::{MeshableShape, RobustMeshableShape};
 use truck_modeling::{
-    BoundedCurve, Curve, Edge, Face, InnerSpace, Invertible, Matrix4, ParametricCurve,
-    ParametricSurface3D, Point3, Rad, Shell, Solid, Surface, Vector3, Vertex, Wire, builder,
+    BoundedCurve, Edge, Face, InnerSpace, Invertible, ParametricCurve, ParametricSurface3D, Point3,
+    Rad, Shell, Solid, Surface, Vector3, Vertex, Wire, builder,
 };
 use truck_polymesh::PolygonMesh;
 
@@ -245,12 +245,6 @@ pub(crate) fn orient_outward(mut solid: Solid, min_radius: f64) -> Result<Body, 
     Ok(Body::solid(solid, min_radius))
 }
 
-/// Apply an affine transform to a freshly built solid. Never call this on a
-/// boolean result with intersection curves: truck can loop forever there.
-pub(crate) fn transformed(solid: &Solid, matrix: Matrix4) -> Solid {
-    builder::transformed(solid, matrix)
-}
-
 // ---------------------------------------------------------------------------
 // Primitives
 // ---------------------------------------------------------------------------
@@ -432,7 +426,9 @@ pub(crate) struct ProfileWires {
     pub min_radius: f64,
 }
 
-/// Profiles selected by interior points (all profiles when `selection` is empty).
+/// Regions picked by interior points, or the outermost regions (each with
+/// its holes) when `selection` is empty. Adjacent picks are merged so they
+/// extrude as one solid.
 pub(crate) fn sketch_profiles(
     sketch: &Sketch,
     selection: &[Vec2],
@@ -446,24 +442,29 @@ pub(crate) fn sketch_profiles(
     let profiles = sketch.profiles(forma_core::SKETCH_TOLERANCE * 10.0);
     if profiles.is_empty() {
         return Err(KernelError::new(
-            "The sketch has no closed profiles",
+            "The sketch has no closed regions",
             "Close the outline so its curves meet end to end",
         ));
     }
-    if selection.is_empty() {
-        return Ok(profiles);
-    }
-    let chosen: Vec<_> = profiles
-        .into_iter()
-        .filter(|profile| selection.iter().any(|point| profile.contains(*point)))
-        .collect();
+    let mut chosen: Vec<usize> = if selection.is_empty() {
+        crate::regions::outermost_regions(&profiles)
+    } else {
+        // Regions never overlap, so each point picks at most one.
+        selection
+            .iter()
+            .filter_map(|point| profiles.iter().position(|profile| profile.contains(*point)))
+            .collect()
+    };
+    chosen.sort_unstable();
+    chosen.dedup();
     if chosen.is_empty() {
         return Err(KernelError::new(
-            "None of the selected profiles exist any more",
+            "None of the selected regions exist any more",
             "Reselect the regions to use after editing the sketch",
         ));
     }
-    Ok(chosen)
+    let picked = chosen.into_iter().map(|i| profiles[i].clone()).collect();
+    Ok(crate::regions::merge_adjacent(picked))
 }
 
 pub(crate) fn profile_wires(
@@ -724,7 +725,7 @@ fn revolve_touching_axis(
         .count();
     if runs != 1 || axial.iter().all(|a| *a) {
         // Touching at isolated points, or several runs: fall back to a face sweep.
-        let face = attach(&[outer.clone()])?;
+        let face = attach(std::slice::from_ref(outer))?;
         return Ok(builder::rsweep(
             &face,
             point(origin),
@@ -749,10 +750,6 @@ fn revolve_touching_axis(
     let shell: Shell = builder::cone(&wire, vector(axis), Rad(TAU));
     Ok(Solid::new(vec![shell]))
 }
-
-/// Unused curve import guard for builds where every helper is inlined.
-#[allow(dead_code)]
-fn _curve_type(_: &Curve) {}
 
 #[cfg(test)]
 mod tests {

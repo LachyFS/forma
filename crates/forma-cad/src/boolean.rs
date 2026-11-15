@@ -13,11 +13,10 @@
 //!   are baked into B-splines on a deep copy before any transform.
 use crate::KernelError;
 use crate::body::{Body, Geometry, guard};
-use crate::geom::{Bounds, TriMesh, dvec, matrix_d, vector};
+use crate::geom::{TriMesh, matrix_d};
 use glam::{DMat4, DVec3};
 use truck_modeling::{
-    BSplineCurve, BoundedCurve, Curve, KnotVec, ParameterDivision1D, ParametricCurve, Solid,
-    builder,
+    BSplineCurve, BoundedCurve, Curve, KnotVec, ParameterDivision1D, Solid, builder,
 };
 use truck_topology::shell::ShellCondition;
 
@@ -362,13 +361,6 @@ pub(crate) fn transform_body(body: &Body, matrix: DMat4) -> Result<Body, KernelE
         transformed.not();
     }
     Ok(Body::solid(transformed, min_radius))
-}
-
-/// Unused import guards for helper signatures kept for callers.
-#[allow(dead_code)]
-fn _types(_: Bounds, _: DVec3) {
-    let _ = dvec;
-    let _ = vector;
 }
 
 #[cfg(test)]

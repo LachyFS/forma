@@ -300,9 +300,11 @@ pub struct ExtrudeFeature {
     /// The consumed sketch, embedded so the part regenerates on its own. Its
     /// plane is in part space.
     pub sketch: Sketch,
-    /// Interior points (sketch coordinates) selecting profiles; a profile is
-    /// used when it contains one of them. Empty selects every profile. Points
-    /// survive sketch edits better than profile indices.
+    /// Interior points (sketch coordinates) picking regions of the sketch's
+    /// arrangement (see `Sketch::profiles`); each point picks the region that
+    /// contains it, and adjacent picks merge into one solid. Empty picks the
+    /// outermost regions with their holes. Points survive sketch edits better
+    /// than region indices.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub profiles: Vec<Vec2>,
     /// Signed distance along the sketch normal (the opposite way when negative).
@@ -332,6 +334,7 @@ pub enum ExtrudeExtent {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct RevolveFeature {
     pub sketch: Sketch,
+    /// Region picks, as for [`ExtrudeFeature::profiles`].
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub profiles: Vec<Vec2>,
     /// A point on the axis, in sketch coordinates.

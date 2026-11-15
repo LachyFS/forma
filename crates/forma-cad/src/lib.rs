@@ -12,7 +12,22 @@
 
 mod body;
 mod boolean;
+mod convert;
+mod features;
 mod geom;
+pub mod host;
+mod polyhedron;
+pub mod protocol;
+pub mod regions;
+mod step;
+mod tessellate;
+pub mod worker;
+
+pub use convert::{check_closed_manifold, face_ref_from_pick, part_from_mesh};
+pub use features::{RegenCache, regenerate};
+pub use host::{CadHost, HostConfig, HostEvent, Job, WorkerMode};
+pub use protocol::{FaceInfo, RegenRequest, RegenResult, RegenStats, StepPart, SurfaceKind};
+pub use step::{export_step, import_step, part_to_mesh};
 
 /// A user-facing kernel failure: what went wrong and what to try instead.
 #[derive(Clone, Debug, PartialEq, Eq)]

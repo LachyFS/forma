@@ -1,7 +1,7 @@
 //! Conversions between Forma's glam types and truck's cgmath types, and a
 //! small triangle mesh used for robustness checks (bounds, volume, inside
 //! tests) that never feeds back into truck.
-use glam::{DMat4, DVec3, Mat4, Vec3};
+use glam::{DMat4, DVec3};
 use truck_modeling::{InnerSpace, Matrix4, Point3, Vector3};
 
 pub(crate) fn point(v: DVec3) -> Point3 {
@@ -20,11 +20,6 @@ pub(crate) fn dvec_v(v: Vector3) -> DVec3 {
     DVec3::new(v.x, v.y, v.z)
 }
 
-pub(crate) fn matrix(m: Mat4) -> Matrix4 {
-    let m = m.as_dmat4();
-    matrix_d(m)
-}
-
 pub(crate) fn matrix_d(m: DMat4) -> Matrix4 {
     let c = m.to_cols_array();
     Matrix4::new(
@@ -35,10 +30,6 @@ pub(crate) fn matrix_d(m: DMat4) -> Matrix4 {
 
 pub(crate) fn finite(v: Vector3) -> bool {
     v.x.is_finite() && v.y.is_finite() && v.z.is_finite() && v.magnitude2() > 0.0
-}
-
-pub(crate) fn to_f32(v: DVec3) -> Vec3 {
-    v.as_vec3()
 }
 
 /// Axis-aligned bounds.
@@ -126,15 +117,6 @@ impl TriMesh {
             .map(|t| {
                 let [a, b, c] = t.map(|i| self.positions[i as usize] - origin);
                 a.dot(b.cross(c)) / 6.0
-            })
-            .sum()
-    }
-
-    pub fn area(&self) -> f64 {
-        (0..self.triangles.len())
-            .map(|i| {
-                let [a, b, c] = self.triangle(i);
-                (b - a).cross(c - a).length() * 0.5
             })
             .sum()
     }
