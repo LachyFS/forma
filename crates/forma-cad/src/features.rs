@@ -414,14 +414,20 @@ fn extend_flush_caps(
     if samples.is_empty() {
         return (start, end);
     }
+    // Sketch planes picked from a face carry single-precision noise (the
+    // editor derives them from the f32 tessellation): a cap 1e-6 off a face
+    // is as hard for truck as an exactly flush one. The tolerance can be
+    // generous because the extension is only made where probes show it
+    // changes nothing.
+    let flush_tolerance = sliver * 0.25;
     let flush = |offset: f64| {
-        // Some body triangle lies in the cap's plane.
+        // Some body triangle lies (nearly) in the cap's plane.
         let level = normal.dot(origin) + offset;
         (0..mesh.triangles.len()).any(|i| {
             let [a, b, c] = mesh.triangle(i);
             [a, b, c]
                 .iter()
-                .all(|p| (normal.dot(*p) - level).abs() <= size * 1.0e-7)
+                .all(|p| (normal.dot(*p) - level).abs() <= flush_tolerance)
         })
     };
     let beyond_is = |offset: f64, outward: f64| {
@@ -429,7 +435,7 @@ fn extend_flush_caps(
             let point = origin
                 + x * f64::from(p.x)
                 + y * f64::from(p.y)
-                + normal * (offset + outward * sliver * 0.5);
+                + normal * (offset + outward * sliver * 0.6);
             mesh.contains(point) == want_inside
         })
     };
@@ -1135,6 +1141,81 @@ mod tests {
         assert!(result.issues.is_empty(), "{:?}", result.issues);
         let volume = volume_of(&part);
         let expected = 2.2 * 0.3 * 1.5 - PI * 0.04 * 0.15 - PI * 0.01 * 0.3 + PI * 0.0225 * 0.25;
+        assert!((volume - expected).abs() < 2.0e-3, "{volume} vs {expected}");
+    }
+
+    #[test]
+    fn face_sketches_with_single_precision_noise_cut_exactly() {
+        // Captured from the modelling tools' smoke run: a rectangle sketched
+        // on a pulled top face (y = 0.6) whose plane, derived from the f32
+        // tessellation, sits 6.3e-7 below the face and is slightly tilted.
+        let mut ground = Sketch::new(SketchPlane::ground());
+        let line = |a: (f32, f32), b: (f32, f32)| {
+            forma_core::SketchEntity::from(SketchCurve::Line {
+                start: Vec2::new(a.0, a.1),
+                end: Vec2::new(b.0, b.1),
+            })
+        };
+        let rectangle = |x0: f32, y0: f32, x1: f32, y1: f32| {
+            vec![
+                line((x0, y0), (x1, y0)),
+                line((x1, y0), (x1, y1)),
+                line((x1, y1), (x0, y1)),
+                line((x0, y1), (x0, y0)),
+            ]
+        };
+        ground.entities = rectangle(-0.99999994, -0.59999996, 0.99999994, 0.59999996);
+        ground.entities.push(
+            SketchCurve::Circle {
+                center: Vec2::new(-0.39999998, 0.0),
+                radius: 0.29999998,
+            }
+            .into(),
+        );
+        let mut part = PartData::new(3, "Sketch extrusion");
+        part.push_feature(
+            "Extrude",
+            FeatureKind::Extrude(ExtrudeFeature {
+                sketch: ground,
+                profiles: vec![Vec2::new(0.0, -0.53356)],
+                distance: 0.5,
+                extent: ExtrudeExtent::OneSide,
+                flip: false,
+                operation: FeatureOperation::Join,
+            }),
+        );
+        part.push_feature(
+            "Push/pull",
+            FeatureKind::PushPull(PushPullFeature {
+                face: FaceRef {
+                    point: Vec3::new(0.5500002, 0.5, 0.20000029),
+                    normal: Vec3::Y,
+                },
+                distance: 0.1,
+            }),
+        );
+        let mut face = Sketch::new(SketchPlane {
+            origin: Vec3::new(-0.99999994, 0.59999937, 0.59999996),
+            x_axis: Vec3::X,
+            y_axis: Vec3::new(0.0, -3.2083044e-08, -1.0),
+        });
+        face.entities = rectangle(1.3, 0.29999998, 1.8, 0.9);
+        part.push_feature(
+            "Cut",
+            FeatureKind::Extrude(ExtrudeFeature {
+                sketch: face,
+                profiles: vec![Vec2::new(1.55, 0.33321998)],
+                distance: -0.8,
+                extent: ExtrudeExtent::OneSide,
+                flip: false,
+                operation: FeatureOperation::Cut,
+            }),
+        );
+        let result = regen(&part, &mut RegenCache::default());
+        assert!(result.issues.is_empty(), "{:?}", result.issues);
+        let ring = 2.0 * 1.2 - PI * 0.09;
+        let expected = ring * 0.6 - 0.5 * 0.6 * 0.6;
+        let volume = volume_of(&part);
         assert!((volume - expected).abs() < 2.0e-3, "{volume} vs {expected}");
     }
 
