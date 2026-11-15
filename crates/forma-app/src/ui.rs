@@ -504,6 +504,7 @@ fn command_hint(command: Command) -> &'static str {
         Command::TogglePreviewAo => "Ambient occlusion for grounded contact shading",
         Command::LoadPreviewHdri => "Load a Radiance HDR environment",
         Command::ResetPreview => "Reset material preview lighting",
+        Command::Draw(command) => command.hint(),
     }
 }
 

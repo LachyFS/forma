@@ -665,7 +665,11 @@ struct Faces {
 
 fn half_edge_origin(graph: &Graph, half: usize) -> usize {
     let piece = graph.pieces[half / 2];
-    if half.is_multiple_of(2) { piece.u } else { piece.v }
+    if half.is_multiple_of(2) {
+        piece.u
+    } else {
+        piece.v
+    }
 }
 
 fn trace_faces(graph: &Graph, live: &[bool]) -> Faces {

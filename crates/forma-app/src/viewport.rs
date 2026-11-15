@@ -449,7 +449,7 @@ fn visible_point(scene: &forma_core::Scene, point: Vec3) -> bool {
     visible_in_query(scene.camera, &forma_core::SurfaceQuery::new(scene), point)
 }
 
-fn visible_in_query(
+pub(crate) fn visible_in_query(
     camera: forma_core::Camera,
     query: &forma_core::SurfaceQuery,
     point: Vec3,
@@ -873,6 +873,7 @@ impl Studio {
             .map(|d| d.basis)
             .unwrap_or(glam::Mat3::IDENTITY);
         let transforming = self.transform_drag.is_some();
+        let sketch_overlay = self.sketch_overlay();
         let canvas = canvas(
             move |bounds, _, cx| {
                 if bounds_cell.replace(bounds).size != bounds.size {
@@ -934,6 +935,9 @@ impl Studio {
                 }
                 if let Some(measurements) = painted_measurements.as_ref() {
                     paint_measurements(measurements, matrix, bounds, t, window, cx);
+                }
+                if let Some(overlay) = sketch_overlay.as_ref() {
+                    crate::sketch::overlay::paint(overlay, matrix, bounds, window, cx);
                 }
                 if let Some(center) = &geometry
                     && tool != Tool::Select
@@ -1158,6 +1162,9 @@ impl Studio {
                     ),
             );
         }
+        if let Some(hud) = self.draw_hud(cx) {
+            viewport = viewport.child(hud);
+        }
         if let Some(drag) = &self.transform_drag {
             let label = drag
                 .mesh_tool
@@ -1294,6 +1301,9 @@ impl Studio {
         window.focus(&self.focus);
         self.active_field = None;
         self.last_mouse = mouse_point(event.position);
+        if self.draw_mouse_down(event, window, cx) {
+            return;
+        }
         if let Some(selection) = self.box_select.as_mut() {
             if event.button == MouseButton::Left {
                 selection.start = Some(self.last_mouse);
@@ -1363,6 +1373,9 @@ impl Studio {
                 self.start_transform(self.tool, axis, false, cx);
                 return;
             }
+        }
+        if self.sketch_object_mouse_down(event, window, cx) {
+            return;
         }
         let uv = (self.last_mouse - mouse_point(bounds.origin))
             / Vec2::new(bounds.size.width.into(), bounds.size.height.into());
@@ -1462,6 +1475,10 @@ impl Studio {
                 cx.notify();
             }
             cx.stop_propagation();
+            return;
+        }
+        if self.draw_mouse_move(event, cx) {
+            self.last_mouse = position;
             return;
         }
         if let Some(selection) = self.box_select.as_mut() {
