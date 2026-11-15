@@ -89,13 +89,13 @@ fn studio_swatch(studio: StudioLight) -> AnyElement {
     .into_any_element()
 }
 
+/// A preview field: element id, label, unit and the field it edits.
+type PreviewField = (&'static str, &'static str, &'static str, Field);
+
 fn field_row(
     t: Colors,
     s: &Studio,
-    id: &'static str,
-    label: &'static str,
-    unit: &'static str,
-    field: Field,
+    (id, label, unit, field): PreviewField,
     enabled: bool,
     cx: &mut Context<Studio>,
 ) -> AnyElement {
@@ -242,40 +242,28 @@ pub(super) fn overlay(t: Colors, s: &Studio, cx: &mut Context<Studio>) -> AnyEle
                         .child(field_row(
                             t,
                             s,
-                            "preview-rotation",
-                            "Rotation",
-                            "°",
-                            Field::PreviewRotation,
+                            ("preview-rotation", "Rotation", "°", Field::PreviewRotation),
                             studio_enabled,
                             cx,
                         ))
                         .child(field_row(
                             t,
                             s,
-                            "preview-strength",
-                            "Strength",
-                            "×",
-                            Field::PreviewStrength,
+                            ("preview-strength", "Strength", "×", Field::PreviewStrength),
                             studio_enabled,
                             cx,
                         ))
                         .child(field_row(
                             t,
                             s,
-                            "preview-opacity",
-                            "Background",
-                            "%",
-                            Field::PreviewOpacity,
+                            ("preview-opacity", "Background", "%", Field::PreviewOpacity),
                             true,
                             cx,
                         ))
                         .child(field_row(
                             t,
                             s,
-                            "preview-blur",
-                            "Blur",
-                            "%",
-                            Field::PreviewBlur,
+                            ("preview-blur", "Blur", "%", Field::PreviewBlur),
                             studio_enabled,
                             cx,
                         )),
