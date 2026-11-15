@@ -1386,6 +1386,7 @@ async fn run(window: WindowHandle<Studio>, output: PathBuf, cx: &mut AsyncApp) -
     check_draw_workflow(window, cx).await?;
     check_cad_workflow(window, &output, cx).await?;
     crate::timeline::smoke::check_timeline_workflow(window, cx).await?;
+    crate::cad_tools::smoke::check_cad_tools_workflow(window, cx).await?;
     keys(window, &["0"], cx).await?;
     let (id, before_x) = window.update(cx, |s, w, cx| {
         s.execute(Command::Add(Primitive::Cube), w, cx);
@@ -3888,12 +3889,13 @@ async fn check_cad_workflow(
         );
         Ok(())
     })??;
-    // Polygon tools refuse parts instead of editing the cached tessellation.
+    // Component mode on a part edits B-rep faces and edges; polygon tools
+    // refuse it instead of editing the cached tessellation.
     window.update(cx, |s, w, cx| -> Result<()> {
         s.execute(Command::SetEditMode(EditMode::Face), w, cx);
         ensure!(
-            s.edit_mode == EditMode::Object && s.status.contains("Convert to mesh"),
-            "component editing reached a part: {}",
+            s.part_editing() == Some(block) && s.components.is_empty(),
+            "Face mode on a part did not enter part editing: {}",
             s.status
         );
         s.execute(Command::Subdivide, w, cx);
@@ -3901,6 +3903,8 @@ async fn check_cad_workflow(
             s.status.contains("Convert to mesh"),
             "Subdivide reached a part"
         );
+        s.execute(Command::SetEditMode(EditMode::Object), w, cx);
+        ensure!(s.edit_mode == EditMode::Object, "part editing did not end");
         Ok(())
     })??;
     // STEP out and back in.

@@ -75,6 +75,8 @@ pub enum Field {
     PreviewStrength,
     PreviewOpacity,
     PreviewBlur,
+    /// A parameter of the "adjust last operation" panel.
+    CadAdjust(crate::cad_tools::AdjustParam),
     /// A value of the feature selected in the part timeline.
     Feature(crate::timeline::FeatureField),
 }
@@ -167,6 +169,7 @@ pub enum Command {
     ResetPreview,
     Draw(crate::sketch::DrawCommand),
     Cad(crate::cad::CadCommand),
+    CadTool(crate::cad_tools::ToolCommand),
     Timeline(crate::timeline::TimelineCommand),
 }
 
@@ -274,6 +277,7 @@ pub struct Studio {
     exporting_stl: bool,
     preview_load_id: u64,
     pub(crate) cad: crate::cad::CadState,
+    pub(crate) cad_tool: crate::cad_tools::CadToolState,
 }
 
 impl Studio {
@@ -488,6 +492,7 @@ impl Studio {
             exporting_stl: false,
             preview_load_id: 0,
             cad: crate::cad::CadState::new(cx),
+            cad_tool: Default::default(),
         };
         studio.invalidate(false, cx);
         studio
@@ -943,6 +948,10 @@ impl Studio {
             self.help_open = false;
         }
         if self.draw_before_command(command, cx) {
+            cx.notify();
+            return;
+        }
+        if self.cad_tool_before_command(command, window, cx) {
             cx.notify();
             return;
         }
@@ -1575,6 +1584,7 @@ impl Studio {
             Command::LoadPreviewHdri => self.choose_preview_hdri(cx),
             Command::Draw(_) => {}
             Command::Cad(command) => self.execute_cad(command, cx),
+            Command::CadTool(_) => {}
             Command::Timeline(command) => self.execute_timeline(command, window, cx),
         }
         cx.notify();
@@ -2125,6 +2135,7 @@ impl Studio {
                 | Field::Rotation(_)
                 | Field::Scale(_)
                 | Field::Dimensions(_)
+                | Field::CadAdjust(_)
                 | Field::Feature(_) => crate::transform::format_precision_value(value),
                 Field::Samples | Field::Bounces | Field::DenoiseStart => value.to_string(),
                 _ => format!("{value:.2}"),
@@ -2173,6 +2184,7 @@ impl Studio {
             Field::Samples => Some(self.settings.max_samples as f32),
             Field::Bounces => Some(self.settings.max_bounces as f32),
             Field::DenoiseStart => Some(self.settings.denoise.start_sample as f32),
+            Field::CadAdjust(param) => self.adjust_value(param),
             Field::Feature(field) => self.feature_field_value(field),
         }
     }
@@ -2336,6 +2348,11 @@ impl Studio {
             self.active_field = None;
             self.status = "Value unchanged".into();
             cx.notify();
+            return;
+        }
+        if let Field::CadAdjust(param) = field {
+            // Amends the last operation within its own undo step.
+            self.commit_adjust(param, &text, cx);
             return;
         }
         if let Field::Feature(field) = field {
@@ -2863,9 +2880,22 @@ impl Studio {
             cx.stop_propagation();
             return;
         }
+        // A running tool (or B-rep part editing) owns the keyboard first;
+        // then the timeline (which only claims keys while a part is
+        // active), then the tools' entry keys.
+        if (self.cad_tool_active() || self.part_editing().is_some())
+            && self.cad_tool_key(event, window, cx)
+        {
+            cx.stop_propagation();
+            return;
+        }
         // The timeline only claims keys while a part (not a sketch) is
         // active, and its open context menu takes every key.
         if self.timeline_key(event, window, cx) {
+            cx.stop_propagation();
+            return;
+        }
+        if self.cad_tool_key(event, window, cx) {
             cx.stop_propagation();
             return;
         }
@@ -2981,6 +3011,7 @@ impl Render for Studio {
                 MouseButton::Left,
                 cx.listener(|s, event: &MouseUpEvent, _, cx| {
                     s.draw_mouse_up(event, cx);
+                    s.cad_tool_mouse_up(event, cx);
                     if s.transform_drag.as_ref().is_some_and(|d| !d.modal) {
                         s.finish_transform(false, cx);
                     }
@@ -3089,11 +3120,6 @@ pub(crate) fn palette_commands(query: &str) -> Vec<(&'static str, &'static str, 
             Command::Cad(CadCommand::AddPart(PartShape::Sphere)),
         ),
         (
-            "Extrude sketch",
-            "",
-            Command::Cad(CadCommand::ExtrudeSketch),
-        ),
-        (
             "Combine: Join",
             "",
             Command::Cad(CadCommand::Combine(FeatureOperation::Join)),
@@ -3117,6 +3143,36 @@ pub(crate) fn palette_commands(query: &str) -> Vec<(&'static str, &'static str, 
             "Convert to mesh",
             "",
             Command::Cad(CadCommand::ConvertToMesh),
+        ),
+        (
+            "Extrude sketch",
+            "",
+            Command::Cad(CadCommand::ExtrudeSketch),
+        ),
+        (
+            "Part: Extrude sketch regions",
+            "E",
+            Command::CadTool(crate::cad_tools::ToolCommand::Extrude),
+        ),
+        (
+            "Part: Revolve sketch regions",
+            "⇧ R",
+            Command::CadTool(crate::cad_tools::ToolCommand::Revolve),
+        ),
+        (
+            "Part: Push/Pull faces",
+            "P",
+            Command::CadTool(crate::cad_tools::ToolCommand::PushPull),
+        ),
+        (
+            "Part: Chamfer edges",
+            platform_shortcut("⌘ B in part edit", "Ctrl+B in part edit"),
+            Command::CadTool(crate::cad_tools::ToolCommand::Chamfer),
+        ),
+        (
+            "Part: Sketch on face",
+            "D",
+            Command::CadTool(crate::cad_tools::ToolCommand::SketchOnFace),
         ),
         ("Import STEP…", "", Command::Cad(CadCommand::ImportStep)),
         ("Export STEP…", "", Command::Cad(CadCommand::ExportStep)),

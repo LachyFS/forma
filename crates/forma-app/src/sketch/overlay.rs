@@ -90,7 +90,7 @@ pub(crate) struct SketchOverlay {
     pub active: Option<ActiveOverlay>,
 }
 
-fn ink(color: u32, alpha: f32) -> Rgba {
+pub(crate) fn ink(color: u32, alpha: f32) -> Rgba {
     gpui::rgba((color << 8) | (alpha.clamp(0.0, 1.0) * 255.0).round() as u32)
 }
 
@@ -371,18 +371,18 @@ fn split_by_visibility(points: &[Vec3], flags: Option<&Vec<bool>>) -> Vec<(bool,
     pieces
 }
 
-fn to_vec(p: Point<Pixels>) -> Vec2 {
+pub(crate) fn to_vec(p: Point<Pixels>) -> Vec2 {
     Vec2::new(p.x.into(), p.y.into())
 }
 
-fn to_point(v: Vec2) -> Point<Pixels> {
+pub(crate) fn to_point(v: Vec2) -> Point<Pixels> {
     point(px(v.x), px(v.y))
 }
 
 /// Projects world geometry to window pixels, clipping at the near plane.
-struct Projector {
-    matrix: Mat4,
-    bounds: Bounds<Pixels>,
+pub(crate) struct Projector {
+    pub matrix: Mat4,
+    pub bounds: Bounds<Pixels>,
 }
 
 const NEAR_W: f32 = 1.0e-5;
@@ -397,13 +397,13 @@ impl Projector {
         point(px(x.clamp(-1.0e5, 1.0e5)), px(y.clamp(-1.0e5, 1.0e5)))
     }
 
-    fn point(&self, world: Vec3) -> Option<Point<Pixels>> {
+    pub(crate) fn point(&self, world: Vec3) -> Option<Point<Pixels>> {
         let clip = self.matrix * world.extend(1.0);
         (clip.w > NEAR_W).then(|| self.screen(clip))
     }
 
     /// Visible screen runs of a world polyline.
-    fn polyline(&self, points: &[Vec3]) -> Vec<Vec<Point<Pixels>>> {
+    pub(crate) fn polyline(&self, points: &[Vec3]) -> Vec<Vec<Point<Pixels>>> {
         let mut runs = Vec::new();
         let mut run: Vec<Point<Pixels>> = Vec::new();
         let mut previous: Option<Vec4> = None;
@@ -438,7 +438,12 @@ impl Projector {
 }
 
 /// Strokes many runs with as few paths as the vertex budget allows.
-fn stroke_runs(window: &mut Window, runs: &[Vec<Point<Pixels>>], width: f32, color: Rgba) {
+pub(crate) fn stroke_runs(
+    window: &mut Window,
+    runs: &[Vec<Point<Pixels>>],
+    width: f32,
+    color: Rgba,
+) {
     let mut path = PathBuilder::stroke(px(width));
     let mut points = 0;
     let flush = |path: PathBuilder, window: &mut Window| {
@@ -468,7 +473,7 @@ fn stroke_runs(window: &mut Window, runs: &[Vec<Point<Pixels>>], width: f32, col
     }
 }
 
-fn stroke_dashed(
+pub(crate) fn stroke_dashed(
     window: &mut Window,
     run: &[Point<Pixels>],
     width: f32,
@@ -488,7 +493,7 @@ fn stroke_dashed(
     }
 }
 
-fn fill_polygons(window: &mut Window, polygons: &[Vec<Point<Pixels>>], color: Rgba) {
+pub(crate) fn fill_polygons(window: &mut Window, polygons: &[Vec<Point<Pixels>>], color: Rgba) {
     let mut path = PathBuilder::fill();
     let mut any = false;
     for polygon in polygons.iter().filter(|p| p.len() > 2) {
@@ -504,7 +509,7 @@ fn fill_polygons(window: &mut Window, polygons: &[Vec<Point<Pixels>>], color: Rg
     }
 }
 
-fn dot(window: &mut Window, center: Point<Pixels>, diameter: f32, color: Rgba) {
+pub(crate) fn dot(window: &mut Window, center: Point<Pixels>, diameter: f32, color: Rgba) {
     let radius = diameter * 0.5;
     window.paint_quad(
         fill(
@@ -518,7 +523,13 @@ fn dot(window: &mut Window, center: Point<Pixels>, diameter: f32, color: Rgba) {
     );
 }
 
-fn ring(window: &mut Window, center: Point<Pixels>, radius: f32, width: f32, color: Rgba) {
+pub(crate) fn ring(
+    window: &mut Window,
+    center: Point<Pixels>,
+    radius: f32,
+    width: f32,
+    color: Rgba,
+) {
     let points: Vec<_> = (0..=24)
         .map(|i| {
             let a = i as f32 / 24.0 * std::f32::consts::TAU;
@@ -530,7 +541,7 @@ fn ring(window: &mut Window, center: Point<Pixels>, radius: f32, width: f32, col
 
 /// A rounded text label centred on `center`. Returns its bounds.
 #[allow(clippy::too_many_arguments)]
-fn label(
+pub(crate) fn label(
     window: &mut Window,
     cx: &mut App,
     text: &str,

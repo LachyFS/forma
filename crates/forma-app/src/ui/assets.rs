@@ -83,6 +83,10 @@ icons! {
     Collection => "folder",
     CollectionOpen => "folder-open",
     Scene => "layers",
+    // CAD tools.
+    Symmetric => "unfold-vertical",
+    FlipDirection => "flip-horizontal-2",
+    NewPart => "square-plus",
     // Mesh operations.
     Extrude => "arrow-up-from-line",
     Inset => "square-square",

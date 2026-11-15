@@ -180,6 +180,26 @@ impl Studio {
             .h(px(H_MD))
             .px(px(SP_3))
         };
+        // Closed regions can go straight into the Extrude tool.
+        let profiles = self.sketch_analysis().map_or(0, |a| a.profiles.len());
+        if profiles > 0 {
+            let extrude = Command::CadTool(crate::cad_tools::ToolCommand::Extrude);
+            bar = bar.child(vrule(t, 18.)).child(if compact {
+                command_icon(t, "draw-extrude", Icon::Extrude, extrude, false, H_MD, cx)
+            } else {
+                command_button(
+                    t,
+                    "draw-extrude",
+                    "Extrude",
+                    Some(Icon::Extrude),
+                    extrude,
+                    Tone::Ghost,
+                    cx,
+                )
+                .h(px(H_MD))
+                .px(px(SP_2))
+            });
+        }
         bar = bar.child(vrule(t, 18.)).child(finish);
         Some(bar.into_any_element())
     }
