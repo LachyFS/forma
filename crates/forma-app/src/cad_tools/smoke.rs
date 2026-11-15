@@ -352,10 +352,30 @@ pub(crate) async fn check_cad_tools_workflow(
         );
         Ok(())
     })??;
+    // Orbit while the kernel preview lands: the view must stay put.
+    let orbited = window.update(cx, |s, _, cx| {
+        s.scene.camera.yaw += 0.05;
+        s.invalidate(false, cx);
+        s.scene.camera
+    })?;
+    wait_for(window, cx, |s| {
+        matches!(&s.cad_tool.tool, Some(Tool::Sketch(tool)) if tool.session.preview.is_some())
+            && s.cad_idle()
+    })
+    .await
+    .context("the kernel preview did not apply")?;
+    window.update(cx, |s, _, _| -> Result<()> {
+        ensure!(
+            s.scene.camera == orbited,
+            "applying the kernel preview moved the camera"
+        );
+        Ok(())
+    })??;
     keys(window, &["enter"], cx).await?;
     wait_for(window, cx, idle).await?;
     let cut_volume = ring_area * 0.6 - pocket_area * 0.6;
     window.update(cx, |s, _, _| -> Result<()> {
+        ensure!(s.scene.camera == orbited, "committing moved the camera");
         ensure!(
             feature_kinds(s, part) == ["Extrude", "Push/pull", "Extrude"],
             "after the cut: {:?}",

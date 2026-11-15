@@ -3145,6 +3145,11 @@ pub(crate) fn palette_commands(query: &str) -> Vec<(&'static str, &'static str, 
             Command::Cad(CadCommand::ConvertToMesh),
         ),
         (
+            "Extrude sketch",
+            "",
+            Command::Cad(CadCommand::ExtrudeSketch),
+        ),
+        (
             "Part: Extrude sketch regions",
             "E",
             Command::CadTool(crate::cad_tools::ToolCommand::Extrude),

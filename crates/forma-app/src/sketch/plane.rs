@@ -400,6 +400,58 @@ mod tests {
     }
 
     #[test]
+    fn part_faces_use_their_whole_face_group() {
+        // A part-like tessellation: a 3 × 1 slab whose top face is split
+        // into triangles (one group), and a curved, faceted side group.
+        let mut scene = Scene::empty();
+        let cube = forma_core::Mesh::primitive(forma_core::Primitive::Cube);
+        let mut mesh = forma_core::Mesh::new(
+            cube.positions
+                .iter()
+                .map(|p| Vec3::new(p.x * 1.5, p.y * 0.25 + 0.25, p.z * 0.5))
+                .collect(),
+            Vec::new(),
+        );
+        for (group, face) in cube.faces.iter().enumerate() {
+            mesh.faces.push(vec![face[0], face[1], face[2]]);
+            mesh.faces.push(vec![face[0], face[2], face[3]]);
+            mesh.groups.extend([group as u32, group as u32]);
+        }
+        let id = scene.add(forma_core::Primitive::Cube);
+        let mesh_id = scene.create_mesh_data("Slab", mesh).unwrap();
+        scene.assign_mesh_data(id, mesh_id).unwrap();
+        let ray = Ray {
+            origin: Vec3::new(0.4, 5.0, 0.1),
+            direction: Vec3::NEG_Y,
+        };
+        let choice = face_plane(&scene, Camera::default(), ray).unwrap();
+        // The whole top face (not one triangle): four edges, and the grid
+        // follows the long 3 m edge.
+        assert_eq!(choice.reference.len(), 4);
+        assert!((choice.plane.origin.y - 0.5).abs() < 1.0e-5);
+        assert!(choice.plane.x_axis.x.abs() > 0.999, "{:?}", choice.plane);
+        let longest = choice
+            .reference
+            .iter()
+            .map(|c| c.start().distance(c.end()))
+            .fold(0.0_f32, f32::max);
+        assert!((longest - 3.0).abs() < 1.0e-4);
+        // Bending the top face's group around an edge makes it non-planar.
+        let mesh = scene.object_mesh_mut(id).unwrap();
+        let top = mesh.groups[mesh
+            .faces
+            .iter()
+            .position(|f| f.iter().all(|&i| mesh.positions[i as usize].y > 0.49))
+            .unwrap()];
+        let side = (0..mesh.faces.len())
+            .find(|&f| mesh.groups[f] != top && mesh.face_normal(f).z > 0.9)
+            .unwrap();
+        mesh.groups[side] = top;
+        mesh.groups[side + 1] = top;
+        assert!(face_plane(&scene, Camera::default(), ray).is_none());
+    }
+
+    #[test]
     fn animation_eases_to_its_target_the_short_way_round() {
         let from = Camera {
             yaw: 6.1,

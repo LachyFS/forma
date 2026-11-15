@@ -707,7 +707,13 @@ impl Studio {
         cx: &mut Context<Self>,
     ) {
         let context = match object {
-            Some(id) => Some((id, None)),
+            // A region of that sketch under the pointer is still the pick.
+            Some(id) => Some((
+                id,
+                self.sketch_region_at(self.last_mouse)
+                    .filter(|hit| hit.object == id)
+                    .map(|hit| hit.profile),
+            )),
             None => self.sketch_context(),
         };
         let Some((id, profile)) = context else {
@@ -1312,7 +1318,8 @@ impl Studio {
             return;
         };
         if tool.session.preview.take().is_some() {
-            self.scene = tool.session.before.clone();
+            let before = tool.session.before.clone();
+            self.replace_scene(before);
             self.invalidate(true, cx);
         }
     }
@@ -1346,7 +1353,7 @@ impl Studio {
                 });
                 tool.error = None;
                 keep_evaluated(&self.scene, &mut scene);
-                self.scene = scene;
+                self.replace_scene(scene);
                 self.invalidate(true, cx);
             }
             Err(message) => {
@@ -1355,7 +1362,8 @@ impl Studio {
                 tool.error = (!quiet).then_some(message);
                 if had_preview {
                     tool.session.preview = None;
-                    self.scene = tool.session.before.clone();
+                    let before = tool.session.before.clone();
+                    self.replace_scene(before);
                     self.invalidate(true, cx);
                 }
             }
@@ -1389,7 +1397,7 @@ impl Studio {
                     part: preview.part,
                     feature: preview.feature,
                 },
-                std::mem::take(&mut self.scene),
+                self.scene.clone(),
             ),
             None => {
                 let mut scene = tool.session.before.clone();
@@ -1420,7 +1428,7 @@ impl Studio {
             object.visible = false;
         }
         let operation = tool.operation();
-        self.scene = scene;
+        self.replace_scene(scene);
         self.history.checkpoint_owned(before);
         self.select_objects([applied.object].into_iter().collect(), Some(applied.object));
         self.dirty = true;

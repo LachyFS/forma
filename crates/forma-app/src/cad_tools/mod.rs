@@ -211,7 +211,12 @@ impl Studio {
                     tool.kind = kind;
                     self.sketch_tool_changed(true, cx);
                 } else {
-                    self.start_sketch_tool(kind, None, cx);
+                    // From a button or the palette the pointer is elsewhere:
+                    // the selected sketch (just finished, from Draw) comes first.
+                    let selected = self
+                        .selected
+                        .filter(|id| self.scene.object_sketch(*id).is_some());
+                    self.start_sketch_tool(kind, selected, cx);
                 }
             }
             ToolCommand::PushPull => {
@@ -301,7 +306,7 @@ impl Studio {
         if let Tool::Sketch(tool) = tool
             && tool.session.preview.is_some()
         {
-            self.scene = tool.session.before;
+            self.replace_scene(tool.session.before);
             self.invalidate(true, cx);
         }
         self.status = "Cancelled".into();
@@ -351,16 +356,6 @@ impl Studio {
                 self.cad_tool.last = None;
             }
             self.execute_cad_tool(tool_command, window, cx);
-            return true;
-        }
-        // The previous interactive "Extrude sketch" (always 1 m) now opens
-        // the Extrude tool.
-        if command == Command::Cad(crate::cad::CadCommand::ExtrudeSketch) {
-            self.cad_tool.last = None;
-            if self.cad_tool.active() {
-                self.cancel_cad_tool(cx);
-            }
-            self.start_sketch_tool(SketchToolKind::Extrude, None, cx);
             return true;
         }
         if !view_only {
@@ -753,6 +748,13 @@ impl Studio {
         if let Some(Tool::Sketch(_)) = self.cad_tool.tool.as_ref() {
             self.apply_sketch_preview(cx);
         }
+    }
+
+    /// Swaps in a scene built from a session's starting point, keeping the
+    /// live view: the camera may have moved since the tool started.
+    pub(crate) fn replace_scene(&mut self, mut scene: Scene) {
+        scene.camera = self.scene.camera;
+        self.scene = scene;
     }
 
     /// Removes pending ghosts whose part has been regenerated or changed.

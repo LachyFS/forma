@@ -226,6 +226,7 @@ to OBJ/STL like any object.
 | Command | Where | Does |
 | --- | --- | --- |
 | **Box / Cylinder / Sphere part** | **Add** menu, command panel (“Part: …”), **Part** menu | A parametric primitive at the origin. |
+| **Extrude sketch** | command panel, **Part** menu | Extrudes the selected sketch's outer regions (with their holes) 1 m into a new part at once; `E` extrudes interactively. |
 | **Extrude / Revolve / Push/Pull / Chamfer** | `E` / `⇧R` / `P` / `⌘B`, command panel (“Part: …”); Push/Pull and Chamfer also on the tool rail | Interactive tools; see [direct modelling](#direct-modelling). |
 | **Join / Cut / Intersect** | command panel (“Combine: …”), **Part** menu | Select the tools, then the target last: the tools are combined into the target and removed. Meshes are converted on the way. The tools keep their own histories inside the new feature. |
 | **Convert to part** | command panel, **Part** menu | A closed, manifold mesh becomes a part; flat polygons become faces and coplanar neighbours merge. |

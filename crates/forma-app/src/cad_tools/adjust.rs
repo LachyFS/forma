@@ -10,7 +10,7 @@ use super::geometry::Prism;
 use super::push_pull::{ActiveFaces, FacePick};
 use super::sketch_tool::{Applied, Operation, SketchTool, SketchToolKind};
 use crate::app::{EditMode, Studio};
-use forma_core::{ExtrudeExtent, FeatureKind, Mesh, Scene, Transform, Vec3};
+use forma_core::{FeatureKind, Mesh, Scene, Transform, Vec3};
 use gpui::Context;
 use std::rc::Rc;
 
@@ -362,11 +362,12 @@ impl Studio {
                     return Err("Only extrusions can be symmetric".into());
                 };
                 *symmetric = !*symmetric;
-                extrude.extent = if *symmetric {
-                    ExtrudeExtent::Symmetric
+                let mode = if *symmetric {
+                    crate::timeline::ExtentMode::Symmetric
                 } else {
-                    ExtrudeExtent::OneSide
+                    crate::timeline::ExtentMode::OneSide
                 };
+                extrude.extent = mode.apply(extrude.extent, extrude.distance);
                 Ok(())
             },
             cx,
@@ -555,4 +556,68 @@ fn amend_value(last: &mut LastOperation, kind: &mut FeatureKind, value: f32) -> 
     *kind = feature.kind;
     last.value = value;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use forma_core::{ChamferFeature, EdgeRef, RevolveFeature, Sketch, Vec2};
+
+    fn last(kind: LastKind, scale: f32) -> LastOperation {
+        LastOperation {
+            kind,
+            object: 1,
+            part: Some(2),
+            feature: 3,
+            stamp: 0,
+            value: 0.0,
+            scale,
+            transform: Transform::default(),
+            mesh_marker: None,
+            edit_mode: EditMode::Object,
+        }
+    }
+
+    #[test]
+    fn amendments_follow_the_inspector_rules_in_feature_units() {
+        // A chamfer on a part scaled 2× in the world: 0.1 m in the world is
+        // 0.05 part units; zero and negative distances are refused.
+        let mut chamfer = FeatureKind::Chamfer(ChamferFeature {
+            edges: vec![EdgeRef {
+                start: Vec3::ZERO,
+                end: Vec3::X,
+            }],
+            distance: 0.02,
+        });
+        let mut op = last(LastKind::Chamfer { edges: Vec::new() }, 0.5);
+        amend_value(&mut op, &mut chamfer, 0.1).unwrap();
+        assert!(matches!(&chamfer, FeatureKind::Chamfer(c) if (c.distance - 0.05).abs() < 1.0e-6));
+        assert_eq!(op.value, 0.1);
+        assert!(amend_value(&mut op, &mut chamfer, -0.1).is_err());
+        assert!(matches!(&chamfer, FeatureKind::Chamfer(c) if (c.distance - 0.05).abs() < 1.0e-6));
+        // Revolve angles are radians in, degrees through the inspector field.
+        let mut revolve = FeatureKind::Revolve(RevolveFeature {
+            sketch: Sketch::default(),
+            profiles: Vec::new(),
+            axis_origin: Vec2::ZERO,
+            axis_direction: Vec2::Y,
+            angle: 1.0,
+            operation: forma_core::FeatureOperation::Join,
+        });
+        let mut op = last(
+            LastKind::Revolve {
+                operation: Operation::NewPart,
+            },
+            1.0,
+        );
+        amend_value(&mut op, &mut revolve, 90f32.to_radians()).unwrap();
+        assert!(
+            matches!(&revolve, FeatureKind::Revolve(r) if (r.angle - std::f32::consts::FRAC_PI_2).abs() < 1.0e-5)
+        );
+        assert!(
+            amend_value(&mut op, &mut revolve, 7.0).is_err(),
+            "more than a turn"
+        );
+        assert_eq!(op.param(), AdjustParam::Angle);
+    }
 }
