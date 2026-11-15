@@ -11,7 +11,8 @@ pub(crate) enum ModeState {
     Active,
     /// Clicking runs this command.
     Available(Command),
-    /// Shown disabled with this explanation.
+    /// Shown disabled with this explanation. No mode needs it right now.
+    #[allow(dead_code)]
     Unavailable(&'static str),
 }
 
@@ -32,7 +33,9 @@ pub(crate) const MODES: &[WorkspaceMode] = &[
         shortcut: Some("Tab"),
         hint: "Select, arrange and transform objects",
         state: |s| {
-            if s.edit_mode == EditMode::Object {
+            if s.is_drawing() {
+                ModeState::Available(Command::Draw(crate::sketch::DrawCommand::Finish))
+            } else if s.edit_mode == EditMode::Object {
                 ModeState::Active
             } else {
                 ModeState::Available(Command::SetEditMode(EditMode::Object))
@@ -57,7 +60,7 @@ pub(crate) const MODES: &[WorkspaceMode] = &[
         id: "draw",
         label: "Draw",
         icon: Icon::DrawMode,
-        shortcut: None,
+        shortcut: Some("D"),
         hint: "Sketch 2D profiles on planes and faces",
         state: draw_mode_state,
     },
@@ -65,6 +68,10 @@ pub(crate) const MODES: &[WorkspaceMode] = &[
 
 /// Hook for the Draw feature: return `Active` while drawing and
 /// `Available(Command::…)` to enter it.
-fn draw_mode_state(_: &Studio) -> ModeState {
-    ModeState::Unavailable("Coming in this release")
+pub(crate) fn draw_mode_state(s: &Studio) -> ModeState {
+    if s.is_drawing() {
+        ModeState::Active
+    } else {
+        ModeState::Available(Command::Draw(crate::sketch::DrawCommand::NewSketch))
+    }
 }

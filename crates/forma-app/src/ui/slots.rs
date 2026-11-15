@@ -19,11 +19,11 @@ use gpui::{AnyElement, Context};
 
 /// Bottom-center dock for the feature timeline and mode toolbars.
 pub(crate) fn viewport_dock(
-    _studio: &Studio,
-    _t: Colors,
-    _cx: &mut Context<Studio>,
+    studio: &Studio,
+    t: Colors,
+    cx: &mut Context<Studio>,
 ) -> Option<AnyElement> {
-    None
+    studio.draw_toolbar(t, cx)
 }
 
 /// Bottom-left "adjust last operation" panel.
