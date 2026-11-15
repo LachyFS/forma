@@ -195,3 +195,60 @@ fn in_process_mode_runs_without_a_worker() {
         _ => unreachable!(),
     }
 }
+
+#[test]
+fn an_unreadable_reply_restarts_the_worker_and_never_wedges_shutdown() {
+    // Review case: the reader thread used to stop on a decode error while
+    // the worker lived on, and the host then waited on it forever while
+    // holding the lock shutdown needs.
+    let (host, events) = host(Duration::from_secs(30));
+    let started = Instant::now();
+    host.submit(Job::Debug {
+        ticket: 1,
+        action: DebugAction::BadFrame,
+    });
+    match next(&events, |e| matches!(e, HostEvent::WorkerRestarted { .. })) {
+        HostEvent::WorkerRestarted { reason } => {
+            assert!(reason.contains("could not be read"), "{reason}")
+        }
+        _ => unreachable!(),
+    }
+    assert!(
+        started.elapsed() < Duration::from_secs(10),
+        "the failure waited for a timeout"
+    );
+    // The next request gets a fresh worker.
+    host.submit(Job::Debug {
+        ticket: 2,
+        action: DebugAction::Echo,
+    });
+    next(&events, |e| matches!(e, HostEvent::Echo { ticket: 2 }));
+    // Shutdown is prompt even with another unreadable worker alive.
+    host.submit(Job::Debug {
+        ticket: 3,
+        action: DebugAction::BadFrame,
+    });
+    std::thread::sleep(Duration::from_millis(200));
+    let stopping = Instant::now();
+    host.shutdown();
+    assert!(stopping.elapsed() < Duration::from_secs(3));
+}
+
+#[test]
+fn invalid_part_data_is_refused_before_it_reaches_the_worker() {
+    let (host, events) = host(Duration::from_secs(30));
+    let mut part = PartData::new(4, "Bad");
+    part.push_feature("Base", box_feature(1.0, 0.0, FeatureOperation::Join));
+    if let FeatureKind::Primitive(primitive) = &mut part.features[0].kind {
+        primitive.placement.origin.x = f32::NAN;
+    }
+    host.regenerate(4, part);
+    match next(&events, |e| {
+        matches!(e, HostEvent::RegenFailed { .. } | HostEvent::Regenerated(_))
+    }) {
+        HostEvent::RegenFailed { issue, .. } => {
+            assert!(issue.message.contains("invalid"), "{issue:?}")
+        }
+        other => panic!("{other:?}"),
+    }
+}

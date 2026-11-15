@@ -116,12 +116,24 @@ pub fn handle(
                     std::process::exit(134);
                 }
                 DebugAction::Panic => panic!("injected worker panic"),
+                DebugAction::BadFrame => {
+                    // A well-framed reply whose JSON does not decode.
+                    let mut out = std::io::stdout().lock();
+                    let json = br#"{"response":"echo","id":null}"#;
+                    let _ = std::io::Write::write_all(&mut out, b"\x00FCAD\x01\xfe\xff");
+                    let _ = std::io::Write::write_all(&mut out, &(json.len() as u32).to_le_bytes());
+                    let _ = std::io::Write::write_all(&mut out, json);
+                    let _ = std::io::Write::flush(&mut out);
+                    loop {
+                        std::thread::park();
+                    }
+                }
                 DebugAction::Echo => Response::Echo { id },
             }
         }
         Request::Shutdown => Response::Echo { id },
     }));
-    emit(outcome.unwrap_or_else(|payload| {
+    let mut response = outcome.unwrap_or_else(|payload| {
         let detail = payload
             .downcast_ref::<&str>()
             .map(|s| (*s).to_owned())
@@ -133,5 +145,7 @@ pub fn handle(
             id,
             message: format!("The geometry kernel failed ({detail})"),
         }
-    }));
+    });
+    response.sanitize();
+    emit(response);
 }
