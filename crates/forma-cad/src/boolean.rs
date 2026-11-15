@@ -16,7 +16,8 @@ use crate::body::{Body, Geometry, guard};
 use crate::geom::{TriMesh, matrix_d};
 use glam::{DMat4, DVec3};
 use truck_modeling::{
-    BSplineCurve, BoundedCurve, Curve, KnotVec, ParameterDivision1D, Solid, builder,
+    BSplineCurve, BoundedCurve, Curve, KnotVec, ParameterDivision1D, ParametricCurve, Solid,
+    builder,
 };
 use truck_topology::shell::ShellCondition;
 
@@ -37,8 +38,66 @@ impl BoolOp {
     }
 }
 
-/// Combine `a` with tool `b`.
+/// Combine `a` with tool `b`. Tools made of several separate lumps (one
+/// sketch with many circles, say) are applied one lump at a time: truck
+/// fails on multi-lump tools that it handles fine individually.
 pub(crate) fn boolean(a: &Body, b: &Body, op: BoolOp) -> Result<Body, KernelError> {
+    if let Some(lumps) = separate_lumps(b) {
+        return match op {
+            BoolOp::Union | BoolOp::Subtract => {
+                lumps.iter().try_fold(a.clone(), |current, lump| {
+                    boolean_single(&current, lump, op)
+                })
+            }
+            BoolOp::Intersect => {
+                let mut shells = Vec::new();
+                for lump in &lumps {
+                    match boolean_single(a, lump, op) {
+                        Ok(part) => {
+                            if let Some(solid) = part.as_solid() {
+                                shells.extend(solid.boundaries().iter().cloned());
+                            }
+                        }
+                        Err(error) if error.message.contains("do not overlap") => {}
+                        Err(error) => return Err(error),
+                    }
+                }
+                if shells.is_empty() {
+                    return Err(KernelError::new(
+                        "Intersect left nothing: the bodies do not overlap",
+                        "Move the bodies so they overlap, or use Join",
+                    ));
+                }
+                Ok(Body::solid(
+                    Solid::new(shells),
+                    a.min_radius.min(b.min_radius),
+                ))
+            }
+        };
+    }
+    boolean_single(a, b, op)
+}
+
+/// The outward lumps of a multi-shell solid, or `None` for single shells and
+/// solids with voids.
+fn separate_lumps(body: &Body) -> Option<Vec<Body>> {
+    let solid = body.as_solid()?;
+    let shells = solid.boundaries();
+    if shells.len() < 2 {
+        return None;
+    }
+    let lumps: Vec<Body> = shells
+        .iter()
+        .map(|shell| Body::solid(Solid::new(vec![shell.clone()]), body.min_radius))
+        .collect();
+    let tolerance = body.tolerance(3.0e-3, 0.35);
+    let all_outward = lumps
+        .iter()
+        .all(|lump| lump.volume(tolerance).is_ok_and(|volume| volume > 0.0));
+    all_outward.then_some(lumps)
+}
+
+fn boolean_single(a: &Body, b: &Body, op: BoolOp) -> Result<Body, KernelError> {
     let (Some(solid_a), Some(solid_b)) = (a.as_solid(), b.as_solid()) else {
         return Err(KernelError::new(
             format!(
@@ -419,6 +478,13 @@ pub(crate) fn bake_intersection_curves(
             if !matches!(curve, Curve::IntersectionCurve(_)) {
                 continue;
             }
+            // Plane–plane and plane–cylinder intersections are exact lines
+            // and circles: keep them exact rather than approximated.
+            if let Some(exact) = exact_curve(&curve, tolerance * 1.0e-3) {
+                edge.set_curve(exact);
+                converted += 1;
+                continue;
+            }
             let baked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 let range = curve.range_tuple();
                 let (parameters, points) = curve.parameter_division(range, tolerance.max(2.0e-6));
@@ -441,6 +507,51 @@ pub(crate) fn bake_intersection_curves(
         }
         Ok((converted, failed))
     })
+}
+
+/// An exact line or circular arc matching `curve` within `tolerance`.
+fn exact_curve(curve: &Curve, tolerance: f64) -> Option<Curve> {
+    use crate::geom::{dvec, point};
+    let (t0, t1) = curve.range_tuple();
+    let samples: Vec<DVec3> = (0..=16)
+        .map(|k| dvec(curve.subs(t0 + (t1 - t0) * k as f64 / 16.0)))
+        .collect();
+    let (start, middle, end) = (samples[0], samples[8], samples[16]);
+    if !samples.iter().all(|p| p.is_finite()) || start.distance(end) <= tolerance {
+        return None;
+    }
+    let chord = (end - start).normalize();
+    let off_line = |p: &DVec3| {
+        let d = *p - start;
+        (d - chord * d.dot(chord)).length()
+    };
+    if samples.iter().all(|p| off_line(p) <= tolerance) {
+        return Some(Curve::Line(truck_modeling::Line(point(start), point(end))));
+    }
+    // Circle through start, middle and end.
+    let (a, b) = (start - middle, end - middle);
+    let normal = a.cross(b);
+    if normal.length_squared() <= 0.0 {
+        return None;
+    }
+    // Circumcenter relative to `middle`.
+    let center = middle
+        + (normal.cross(a) * b.length_squared() + b.cross(normal) * a.length_squared())
+            / (2.0 * normal.length_squared());
+    let radius = center.distance(start);
+    let unit = normal.normalize();
+    let on_circle = samples.iter().all(|p| {
+        (p.distance(center) - radius).abs() <= tolerance && unit.dot(*p - center).abs() <= tolerance
+    });
+    if !on_circle {
+        return None;
+    }
+    let edge = builder::circle_arc(
+        &builder::vertex(point(start)),
+        &builder::vertex(point(end)),
+        point(middle),
+    );
+    Some(edge.curve())
 }
 
 /// Whether a solid contains intersection curves (results of booleans).

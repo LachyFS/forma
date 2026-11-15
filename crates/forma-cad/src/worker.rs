@@ -83,11 +83,13 @@ pub fn handle(
         }
         Request::PartToMesh { id, part } => Response::Mesh {
             id,
-            result: crate::step::part_to_mesh(&part).map_err(|error| error.to_string()),
+            result: crate::step::part_to_mesh_cached(&part, cache)
+                .map_err(|error| error.to_string()),
         },
         Request::ExportStep { id, parts } => Response::Step {
             id,
-            result: crate::step::export_step(&parts).map_err(|error| error.to_string()),
+            result: crate::step::export_step_cached(&parts, cache)
+                .map_err(|error| error.to_string()),
         },
         Request::ImportStep { id, name, text } => Response::Imported {
             id,

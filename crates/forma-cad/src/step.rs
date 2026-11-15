@@ -125,9 +125,12 @@ pub fn import_step(name: &str, text: &str) -> Result<PartData, KernelError> {
 }
 
 fn evaluated_body(part: &PartData) -> Result<Body, KernelError> {
-    let mut cache = RegenCache::default();
+    evaluated_body_cached(part, &mut RegenCache::default())
+}
+
+fn evaluated_body_cached(part: &PartData, cache: &mut RegenCache) -> Result<Body, KernelError> {
     let mut stats = RegenStats::default();
-    let (body, issues) = evaluate_part(part.id, part, &[], &mut cache, &mut |_| {}, &mut stats);
+    let (body, issues) = evaluate_part(part.id, part, &[], cache, &mut |_| {}, &mut stats);
     match body {
         Some(body) => Ok(body),
         None => Err(issues
@@ -142,12 +145,20 @@ fn evaluated_body(part: &PartData) -> Result<Body, KernelError> {
 
 /// Export placed parts as one STEP document (millimetres).
 pub fn export_step(parts: &[StepPart]) -> Result<String, KernelError> {
+    export_step_cached(parts, &mut RegenCache::default())
+}
+
+/// [`export_step`] reusing evaluated feature prefixes from `cache`.
+pub(crate) fn export_step_cached(
+    parts: &[StepPart],
+    cache: &mut RegenCache,
+) -> Result<String, KernelError> {
     if parts.is_empty() {
         return Err(KernelError::new("Select a part to export", ""));
     }
     let mut solids: Vec<Solid> = Vec::new();
     for placed in parts {
-        let body = evaluated_body(&placed.part)?;
+        let body = evaluated_body_cached(&placed.part, cache)?;
         let Geometry::Solid(solid) = &body.geometry else {
             return Err(KernelError::new(
                 format!("{} is an imported STEP body", placed.name),
@@ -199,7 +210,14 @@ pub fn export_step(parts: &[StepPart]) -> Result<String, KernelError> {
 
 /// Bake a part into an editable polygon mesh in part space.
 pub fn part_to_mesh(part: &PartData) -> Result<Mesh, KernelError> {
-    let body = evaluated_body(part)?;
+    part_to_mesh_cached(part, &mut RegenCache::default())
+}
+
+pub(crate) fn part_to_mesh_cached(
+    part: &PartData,
+    cache: &mut RegenCache,
+) -> Result<Mesh, KernelError> {
+    let body = evaluated_body_cached(part, cache)?;
     editable_mesh(&body, part.quality)
 }
 

@@ -518,7 +518,7 @@ fn prism_push_pull(
             "Use a smaller distance",
         )));
     }
-    Some(guard(|| {
+    let rebuilt = guard(|| {
         let copy = builder::clone(solid);
         bake_intersection_curves(&copy, body.tolerance(3.0e-4, 0.1))?;
         let cap = copy
@@ -527,8 +527,19 @@ fn prism_push_pull(
             .cloned()
             .ok_or_else(|| KernelError::new("the base face disappeared", ""))?;
         let solid = extrude_face(&cap, vector(normal * new_height));
-        orient_outward(solid, body.min_radius)
-    }))
+        let rebuilt = orient_outward(solid, body.min_radius)?;
+        // Swept approximations of intersection curves occasionally defeat
+        // truck's tessellator; prefer the general path over a hole in the part.
+        let faces = rebuilt.face_meshes(rebuilt.tolerance(4.0e-3, 0.4))?;
+        if faces.iter().any(Option::is_none) {
+            return Err(KernelError::new(
+                "the re-extruded body did not tessellate",
+                "",
+            ));
+        }
+        Ok(rebuilt)
+    });
+    rebuilt.ok().map(Ok)
 }
 
 // ---------------------------------------------------------------------------
