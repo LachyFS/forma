@@ -287,3 +287,30 @@ fn failed_regenerations_keep_the_cache_and_are_retried_after_reload() {
     );
     assert!(scene.part(part_id).unwrap().failed.is_none());
 }
+
+#[test]
+fn part_caches_cannot_be_shared_with_editable_meshes_or_other_parts() {
+    let mut scene = Scene::empty();
+    let id = scene.add_part("Bracket", box_part()).unwrap();
+    let part_id = scene.object(id).unwrap().part_id().unwrap();
+    let stamp = scene.part(part_id).unwrap().stamp;
+    scene
+        .set_part_tessellation(part_id, stamp, Some(grouped_quad()), Vec::new())
+        .unwrap();
+    let cache = scene.object(id).unwrap().mesh_id().unwrap();
+    scene.validate().unwrap();
+    // A hand-crafted file pointing an editable mesh object at the cache.
+    let mesh_object = scene.add(Primitive::Cube);
+    let mut shared = scene.clone();
+    if let ObjectData::Mesh { mesh, .. } = &mut shared.object_mut(mesh_object).unwrap().data {
+        *mesh = cache;
+    }
+    let error = shared.validate().unwrap_err().to_string();
+    assert!(error.contains("cached tessellation"), "{error}");
+    // Or a second part pointing at it.
+    let other = scene.add_part("Other", box_part()).unwrap();
+    if let ObjectData::Part { mesh, .. } = &mut scene.object_mut(other).unwrap().data {
+        *mesh = Some(cache);
+    }
+    assert!(scene.validate().is_err());
+}

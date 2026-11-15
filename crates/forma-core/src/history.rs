@@ -93,6 +93,7 @@ fn scene_bytes(scene: &Scene) -> usize {
             std::mem::size_of_val(data)
                 + data.name.len()
                 + data.mesh.positions.len() * std::mem::size_of::<glam::Vec3>()
+                + data.mesh.groups.len() * std::mem::size_of::<u32>()
                 + data
                     .mesh
                     .faces
@@ -144,6 +145,26 @@ mod tests {
             }));
         }
         assert!(scene_bytes(&scene) >= empty + 1000 * std::mem::size_of::<SketchEntity>());
+    }
+
+    #[test]
+    fn face_groups_count_toward_the_history_budget() {
+        let mut scene = Scene::empty();
+        let id = scene.add(crate::Primitive::Plane);
+        let plain = scene_bytes(&scene);
+        let mesh = scene.object_mesh_mut(id).unwrap();
+        mesh.faces = vec![vec![0, 1, 2], vec![0, 2, 3]];
+        mesh.groups = vec![0; 2];
+        let faces_only = {
+            let mut copy = scene.clone();
+            copy.object_mesh_mut(id).unwrap().groups.clear();
+            scene_bytes(&copy)
+        };
+        assert!(plain > 0);
+        assert_eq!(
+            scene_bytes(&scene),
+            faces_only + 2 * std::mem::size_of::<u32>()
+        );
     }
 
     #[test]

@@ -1807,6 +1807,32 @@ impl Scene {
         for object in &self.objects {
             self.validate_object_chain(object.id)?;
         }
+        // A part's mesh block is a regenerated cache: editing it as a mesh,
+        // or sharing it with another part, would corrupt one or the other.
+        let mut cache_owner: BTreeMap<u64, u64> = BTreeMap::new();
+        for object in &self.objects {
+            if let ObjectData::Part {
+                part,
+                mesh: Some(mesh),
+                ..
+            } = &object.data
+            {
+                let owner = *cache_owner.entry(*mesh).or_insert(*part);
+                ensure!(
+                    owner == *part,
+                    "Mesh data {mesh} is the cache of two different parts"
+                );
+            }
+        }
+        for object in &self.objects {
+            if let ObjectData::Mesh { mesh, .. } = &object.data {
+                ensure!(
+                    !cache_owner.contains_key(mesh),
+                    "Object {} edits mesh data that is a part's cached tessellation",
+                    object.name
+                );
+            }
+        }
         ensure!(
             self.next_id > ids.last().copied().unwrap_or(0) && self.next_id < u64::MAX,
             "Next object ID must exceed existing IDs"

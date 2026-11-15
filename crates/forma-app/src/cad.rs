@@ -65,9 +65,18 @@ pub(crate) enum CadCommand {
 
 /// What to do when a ticketed job finishes.
 enum Pending {
-    ToMesh { object: u64, part: u64, stamp: u64 },
-    Export { path: PathBuf },
-    Import { epoch: u64 },
+    ToMesh {
+        object: u64,
+        part: u64,
+        stamp: u64,
+        epoch: u64,
+    },
+    Export {
+        path: PathBuf,
+    },
+    Import {
+        epoch: u64,
+    },
 }
 
 /// Editor-side CAD state. The worker starts on first use.
@@ -353,6 +362,7 @@ impl Studio {
                 object: id,
                 part: part.id,
                 stamp: part.stamp,
+                epoch: self.project_epoch,
             });
             match self.cad.host() {
                 Ok(host) => host.submit(Job::PartToMesh { ticket, part }),
@@ -727,7 +737,11 @@ impl Studio {
                     object,
                     part,
                     stamp,
+                    epoch,
                 }) = self.cad.pending.remove(&ticket)
+                    // Another project was opened meanwhile: its ids mean
+                    // other objects.
+                    && epoch == self.project_epoch
                 {
                     self.finish_convert_to_mesh(object, part, stamp, result, cx);
                 }
