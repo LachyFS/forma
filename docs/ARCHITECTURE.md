@@ -231,8 +231,51 @@ In the editor (`crates/forma-app/src/cad.rs`), every geometry invalidation calls
 `sync_parts`, which submits each part whose cache is stale and not already
 requested. Results arrive through an async channel and are installed with
 `Scene::set_part_tessellation`, which drops stale stamps. Nothing waits on the
-UI thread; the status line reports regeneration results and issues, and the
-inspector's Part section lists features with their state.
+UI thread; the status line reports regeneration results and issues.
+
+### Timeline, feature editing and associativity
+
+`crates/forma-app/src/timeline/` owns the history workflow; its views are
+`ui/timeline.rs` (the dock) and `ui/feature_inspector.rs` (the Part section).
+
+- **State.** `TimelineState` lives in `PanelState`: the selected feature as a
+  `(part object, feature id)` pair, the context menu, the rollback marker drag
+  and the chip strip's scroll handle. It never enters the document. The
+  selection is resolved against the scene on every read, so undo, redo or a
+  deletion can never leave it dangling; selecting objects clears it.
+- **Edits.** `TimelineCommand` (`Command::Timeline`) covers selection, rollback,
+  suppress, delete, rename and per-kind settings. Each edit clones the part,
+  applies a pure function (`delete_feature`, `set_marker`, `toggle_suppress`,
+  `params::set`, …), validates, then records one checkpoint and restamps;
+  renames keep the stamp because names never change geometry. Feature values are
+  `Field::Feature(FeatureField)`, so typing, Tab order and scrubbing reuse the
+  inspector field machinery: a scrub commits each step without history and
+  checkpoints once on release, and a marker drag does the same.
+- **Live regeneration.** Every step restamps the part and invalidates geometry;
+  `CadHost` keeps at most one queued regeneration per part (newer requests
+  replace older ones) and stale stamps are dropped on arrival, so scrubbing never
+  builds a backlog — the worker always moves to the latest value.
+- **Associativity** (`timeline/links.rs`). `Feature::source` names the sketch
+  object; the feature embeds its own copy in part space. After each committed
+  sketch edit (`edit_active_sketch`, the end of a curve drag) and when Draw
+  finishes, `propagate` rewrites the copy of every linked feature — recursing
+  into combine tools with their transforms — then validates and restamps only
+  parts that changed. If the copy's plane equals the source plane mapped by
+  `part_world⁻¹ · sketch_world`, the new copy is that mapping (uniform scale
+  scales the curves); otherwise the objects moved apart since linking, so the
+  copy keeps its plane and takes the curves in plane coordinates. Region picks
+  are remapped by sampled overlap: a pick is kept bit-for-bit while its region
+  still best matches the old one, else moved inside the best-overlapping new
+  region. Propagation happens inside the sketch edit's undo step, so history
+  snapshots always hold a sketch together with the parts that follow it.
+- **Edit sketch** re-materializes a deleted source from the embedded copy as a
+  hidden sketch placed on the part, or re-places a hidden source whose part
+  moved, in one checkpoint, then opens Draw on it. Draw shows the sketch it
+  edits whatever its visibility, so hidden sources stay hidden and no visibility
+  toggles enter history. Finishing returns to the part and feature.
+- **Dock arbitration.** `ui::slots::viewport_dock` shows one occupant: the Draw
+  toolbar while sketching, then an active CAD tool's HUD (reserved branch), then
+  the timeline whenever a part is active.
 
 ## Interaction and scheduling
 
@@ -300,7 +343,8 @@ Lucide-based SVG icons and the Inter font; `components` builds every control fro
 those tokens. Shell regions (`titlebar`, `hud`, `outliner`, `inspector`,
 `statusbar`) and `overlays` compose components and never use literal colors.
 `modes` lists the title bar's workspace modes as data, and `slots` provides the
-reserved viewport dock and adjust-last-operation hooks that features fill.
+reserved viewport dock and adjust-last-operation hooks that features fill;
+`timeline` and `feature_inspector` render the part history workflow.
 
 The app's `theme` module defines semantic color tokens (surfaces, lines, ink tiers,
 accent, status and axis colors) and five built-in presets that map onto them.

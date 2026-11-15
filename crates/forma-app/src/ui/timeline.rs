@@ -204,7 +204,7 @@ fn chip(
                 .whitespace_nowrap()
                 .text_size(px(TEXT_SM))
                 .font_weight(WEIGHT_MEDIUM)
-                .text_color(rgb(if feature.suppressed {
+                .text_color(rgb(if feature.suppressed && !selected {
                     t.text_faint
                 } else {
                     ink
@@ -240,7 +240,15 @@ fn chip(
         .map(|d| match &state {
             ChipState::Error(_) => d.child(icon(Icon::Error, 13., t.danger)),
             ChipState::Warning(_) => d.child(icon(Icon::Warning, 13., t.warning)),
-            ChipState::Ok if feature.suppressed => d.child(icon(Icon::EyeOff, 13., t.text_faint)),
+            ChipState::Ok if feature.suppressed => d.child(icon(
+                Icon::EyeOff,
+                13.,
+                if selected {
+                    t.accent_text
+                } else {
+                    t.text_faint
+                },
+            )),
             ChipState::Ok => d,
         })
         .tooltip(tip_detail(
@@ -459,12 +467,45 @@ pub(crate) fn timeline(s: &Studio, t: Colors, cx: &mut Context<Studio>) -> Optio
     let count = part.features.len();
     let marker = timeline::marker(part);
     let state = &s.panels.timeline;
-    if state.reveal.take()
-        && let Some(index) = s.selected_feature().map(|selected| selected.index)
-    {
-        // Scroll the selected chip into view during the next prepaint.
-        state.scroll.scroll_to_item(2 * index + 1);
+    // Keep the selected chip in view when it is chosen and whenever chip
+    // widths may change (an edit restamps, a regeneration adds a glyph).
+    if let Some(index) = s.selected_feature().map(|selected| selected.index) {
+        let key = (
+            selected.unwrap_or(0),
+            part.stamp,
+            part.is_evaluated(),
+            compact,
+        );
+        if state.reveal.take() || state.revealed.get() != Some(key) {
+            state.revealed.set(Some(key));
+            // The last chip reveals the end gap too, so the marker shows.
+            state.scroll.scroll_to_item(if index + 1 == count {
+                2 * count
+            } else {
+                2 * index + 1
+            });
+        }
     }
+    // Fade the strip's clipped ends, so overflow reads as "more this way".
+    let offset = f32::from(state.scroll.offset().x);
+    let overflow = f32::from(state.scroll.max_offset().width);
+    let clipped_left = offset < -0.5;
+    let clipped_right = overflow > 0.5 && offset > -overflow + 0.5;
+    let veil = gpui::rgba(t.hud);
+    let mut clear_veil: Hsla = veil.into();
+    clear_veil.a = 0.;
+    let fade = |angle: f32| {
+        div()
+            .absolute()
+            .top_0()
+            .bottom_0()
+            .w(px(28.))
+            .bg(linear_gradient(
+                angle,
+                linear_color_stop(veil, 0.),
+                linear_color_stop(clear_veil, 1.),
+            ))
+    };
     let mut strip = row()
         .id("timeline-strip")
         .min_w(px(0.))
@@ -533,7 +574,16 @@ pub(crate) fn timeline(s: &Studio, t: Colors, cx: &mut Context<Studio>) -> Optio
             .items_center()
             .max_w(px((width - HUD_INSET * 2.).max(240.)))
             .when(!tight, |d| d.child(label).child(vrule(t, 18.)))
-            .child(strip)
+            .child(
+                div()
+                    .relative()
+                    .flex()
+                    .min_w(px(0.))
+                    .flex_shrink()
+                    .child(strip)
+                    .when(clipped_left, |d| d.child(fade(90.).left_0()))
+                    .when(clipped_right, |d| d.child(fade(270.).right_0())),
+            )
             .child(vrule(t, 18.))
             .child(status(t, s, part, tight, cx))
             .when(dragging, |d| d.child(marker_capture(cx)))

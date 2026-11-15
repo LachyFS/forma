@@ -13,8 +13,10 @@
 //!
 //! The dock and inspector UI live in `ui::timeline` and
 //! `ui::feature_inspector`; this module owns behaviour.
+pub(crate) mod capture;
 pub(crate) mod links;
 pub(crate) mod params;
+pub(crate) mod smoke;
 
 use crate::app::{Command, Field, Studio};
 use crate::sketch::DrawTarget;
@@ -82,6 +84,12 @@ struct SketchReturn {
     sketch: u64,
 }
 
+/// Per-feature cautions: `(feature id, message)`.
+pub(crate) type Warnings = Rc<Vec<(u64, String)>>;
+
+/// A mesh object's closed-manifold check at a scene revision.
+type ManifoldCheck = (u64, u64, Result<(), String>);
+
 /// Session-only timeline state, kept in `PanelState`.
 #[derive(Default)]
 pub(crate) struct TimelineState {
@@ -92,11 +100,13 @@ pub(crate) struct TimelineState {
     pub(crate) scroll: ScrollHandle,
     /// Scroll the selected chip into view on the next frame.
     pub(crate) reveal: std::cell::Cell<bool>,
+    /// The selection and part state last scrolled into view.
+    pub(crate) revealed: std::cell::Cell<Option<(u64, u64, bool, bool)>>,
     sketch_return: Option<SketchReturn>,
     /// Region-pick warnings per part, keyed by its stamp.
-    warnings: RefCell<HashMap<u64, (u64, Rc<Vec<(u64, String)>>)>>,
+    warnings: RefCell<HashMap<u64, (u64, Warnings)>>,
     /// Closed-manifold check of a mesh object at a scene revision.
-    manifold: RefCell<Option<(u64, u64, Result<(), String>)>>,
+    manifold: RefCell<Option<ManifoldCheck>>,
 }
 
 impl TimelineState {
@@ -398,7 +408,7 @@ impl Studio {
     }
 
     /// Cached region-pick warnings for a part.
-    pub(crate) fn feature_warnings(&self, part: &PartData) -> Rc<Vec<(u64, String)>> {
+    pub(crate) fn feature_warnings(&self, part: &PartData) -> Warnings {
         let mut cache = self.panels.timeline.warnings.borrow_mut();
         if let Some((stamp, warnings)) = cache.get(&part.id)
             && *stamp == part.stamp
@@ -417,9 +427,11 @@ impl Studio {
             return None;
         }
         let mut cache = self.panels.timeline.manifold.borrow_mut();
+        // Transform drags invalidate geometry every frame without touching
+        // the mesh itself, so keep the last answer for the same object.
         if let Some((id, revision, result)) = cache.as_ref()
             && *id == object
-            && *revision == self.scene_revision
+            && (*revision == self.scene_revision || self.transform_drag.is_some())
         {
             return Some(result.clone());
         }
@@ -704,6 +716,8 @@ impl Studio {
     }
 
     fn describe_selection(&mut self) {
+        // The Part section leads the inspector; bring the values into view.
+        self.panels.scroll_inspector_to(0.);
         if let Some(selected) = self.selected_feature() {
             let summary = crate::cad::feature_summary(selected.feature);
             self.status = format!(

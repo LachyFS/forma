@@ -25,7 +25,7 @@
 //! that follow it.
 use forma_core::{
     Feature, FeatureKind, Mat4, PartData, Profile, SKETCH_TOLERANCE, Scene, Sketch, SketchCurve,
-    SketchEntity, SketchPlane, Vec2, Vec3,
+    SketchEntity, SketchPlane, Vec2,
 };
 
 /// How a linked copy followed its source.
@@ -401,14 +401,14 @@ pub fn is_aligned(scene: &Scene, sketch_object: u64, part_object: u64, embedded:
 
 /// The world-space normal of a plane under a matrix.
 #[cfg(test)]
-pub fn world_normal(plane: &SketchPlane, matrix: Mat4) -> Vec3 {
+pub fn world_normal(plane: &SketchPlane, matrix: Mat4) -> forma_core::Vec3 {
     matrix.transform_vector3(plane.normal()).normalize_or_zero()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use forma_core::{ExtrudeExtent, ExtrudeFeature, FeatureOperation, RevolveFeature};
+    use forma_core::{ExtrudeExtent, ExtrudeFeature, FeatureOperation, RevolveFeature, Vec3};
     use glam::Quat;
 
     fn line(a: (f32, f32), b: (f32, f32)) -> SketchEntity {

@@ -498,9 +498,16 @@ fn sketch_link(t: Colors, s: &Studio, feature: &Feature, cx: &mut Context<Studio
                     ))
                     .child(div().flex_1().min_w(px(0.)).truncate().child(name))
                     .child(
-                        caption(t, format!("{} curves", sketch.entities.len()))
-                            .tabular()
-                            .text_color(rgb(t.text_faint)),
+                        caption(
+                            t,
+                            format!(
+                                "{} curve{}",
+                                sketch.entities.len(),
+                                if sketch.entities.len() == 1 { "" } else { "s" }
+                            ),
+                        )
+                        .tabular()
+                        .text_color(rgb(t.text_faint)),
                     )
                     .tooltip(tip_detail(t, regions.clone(), detail, None)),
             ))

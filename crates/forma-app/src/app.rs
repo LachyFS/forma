@@ -2863,11 +2863,13 @@ impl Studio {
             cx.stop_propagation();
             return;
         }
-        if self.draw_key(event, window, cx) {
+        // The timeline only claims keys while a part (not a sketch) is
+        // active, and its open context menu takes every key.
+        if self.timeline_key(event, window, cx) {
             cx.stop_propagation();
             return;
         }
-        if self.timeline_key(event, window, cx) {
+        if self.draw_key(event, window, cx) {
             cx.stop_propagation();
             return;
         }
