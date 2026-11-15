@@ -679,15 +679,15 @@ impl Studio {
         self.tool_click(1, cx);
     }
 
-    /// The pointer position for placing points: the snapped pointer, or a
-    /// point beside the anchor when the pointer is off the plane.
+    /// The pointer position for placing points (see `tools::placement`).
     fn placement_cursor(&self) -> Option<Vec2> {
         let session = self.sketch.session.as_ref()?;
-        session
-            .pointer
-            .as_ref()
-            .map(|p| p.snap.point)
-            .or_else(|| session.step.anchor().map(|a| a + Vec2::X))
+        let (locks, _) = session.numeric.locks(tools::dimensions(&session.step));
+        tools::placement(
+            &session.step,
+            session.pointer.as_ref().map(|p| p.snap.point),
+            locks,
+        )
     }
 
     /// Places the next point of the active drawing tool.
@@ -720,10 +720,14 @@ impl Studio {
                     ..
                 },
             ) => {
-                if click_count >= 2 || preview.is_empty() || tools::same_point(start, resolved) {
+                if click_count >= 2 || tools::same_point(start, resolved) {
                     // A double-click (or a click on the last point) ends the chain.
                     self.cancel_draw_step();
                     self.status = "Line ended".into();
+                    return;
+                }
+                if preview.is_empty() {
+                    self.status = "Too small to draw · Move further or type a larger value".into();
                     return;
                 }
                 let curve = preview[0];
@@ -765,7 +769,7 @@ impl Studio {
             | (DrawTool::Polygon, Step::Polygon { .. })
             | (DrawTool::Arc, Step::Arc { end: Some(_), .. }) => {
                 if preview.is_empty() {
-                    self.status = "Too small · Move further or type a size".into();
+                    self.status = "Too small to draw · Move further or type a larger value".into();
                     return;
                 }
                 if !self.add_sketch_curves(tool.label(), preview, cx) {

@@ -391,7 +391,10 @@ pub(crate) fn preview(
             ..
         } => match tangent.and_then(|t| locked_tangent_arc(start, t, cursor, locks)) {
             Some(arc) => vec![arc],
-            None => vec![SketchCurve::Line { start, end: point }],
+            // A pointer straight ahead continues in a line; typed values that
+            // give no valid arc draw nothing rather than something else.
+            None if locks == [None, None] => vec![SketchCurve::Line { start, end: point }],
+            None => Vec::new(),
         },
         Step::Rectangle { first } => rectangle_corners(first, point, options.rect_center)
             .map(|corners| closed_polyline(&corners))
@@ -453,6 +456,20 @@ pub(crate) fn measure(
         }
         Step::Idle => [None, None],
     }
+}
+
+/// Where the next point goes: the snapped pointer, or — when the pointer is
+/// off the plane — a point beside the anchor, but only when typed values fix
+/// every dimension so the pointer's position cannot matter.
+pub(crate) fn placement(step: &Step, pointer: Option<Vec2>, locks: Locks) -> Option<Vec2> {
+    if pointer.is_some() {
+        return pointer;
+    }
+    let dimensions = dimensions(step);
+    let locked = !dimensions.is_empty() && locks.iter().take(dimensions.len()).all(Option::is_some);
+    locked
+        .then(|| step.anchor().map(|anchor| anchor + Vec2::X))
+        .flatten()
 }
 
 /// Normalizes an angle for display in degrees within (-180, 180].
@@ -592,5 +609,51 @@ mod tests {
         assert!((display_degrees(PI) - 180.0).abs() < 1.0e-3);
         assert!((display_degrees(-PI * 0.5) + 90.0).abs() < 1.0e-3);
         assert!((display_degrees(TAU + 0.1) - 0.1_f32.to_degrees()).abs() < 1.0e-3);
+    }
+
+    #[test]
+    fn typed_values_never_make_sub_tolerance_curves() {
+        // Review case "tangenttiny": radius 0.5, sweep 0.001 degrees.
+        let step = Step::Line {
+            start: Vec2::new(1.0, 0.0),
+            chain_start: Vec2::ZERO,
+            segments: 1,
+            tangent: Some(Vec2::X),
+            arc: true,
+        };
+        let locks = [Some(0.5), Some(0.001_f32.to_radians())];
+        assert!(preview(&step, Vec2::new(1.2, 0.3), locks, Options::default()).is_empty());
+        // Without typed values a pointer straight ahead still draws a line.
+        let ahead = preview(&step, Vec2::new(2.0, 0.0), [None, None], Options::default());
+        assert!(matches!(ahead[..], [SketchCurve::Line { .. }]));
+        // A typed length below tolerance gives no line.
+        let line = Step::Line {
+            start: Vec2::ZERO,
+            chain_start: Vec2::ZERO,
+            segments: 0,
+            tangent: None,
+            arc: false,
+        };
+        assert!(preview(&line, Vec2::X, [Some(1.0e-6), None], Options::default()).is_empty());
+    }
+
+    #[test]
+    fn off_plane_clicks_place_points_only_when_fully_typed() {
+        let line = Step::Line {
+            start: Vec2::new(2.0, 3.0),
+            chain_start: Vec2::new(2.0, 3.0),
+            segments: 0,
+            tangent: None,
+            arc: false,
+        };
+        // Review case: a missed ray used to create a one-unit curve.
+        assert_eq!(placement(&line, None, [None, None]), None);
+        assert_eq!(placement(&line, None, [Some(1.0), None]), None);
+        assert!(placement(&line, None, [Some(1.0), Some(0.0)]).is_some());
+        assert_eq!(placement(&Step::Idle, None, [None, None]), None);
+        let circle = Step::Circle { center: Vec2::ZERO };
+        assert!(placement(&circle, None, [Some(0.5), None]).is_some());
+        let pointer = Vec2::new(7.0, 7.0);
+        assert_eq!(placement(&line, Some(pointer), [None, None]), Some(pointer));
     }
 }

@@ -728,6 +728,8 @@ impl Studio {
         let construction = self.sketch.session.as_ref().is_some_and(|s| s.construction);
         let curves: Vec<_> = curves.into_iter().filter(SketchCurve::is_valid).collect();
         if curves.is_empty() {
+            self.status = format!("{label} too small to draw · Curves must be longer than 0.01 mm");
+            cx.notify();
             return false;
         }
         let added = self.edit_active_sketch(
