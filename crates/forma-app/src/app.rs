@@ -260,6 +260,13 @@ pub struct Studio {
 }
 
 impl Studio {
+    /// Joins GPU worker threads before process exit; see `RenderWorker::shutdown`.
+    pub(crate) fn shutdown_renderer(&self) {
+        self.worker.shutdown();
+    }
+}
+
+impl Studio {
     pub fn new(
         backend: Backend,
         theme_path: Option<PathBuf>,

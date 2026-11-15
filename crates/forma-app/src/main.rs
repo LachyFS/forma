@@ -194,6 +194,12 @@ fn main() -> Result<()> {
                 |window, cx| cx.new(|cx| Studio::new(backend, theme_path, window, cx)),
             )
             .expect("could not open Forma window");
+        // Leave the GPU driver before its exit-time teardown runs.
+        cx.on_app_quit(move |cx| {
+            let _ = window.update(cx, |s, _, _| s.shutdown_renderer());
+            async {}
+        })
+        .detach();
         macro_rules! register {
             ($action:ty, $command:expr) => {
                 cx.on_action(move |_: &$action, cx| {
