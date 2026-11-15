@@ -1396,7 +1396,11 @@ mod tests {
                         start_angle: rng.grid(8) * std::f32::consts::FRAC_PI_4,
                         sweep: (rng.grid(15) + 1.0)
                             * std::f32::consts::FRAC_PI_4
-                            * if rng.next() % 2 == 0 { 1.0 } else { -1.0 },
+                            * if rng.next().is_multiple_of(2) {
+                                1.0
+                            } else {
+                                -1.0
+                            },
                     },
                 };
                 if curve.is_valid() {
