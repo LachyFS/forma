@@ -298,3 +298,22 @@ pub(crate) fn finished_objects(s: &mut Studio, w: &mut Window, cx: &mut Context<
     let _ = w;
     s.invalidate(false, cx);
 }
+
+/// Draw in a 1000 px window with a wide sidebar: the toolbar's compact fit.
+pub(crate) fn narrow(s: &mut Studio, w: &mut Window, cx: &mut Context<Studio>) {
+    save(s, cx);
+    w.resize(gpui::size(px(1000.), px(650.)));
+    s.panels.set_sidebar_width(560.);
+    s.scene.camera.distance = 7.0;
+    enter_ground(s, cx);
+    s.execute(Command::Draw(DrawCommand::Tool(DrawTool::Rectangle)), w, cx);
+    click(s, Vec2::new(-0.6, -0.4), w, cx);
+    hover(s, Vec2::new(0.5, 0.3), cx);
+}
+
+pub(crate) fn narrow_leave(s: &mut Studio, w: &mut Window, cx: &mut Context<Studio>) {
+    restore(s, w, cx);
+    s.panels.set_sidebar_width(crate::ui::SIDEBAR_DEFAULT_WIDTH);
+    w.resize(gpui::size(px(1512.), px(960.)));
+    s.invalidate(false, cx);
+}

@@ -28,6 +28,11 @@ impl Studio {
     pub(crate) fn draw_toolbar(&self, t: Colors, cx: &mut Context<Self>) -> Option<AnyElement> {
         let session = self.sketch.session.as_ref()?;
         let draw = Command::Draw;
+        // Narrow viewports drop the plane name, then option labels and the
+        // Finish label, so the bar always fits (about 370 px at its smallest).
+        let width = f32::from(self.bounds.get().size.width);
+        let show_label = width >= 780.;
+        let compact = width < 580.;
         let mut bar = hud(t)
             .id("draw-toolbar")
             .items_center()
@@ -39,27 +44,29 @@ impl Studio {
                     studio.draw_pointer_in_hud(cx);
                 }
             }))
-            .child(
-                row()
-                    .h(px(H_MD))
-                    .pl(px(SP_2))
-                    .pr(px(SP_1))
-                    .gap(px(SP_1_5))
-                    .max_w(px(180.))
-                    .child(icon(Icon::Sketch, ICON_SM, t.accent_text))
-                    .child(
-                        div()
-                            .min_w(px(0.))
-                            .overflow_hidden()
-                            .text_ellipsis()
-                            .whitespace_nowrap()
-                            .text_size(px(TEXT_SM))
-                            .font_weight(WEIGHT_MEDIUM)
-                            .text_color(rgb(t.text_muted))
-                            .child(session.label.clone()),
-                    ),
-            )
-            .child(vrule(t, 18.));
+            .when(show_label, |bar| {
+                bar.child(
+                    row()
+                        .h(px(H_MD))
+                        .pl(px(SP_2))
+                        .pr(px(SP_1))
+                        .gap(px(SP_1_5))
+                        .max_w(px(180.))
+                        .child(icon(Icon::Sketch, ICON_SM, t.accent_text))
+                        .child(
+                            div()
+                                .min_w(px(0.))
+                                .overflow_hidden()
+                                .text_ellipsis()
+                                .whitespace_nowrap()
+                                .text_size(px(TEXT_SM))
+                                .font_weight(WEIGHT_MEDIUM)
+                                .text_color(rgb(t.text_muted))
+                                .child(session.label.clone()),
+                        ),
+                )
+                .child(vrule(t, 18.))
+            });
         for tool in DrawTool::ALL {
             bar = bar.child(command_icon(
                 t,
@@ -91,7 +98,7 @@ impl Studio {
                                 ICON_SM,
                                 if active { t.text } else { t.text_muted },
                             ))
-                            .child(label)
+                            .when(!compact, |segment| segment.child(label))
                             .tooltip(command_tip(t, draw(DrawCommand::ToggleRectangleMode))),
                         draw(DrawCommand::ToggleRectangleMode),
                         cx,
@@ -134,20 +141,33 @@ impl Studio {
                         .child(minus)
                         .child(
                             div()
-                                .min_w(px(52.))
+                                .min_w(px(if compact { 22. } else { 52. }))
                                 .flex()
                                 .justify_center()
                                 .tabular()
                                 .text_size(px(TEXT_SM))
                                 .text_color(rgb(t.text))
-                                .child(format!("{sides} sides")),
+                                .child(if compact {
+                                    sides.to_string()
+                                } else {
+                                    format!("{sides} sides")
+                                }),
                         )
                         .child(plus),
                 );
             }
             _ => {}
         }
-        bar = bar.child(vrule(t, 18.)).child(
+        let finish = if compact {
+            on_command(
+                button_base(t, "draw-finish", Tone::Primary, H_MD)
+                    .w(px(H_MD))
+                    .child(icon(Icon::Check, ICON_MD, t.on_accent))
+                    .tooltip(command_tip(t, draw(DrawCommand::Finish))),
+                draw(DrawCommand::Finish),
+                cx,
+            )
+        } else {
             command_button(
                 t,
                 "draw-finish",
@@ -158,8 +178,9 @@ impl Studio {
                 cx,
             )
             .h(px(H_MD))
-            .px(px(SP_3)),
-        );
+            .px(px(SP_3))
+        };
+        bar = bar.child(vrule(t, 18.)).child(finish);
         Some(bar.into_any_element())
     }
 }

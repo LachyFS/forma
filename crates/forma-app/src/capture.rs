@@ -387,6 +387,11 @@ pub(crate) fn scenarios() -> Vec<Scenario> {
             enter: demo::finished_objects,
             leave: demo::restore,
         },
+        Scenario {
+            name: "draw-narrow",
+            enter: demo::narrow,
+            leave: demo::narrow_leave,
+        },
     ]
 }
 
