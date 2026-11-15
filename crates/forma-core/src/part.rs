@@ -49,6 +49,12 @@ pub struct PartData {
     /// The regeneration that produced the cached tessellation, if any.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub evaluated: Option<PartEvaluation>,
+    /// Session only, never saved: the latest regeneration of this content
+    /// produced no result (the worker failed, or the tessellation was
+    /// rejected), so the cached tessellation is older than the content.
+    /// Reopening the file retries.
+    #[serde(skip)]
+    pub failed: Option<PartEvaluation>,
 }
 
 fn first_feature_id() -> u64 {
@@ -477,6 +483,7 @@ impl PartData {
             next_feature_id: 1,
             stamp: 0,
             evaluated: None,
+            failed: None,
         };
         part.restamp();
         part
@@ -565,10 +572,28 @@ impl PartData {
             .is_some_and(|evaluated| evaluated.stamp == self.stamp)
     }
 
-    /// Issues from the latest regeneration of the current content.
+    /// The latest regeneration of the current content failed outright; the
+    /// cached tessellation shows an earlier version (see [`PartData::failed`]).
+    pub fn regeneration_failed(&self) -> bool {
+        !self.is_evaluated()
+            && self
+                .failed
+                .as_ref()
+                .is_some_and(|failed| failed.stamp == self.stamp)
+    }
+
+    /// The current content still needs regenerating: neither evaluated nor
+    /// failed in this session.
+    pub fn is_pending(&self) -> bool {
+        !self.is_evaluated() && !self.regeneration_failed()
+    }
+
+    /// Issues from the latest regeneration of the current content, or the
+    /// reason it failed.
     pub fn issues(&self) -> &[FeatureIssue] {
-        match &self.evaluated {
-            Some(evaluated) if evaluated.stamp == self.stamp => &evaluated.issues,
+        match (&self.evaluated, &self.failed) {
+            (Some(evaluated), _) if evaluated.stamp == self.stamp => &evaluated.issues,
+            (_, Some(failed)) if failed.stamp == self.stamp => &failed.issues,
             _ => &[],
         }
     }

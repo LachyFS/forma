@@ -873,10 +873,12 @@ impl Scene {
         Ok(id)
     }
 
-    /// Record issues for the current content of `part_id` without changing
-    /// its cached tessellation, for regenerations that produced nothing.
-    /// Returns false for stale stamps.
-    pub fn mark_part_evaluated(
+    /// Record that regenerating content `stamp` of `part_id` produced no
+    /// usable result. The cached tessellation and its evaluation are kept;
+    /// the failure is session state (`PartData::failed`), so it stops
+    /// resubmission now and is retried after reopening. Returns false for
+    /// stale stamps.
+    pub fn mark_part_failed(
         &mut self,
         part_id: u64,
         stamp: u64,
@@ -884,7 +886,7 @@ impl Scene {
     ) -> bool {
         match self.part_mut(part_id) {
             Some(part) if part.stamp == stamp => {
-                part.evaluated = Some(PartEvaluation { stamp, issues });
+                part.failed = Some(PartEvaluation { stamp, issues });
                 true
             }
             _ => false,
@@ -969,7 +971,9 @@ impl Scene {
                 }
             }
         }
-        self.part_mut(part_id).unwrap().evaluated = Some(PartEvaluation { stamp, issues });
+        let part = self.part_mut(part_id).unwrap();
+        part.evaluated = Some(PartEvaluation { stamp, issues });
+        part.failed = None;
         Ok(true)
     }
 

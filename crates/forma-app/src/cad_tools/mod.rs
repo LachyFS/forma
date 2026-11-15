@@ -760,7 +760,7 @@ impl Studio {
         self.cad_tool.pending.retain(|ghost| {
             scene
                 .part(ghost.part)
-                .is_some_and(|part| part.stamp == ghost.stamp && !part.is_evaluated())
+                .is_some_and(|part| part.stamp == ghost.stamp && part.is_pending())
         });
     }
 

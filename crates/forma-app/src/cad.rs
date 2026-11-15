@@ -634,7 +634,7 @@ impl Studio {
             .scene
             .parts
             .iter()
-            .filter(|part| !part.is_evaluated() && self.scene.part_users(part.id) > 0)
+            .filter(|part| part.is_pending() && self.scene.part_users(part.id) > 0)
             .filter(|part| self.cad.requested.get(&part.id) != Some(&part.stamp))
             .map(|part| (part.id, part.stamp))
             .collect();
@@ -670,7 +670,8 @@ impl Studio {
                     .map(|p| p.name.clone())
                     .unwrap_or_default();
                 let issues = result.issues.clone();
-                match self.scene.set_part_tessellation(
+                match install_regeneration(
+                    &mut self.scene,
                     result.part_id,
                     result.stamp,
                     result.mesh,
@@ -695,7 +696,9 @@ impl Studio {
                         self.invalidate(true, cx);
                     }
                     Ok(false) => {}
-                    Err(error) => self.status = format!("{name}: {error:#}"),
+                    Err(issue) => {
+                        self.status = format!("{name}: {} · {}", issue.message, issue.suggestion)
+                    }
                 }
             }
             HostEvent::RegenFailed {
@@ -708,9 +711,12 @@ impl Studio {
                 }
                 if self
                     .scene
-                    .mark_part_evaluated(part_id, stamp, vec![issue.clone()])
+                    .mark_part_failed(part_id, stamp, vec![issue.clone()])
                 {
-                    self.status = format!("{} · {}", issue.message, issue.suggestion);
+                    self.status = format!(
+                        "{} · {} · Showing the previous result",
+                        issue.message, issue.suggestion
+                    );
                 }
             }
             HostEvent::WorkerRestarted { reason } => {
@@ -826,6 +832,30 @@ impl Studio {
         self.status = format!("{name} is now an editable mesh · Tab to edit polygons");
         self.invalidate(true, cx);
     }
+}
+
+/// Install a regeneration result. A tessellation the scene rejects (over
+/// the scene's geometry budget, say) marks the part failed instead of
+/// leaving it "regenerating" and resubmitting on every change. Returns
+/// `Ok(false)` for stale results and the issue shown for rejected ones.
+pub(crate) fn install_regeneration(
+    scene: &mut Scene,
+    part_id: u64,
+    stamp: u64,
+    mesh: Option<Mesh>,
+    issues: Vec<forma_core::FeatureIssue>,
+) -> Result<bool, forma_core::FeatureIssue> {
+    scene
+        .set_part_tessellation(part_id, stamp, mesh, issues)
+        .map_err(|error| {
+            let issue = forma_core::FeatureIssue {
+                feature: 0,
+                message: format!("The regenerated part was not accepted ({error:#})"),
+                suggestion: "Choose a coarser tessellation quality or simplify the scene".into(),
+            };
+            scene.mark_part_failed(part_id, stamp, vec![issue.clone()]);
+            issue
+        })
 }
 
 /// Replace a mesh object's data with a part made from its mesh. The mesh
@@ -1072,7 +1102,7 @@ impl Studio {
                 .scene
                 .parts
                 .iter()
-                .all(|part| part.is_evaluated() || self.scene.part_users(part.id) == 0)
+                .all(|part| !part.is_pending() || self.scene.part_users(part.id) == 0)
     }
 }
 
@@ -1130,6 +1160,38 @@ mod tests {
                 result.faces.len()
             );
         }
+    }
+
+    #[test]
+    fn rejected_tessellations_mark_the_part_failed() {
+        // Review case: a tessellation the scene refused left the part
+        // "Regenerating…" forever and resubmitted it on every change.
+        let mut scene = Scene::empty();
+        let mut part = PartData::new(0, "Box");
+        part.push_feature(
+            "Box",
+            FeatureKind::Primitive(PrimitiveFeature {
+                shape: PrimitiveShape::Box { size: Vec3::ONE },
+                placement: Placement::default(),
+                operation: FeatureOperation::Join,
+            }),
+        );
+        let object = scene.add_part("Box", part).unwrap();
+        let part_id = scene.object(object).unwrap().part_id().unwrap();
+        let stamp = scene.part(part_id).unwrap().stamp;
+        let broken = Mesh::new(vec![Vec3::ZERO], vec![vec![0, 1, 2]]);
+        let issue =
+            install_regeneration(&mut scene, part_id, stamp, Some(broken), Vec::new()).unwrap_err();
+        assert!(issue.message.contains("not accepted"), "{}", issue.message);
+        let part = scene.part(part_id).unwrap();
+        assert!(part.regeneration_failed() && !part.is_pending());
+        assert_eq!(part.issues(), &[issue]);
+        assert!(scene.object(object).unwrap().mesh_id().is_none());
+        // Stale results are dropped without marking anything.
+        assert_eq!(
+            install_regeneration(&mut scene, part_id, stamp ^ 1, None, Vec::new()),
+            Ok(false)
+        );
     }
 
     #[test]

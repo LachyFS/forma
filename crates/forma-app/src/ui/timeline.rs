@@ -473,7 +473,7 @@ pub(crate) fn timeline(s: &Studio, t: Colors, cx: &mut Context<Studio>) -> Optio
         let key = (
             selected.unwrap_or(0),
             part.stamp,
-            part.is_evaluated(),
+            part.is_pending(),
             compact,
         );
         if state.reveal.take() || state.revealed.get() != Some(key) {
