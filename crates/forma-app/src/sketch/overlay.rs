@@ -511,7 +511,7 @@ fn label(
         center - point(px(width * 0.5), px(height * 0.5)),
         size(px(width), px(height)),
     );
-    let mut quad = fill(bounds, background).corner_radii(px(5.0));
+    let mut quad = fill(bounds, background).corner_radii(px(4.0));
     if let Some(border) = border {
         quad = quad.border_widths(px(1.0)).border_color(Hsla::from(border));
     }
@@ -566,7 +566,7 @@ pub(crate) fn paint(
                         hidden.extend(runs);
                     } else if *construction {
                         for run in &runs {
-                            stroke_dashed(window, run, 1.0, ink(c.muted, 0.7), [5.0, 4.0]);
+                            stroke_dashed(window, run, 1.0, ink(c.text_muted, 0.7), [5.0, 4.0]);
                         }
                     } else {
                         solid.extend(runs);
@@ -581,7 +581,7 @@ pub(crate) fn paint(
                 1.0,
                 ink(if selected { c.accent } else { c.text }, 0.28 * alpha),
             );
-            stroke_runs(window, &solid, 3.5, ink(c.panel, 0.55 * alpha));
+            stroke_runs(window, &solid, 3.5, ink(c.surface, 0.55 * alpha));
             stroke_runs(
                 window,
                 &solid,
@@ -691,11 +691,11 @@ fn paint_grid(active: &ActiveOverlay, projector: &Projector, c: Colors, window: 
     // Every line is stroked twice, dark under light, so the grid reads over
     // both bright and dark surfaces of the rendered frame.
     let base = [
-        (c.text, c.shell, 0.14 * minor_fade, 1.0),
-        (c.text, c.shell, 0.22, 1.0),
+        (c.text, c.canvas, 0.14 * minor_fade, 1.0),
+        (c.text, c.canvas, 0.22, 1.0),
         // Index 0 lines are the sketch axes: x is horizontal, y vertical.
-        (c.axis_ink[1], c.shell, 0.6, 1.3),
-        (c.axis_ink[0], c.shell, 0.6, 1.3),
+        (c.axis[1], c.canvas, 0.6, 1.3),
+        (c.axis[0], c.canvas, 0.6, 1.3),
     ];
     for (style, (light, dark, alpha, width)) in base.into_iter().enumerate() {
         for level in 0..LEVELS {
@@ -747,7 +747,7 @@ fn paint_active(
     }
     for curve in &active.reference {
         for run in curve_runs(frame, projector, curve) {
-            stroke_dashed(window, &run, 1.0, ink(c.muted, 0.55), [3.0, 3.0]);
+            stroke_dashed(window, &run, 1.0, ink(c.text_muted, 0.55), [3.0, 3.0]);
         }
     }
     // Curves: a soft halo under every stroke keeps them legible on any surface.
@@ -767,10 +767,10 @@ fn paint_active(
             } else if is_hovered {
                 ink(c.text, 0.9)
             } else {
-                ink(c.muted, 0.85)
+                ink(c.text_muted, 0.85)
             };
             for run in &runs {
-                stroke_dashed(window, run, 3.0, ink(c.panel, 0.35), [6.0, 4.0]);
+                stroke_dashed(window, run, 3.0, ink(c.surface, 0.35), [6.0, 4.0]);
                 stroke_dashed(
                     window,
                     run,
@@ -793,7 +793,7 @@ fn paint_active(
         .chain(&selected)
         .cloned()
         .collect();
-    stroke_runs(window, &all, 3.6, ink(c.shell, 0.5));
+    stroke_runs(window, &all, 3.6, ink(c.canvas, 0.5));
     stroke_runs(window, &normal, 1.6, ink(c.text, 0.95));
     stroke_runs(window, &hovered, 2.2, ink(c.accent, 0.75));
     stroke_runs(window, &selected, 2.4, ink(c.accent, 1.0));
@@ -803,15 +803,15 @@ fn paint_active(
             if *count > 1 {
                 dot(window, p, 4.0, ink(c.text, 0.9));
             } else {
-                dot(window, p, 7.0, ink(c.panel, 0.8));
-                ring(window, p, 3.0, 1.3, ink(c.alert, 0.95));
+                dot(window, p, 7.0, ink(c.surface, 0.8));
+                ring(window, p, 3.0, 1.3, ink(c.warning, 0.95));
             }
         }
     }
     if let Some(trim) = &active.hover.trim {
         for run in curve_runs(frame, projector, &trim.removed) {
-            stroke_runs(window, std::slice::from_ref(&run), 5.0, ink(c.panel, 0.7));
-            stroke_dashed(window, &run, 2.6, ink(c.alert, 1.0), [6.0, 3.0]);
+            stroke_runs(window, std::slice::from_ref(&run), 5.0, ink(c.surface, 0.7));
+            stroke_dashed(window, &run, 2.6, ink(c.danger, 1.0), [6.0, 3.0]);
         }
     }
     // Tool preview.
@@ -830,7 +830,7 @@ fn paint_active(
             stroke_dashed(window, run, 2.0, ink(c.accent, 1.0), [6.0, 4.0]);
         }
     } else {
-        stroke_runs(window, &preview, 4.5, ink(c.panel, 0.6));
+        stroke_runs(window, &preview, 4.5, ink(c.surface, 0.6));
         stroke_runs(window, &preview, 2.0, ink(c.accent, 1.0));
     }
     for arc in &active.arcs {
@@ -842,16 +842,21 @@ fn paint_active(
             })
             .collect();
         for run in plane_runs(frame, projector, &points) {
-            stroke_runs(window, std::slice::from_ref(&run), 1.0, ink(c.muted, 0.9));
+            stroke_runs(
+                window,
+                std::slice::from_ref(&run),
+                1.0,
+                ink(c.text_muted, 0.9),
+            );
         }
         let reference = [arc.center, arc.center + Vec2::X * arc.radius * 1.35];
         for run in plane_runs(frame, projector, &reference) {
-            stroke_dashed(window, &run, 1.0, ink(c.muted, 0.7), [3.0, 3.0]);
+            stroke_dashed(window, &run, 1.0, ink(c.text_muted, 0.7), [3.0, 3.0]);
         }
     }
     for point in &active.placed {
         if let Some(p) = screen(*point) {
-            dot(window, p, 7.0, ink(c.panel, 0.9));
+            dot(window, p, 7.0, ink(c.surface, 0.9));
             dot(window, p, 5.0, ink(c.accent, 1.0));
         }
     }
@@ -860,10 +865,10 @@ fn paint_active(
         let snap = &pointer.snap;
         for guide in &snap.guides {
             let color = match guide.kind {
-                GuideKind::Horizontal => ink(c.axis_ink[0], 0.95),
-                GuideKind::Vertical => ink(c.axis_ink[1], 0.95),
+                GuideKind::Horizontal => ink(c.axis[0], 0.95),
+                GuideKind::Vertical => ink(c.axis[1], 0.95),
                 GuideKind::Parallel | GuideKind::Perpendicular => ink(c.accent, 0.95),
-                GuideKind::Aligned => ink(c.muted, 0.9),
+                GuideKind::Aligned => ink(c.text_muted, 0.9),
             };
             let direction = (guide.to - guide.from).normalize_or_zero();
             let extend = 36.0 / pointer.pixels_per_unit.max(1.0e-6);
@@ -884,9 +889,9 @@ fn paint_active(
                     cx,
                     text,
                     center,
-                    ink(c.text, 0.95),
-                    ink(c.panel, 0.92),
-                    Some(ink(c.edge, 0.9)),
+                    ink(c.text_muted, 1.0),
+                    ink(c.overlay, 1.0),
+                    Some(gpui::rgba(c.hud_border)),
                     10.0,
                 );
             }
@@ -908,24 +913,28 @@ fn paint_active(
         };
         let (text_color, background, border) = if dim.invalid {
             (
-                ink(c.alert, 1.0),
-                ink(c.panel, 0.95),
-                Some(ink(c.alert, 1.0)),
+                ink(c.danger, 1.0),
+                ink(c.overlay, 0.95),
+                Some(ink(c.danger, 1.0)),
             )
         } else if dim.locked {
             (
-                ink(c.accent, 1.0),
-                ink(c.active, 0.97),
-                Some(ink(c.accent_line, 1.0)),
+                ink(c.accent_text, 1.0),
+                ink(c.accent_soft, 0.97),
+                Some(ink(c.accent_border, 1.0)),
             )
         } else if dim.active {
             (
                 ink(c.text, 1.0),
-                ink(c.panel, 0.95),
-                Some(ink(c.accent_line, 1.0)),
+                ink(c.overlay, 1.0),
+                Some(ink(c.accent_border, 1.0)),
             )
         } else {
-            (ink(c.text, 0.95), ink(c.panel, 0.9), None)
+            (
+                ink(c.text, 1.0),
+                ink(c.overlay, 1.0),
+                Some(gpui::rgba(c.hud_border)),
+            )
         };
         label(
             window, cx, &text, center, text_color, background, border, 11.0,
@@ -963,7 +972,7 @@ fn paint_snap_marker(
     c: Colors,
 ) {
     let accent = ink(c.accent, 1.0);
-    let halo = ink(c.panel, 0.85);
+    let halo = ink(c.surface, 0.85);
     let at = |x: f32, y: f32| p + point(px(x), px(y));
     match kind {
         SnapKind::Endpoint => {

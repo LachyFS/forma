@@ -468,7 +468,7 @@ impl Element for CodeElement {
                 lines.push((offset, line));
                 numbers.push(shape(
                     format!("{:>4}", row + 1),
-                    rgb(editor.colors.faint).into(),
+                    rgb(editor.colors.text_faint).into(),
                 ));
             }
             offset += text.len() + 1;
@@ -529,7 +529,7 @@ impl Element for CodeElement {
                                 point(origin.x + a, origin.y),
                                 size((b - a).max(px(1.)), px(ROW)),
                             ),
-                            rgb(colors.active),
+                            rgb(colors.accent_soft),
                         ));
                     }
                     let _ = line.paint(origin, px(ROW), window, cx);
@@ -539,7 +539,7 @@ impl Element for CodeElement {
                                 point(origin.x + line.x_for_index(cursor - start), origin.y),
                                 size(px(1.5), px(ROW)),
                             ),
-                            rgb(colors.accent),
+                            rgb(colors.focus),
                         ));
                     }
                 }
@@ -566,9 +566,11 @@ impl Render for CodeEditor {
             .w_full()
             .h(px(HEIGHT))
             .overflow_hidden()
-            .bg(rgb(self.colors.well))
+            .bg(rgb(self.colors.sunken))
             .font_family(if cfg!(target_os = "macos") {
                 "Menlo"
+            } else if cfg!(target_os = "windows") {
+                "Consolas"
             } else {
                 "DejaVu Sans Mono"
             })

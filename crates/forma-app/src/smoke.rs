@@ -871,8 +871,8 @@ async fn check_theme_workflow(
                 let colors = s.theme_colors();
                 ensure!(
                     editor.colors.text == colors.text
-                        && editor.colors.well == colors.well
-                        && editor.colors.active == colors.active,
+                        && editor.colors.sunken == colors.sunken
+                        && editor.colors.accent_soft == colors.accent_soft,
                     "shader editor did not inherit the selected theme"
                 );
                 Ok(())
@@ -963,7 +963,13 @@ async fn check_panel_resize(window: WindowHandle<Studio>, cx: &mut AsyncApp) -> 
     })?;
     // Exercise the same pointer handlers as the divider, including large jumps
     // beyond its bounds and a release outside the window.
-    for (delta, expected) in [(-120., 412.), (140., 272.), (-2000., 560.), (2000., 240.)] {
+    let default = crate::ui::SIDEBAR_DEFAULT_WIDTH;
+    for (delta, expected) in [
+        (-120., default + 120.),
+        (140., default - 20.),
+        (-2000., 560.),
+        (2000., 240.),
+    ] {
         let start = window.update(cx, |s, _, _| {
             point(s.bounds.get().right() + px(4.), px(120.))
         })?;
@@ -990,7 +996,7 @@ async fn check_panel_resize(window: WindowHandle<Studio>, cx: &mut AsyncApp) -> 
             );
         })?;
         wait_for(window, cx, |s| {
-            (f32::from(s.bounds.get().size.width - initial_width) - (292. - expected)).abs() < 1.
+            (f32::from(s.bounds.get().size.width - initial_width) - (default - expected)).abs() < 1.
         })
         .await?;
         settle(window, cx).await?;
@@ -1000,7 +1006,7 @@ async fn check_panel_resize(window: WindowHandle<Studio>, cx: &mut AsyncApp) -> 
                 "panel drag did not produce the expected sidebar width {expected}"
             );
             ensure!(
-                (f32::from(s.bounds.get().size.width - initial_width) - (292. - expected)).abs()
+                (f32::from(s.bounds.get().size.width - initial_width) - (default - expected)).abs()
                     < 1.,
                 "viewport layout did not follow the sidebar width: initial {}, actual {}, sidebar {expected}",
                 f32::from(initial_width),

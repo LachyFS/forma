@@ -55,26 +55,6 @@ pub enum DrawCommand {
     PolygonSides(i32),
 }
 
-impl DrawCommand {
-    pub fn hint(self) -> &'static str {
-        match self {
-            Self::NewSketch => "Draw a new sketch on the face or view plane under the pointer · D",
-            Self::EditSketch => "Edit the selected sketch · Return or double-click",
-            Self::Finish => "Finish the sketch · Return",
-            Self::Tool(DrawTool::Select) => "Select and drag curves and points · Q",
-            Self::Tool(DrawTool::Line) => "Line and polyline · L",
-            Self::Tool(DrawTool::Rectangle) => "Rectangle · R, press again for centre",
-            Self::Tool(DrawTool::Circle) => "Centre and radius circle · C",
-            Self::Tool(DrawTool::Arc) => "Three point arc · A",
-            Self::Tool(DrawTool::Polygon) => "Regular polygon · P, + / − sides",
-            Self::Tool(DrawTool::Trim) => "Trim a curve back to its nearest crossings · T",
-            Self::ToggleConstruction => "Construction geometry · X",
-            Self::ToggleRectangleMode => "Corner or centre rectangle · R",
-            Self::PolygonSides(_) => "Polygon sides · + / −",
-        }
-    }
-}
-
 /// A value derived from scene state, rebuilt when its key changes.
 type Cached<K, T> = RefCell<Option<(K, Rc<T>)>>;
 

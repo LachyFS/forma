@@ -1450,6 +1450,76 @@ fn segment_hits_box(a: Vec2, b: Vec2, low: Vec2, high: Vec2) -> bool {
     true
 }
 
+impl Studio {
+    /// Status bar keycap hints while drawing.
+    pub(crate) fn draw_input_hints(&self) -> Option<Vec<(&'static str, &'static str)>> {
+        let session = self.sketch.session.as_ref()?;
+        let tools = ("L R C A P T", "Tools");
+        let mut hints = match (session.tool, session.step) {
+            (DrawTool::Select, _) => vec![
+                ("Click", "Select"),
+                ("Drag", "Move or box"),
+                ("Delete", "Remove"),
+                ("X", "Construction"),
+                tools,
+                ("Return", "Finish"),
+            ],
+            (DrawTool::Trim, _) => vec![("Click", "Trim piece"), tools, ("Return", "Finish")],
+            (_, Step::Line { arc, .. }) => vec![
+                ("Click", "Next point"),
+                ("0–9", "Length"),
+                ("Tab", "Angle"),
+                if arc {
+                    ("L", "Straight")
+                } else {
+                    ("A", "Tangent arc")
+                },
+                ("Return", "End line"),
+                ("Ctrl", "Free"),
+            ],
+            (_, step) if step.is_active() => vec![
+                ("Click", "Place"),
+                ("0–9", "Exact value"),
+                ("Tab", "Next value"),
+                ("Esc", "Cancel"),
+                ("Ctrl", "Free"),
+            ],
+            _ => vec![
+                ("Click", "Start"),
+                ("Ctrl", "Free"),
+                tools,
+                ("X", "Construction"),
+                ("Return", "Finish"),
+            ],
+        };
+        match session.tool {
+            DrawTool::Polygon => hints.insert(1, ("+ −", "Sides")),
+            DrawTool::Rectangle if !session.step.is_active() => hints.insert(1, ("R", "Centre")),
+            _ => {}
+        }
+        Some(hints)
+    }
+
+    /// Status bar selection readout while drawing.
+    pub(crate) fn draw_summary(&self) -> Option<String> {
+        let session = self.sketch.session.as_ref()?;
+        if !session.selection.is_empty() {
+            let count = session.selection.len();
+            return Some(format!(
+                "{count} curve{} selected",
+                if count == 1 { "" } else { "s" }
+            ));
+        }
+        let analysis = self.sketch_analysis()?;
+        let (curves, profiles) = (analysis.entities.len(), analysis.profiles.len());
+        Some(format!(
+            "{curves} curve{} · {profiles} profile{}",
+            if curves == 1 { "" } else { "s" },
+            if profiles == 1 { "" } else { "s" }
+        ))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -9,8 +9,14 @@ use std::{
     path::PathBuf,
     sync::atomic::{AtomicU64, Ordering},
     sync::{Arc, Condvar, Mutex},
-    thread,
+    thread::{self, JoinHandle},
+    time::{Duration, Instant},
 };
+
+/// GPU drivers tear down their own threads at process exit. A render thread
+/// still inside the driver at that point can corrupt the heap (observed with
+/// NVIDIA Vulkan), so workers are stopped and joined before the app exits.
+const SHUTDOWN_WAIT: Duration = Duration::from_secs(3);
 
 #[derive(Clone)]
 pub struct Request {
@@ -76,6 +82,7 @@ pub struct RenderWorker {
     output: OutputMailbox,
     backend: Backend,
     denoise: DenoiseQueue,
+    threads: Mutex<Vec<JoinHandle<()>>>,
 }
 
 impl RenderWorker {
@@ -86,7 +93,7 @@ impl RenderWorker {
         let worker_denoise = denoise.clone();
         let worker_input = input.clone();
         let worker_output = output.clone();
-        thread::Builder::new()
+        let viewport = thread::Builder::new()
             .name("forma-viewport".into())
             .spawn(move || {
                 let mut renderer = match Renderer::with_backend(backend) {
@@ -205,12 +212,14 @@ impl RenderWorker {
                 }
             })
             .expect("could not start render worker");
+        let threads = Mutex::new(vec![viewport, denoise.take_thread()]);
         (
             Self {
                 input,
                 output,
                 backend,
                 denoise,
+                threads,
             },
             notifications,
         )
@@ -235,7 +244,7 @@ impl RenderWorker {
         request.settings.show_grid = false;
         let output = self.output.clone();
         let backend = self.backend;
-        thread::Builder::new()
+        let export = thread::Builder::new()
             .name("forma-image-export".into())
             .spawn(move || {
                 let result = (|| -> anyhow::Result<()> {
@@ -271,6 +280,31 @@ impl RenderWorker {
                 });
             })
             .expect("could not start image export");
+        let mut threads = self.threads.lock().unwrap();
+        threads.retain(|thread| !thread.is_finished());
+        threads.push(export);
+    }
+
+    /// Stops the render and denoise threads and waits briefly for every worker,
+    /// including running image exports, to leave the GPU driver. Idempotent.
+    pub fn shutdown(&self) {
+        self.denoise.stop();
+        let (lock, wake) = &*self.input;
+        if let Ok(mut inbox) = lock.lock() {
+            inbox.stop = true;
+            inbox.request = None;
+        }
+        wake.notify_one();
+        let threads = std::mem::take(&mut *self.threads.lock().unwrap_or_else(|e| e.into_inner()));
+        let deadline = Instant::now() + SHUTDOWN_WAIT;
+        for thread in threads {
+            while !thread.is_finished() && Instant::now() < deadline {
+                thread::sleep(Duration::from_millis(2));
+            }
+            if thread.is_finished() {
+                let _ = thread.join();
+            }
+        }
     }
 }
 
@@ -300,6 +334,7 @@ struct DenoiseInbox {
 struct DenoiseQueue {
     inbox: Arc<(Mutex<DenoiseInbox>, Condvar)>,
     current: Arc<AtomicU64>,
+    thread: Arc<Mutex<Option<JoinHandle<()>>>>,
 }
 
 impl DenoiseQueue {
@@ -307,9 +342,10 @@ impl DenoiseQueue {
         let queue = Self {
             inbox: Arc::new((Mutex::new(DenoiseInbox::default()), Condvar::new())),
             current: Arc::new(AtomicU64::new(0)),
+            thread: Arc::new(Mutex::new(None)),
         };
         let worker = queue.clone();
-        thread::Builder::new()
+        let thread = thread::Builder::new()
             .name("forma-viewport-denoise".into())
             .spawn(move || {
                 // Initialize lazily, once, on this thread. Native handles never cross
@@ -357,7 +393,16 @@ impl DenoiseQueue {
                 }
             })
             .expect("could not start denoising worker");
+        *queue.thread.lock().unwrap() = Some(thread);
         queue
+    }
+
+    fn take_thread(&self) -> JoinHandle<()> {
+        self.thread
+            .lock()
+            .unwrap()
+            .take()
+            .expect("denoising worker thread is taken once")
     }
 
     fn set_generation(&self, generation: u64) {
@@ -415,12 +460,7 @@ fn presentation_image(width: u32, height: u32, rgba: &[u8]) -> anyhow::Result<Ar
 
 impl Drop for RenderWorker {
     fn drop(&mut self) {
-        self.denoise.stop();
-        let (lock, wake) = &*self.input;
-        if let Ok(mut inbox) = lock.lock() {
-            inbox.stop = true;
-        }
-        wake.notify_one();
+        self.shutdown();
     }
 }
 
@@ -453,6 +493,7 @@ mod tests {
         let queue = DenoiseQueue {
             inbox: Arc::new((Mutex::new(DenoiseInbox::default()), Condvar::new())),
             current: Arc::new(AtomicU64::new(1)),
+            thread: Arc::new(Mutex::new(None)),
         };
         let job = |generation, samples| DenoiseJob {
             generation,
