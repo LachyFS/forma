@@ -108,15 +108,25 @@ cargo run --locked --release -p forma
   units and a selected/visible scope for binary STL. Export the current render mode to PNG
   while continuing to edit.
 - Personalize the editor with five color themes: Forma Dark, Paper, Midnight,
-  Synthwave and Matcha. Open **Theme** in the title bar, **View → Color Theme…**,
+  Synthwave and Matcha. Open the palette button in the title bar, **View → Color Theme…**,
   or search **Preferences: Color Theme** in the command panel. Type to filter,
   hover or use arrows to preview, then click or press Return to save your choice.
   Escape or clicking outside cancels. The theme is remembered across launches.
-- Search commands with `⌘K`, type a name, then use arrows and Return to execute.
-  Native menus and the command panel expose the same editor operations.
-- Drag the divider between the viewport and the Scene Collection/inspector to
-  adjust their widths. Double-click the divider to reset the sidebar width.
-  Panel widths are kept for the session and do not change the project.
+- Search commands with `⌘K` or the search field in the title bar, type a name, then
+  use arrows and Return to execute. Commands are grouped by area, show their
+  shortcuts, and recently run commands appear first. Native menus and the command
+  panel expose the same editor operations.
+- The viewport fills the window. Floating controls hold the tools and **Add** menu
+  (left), the Vertex/Edge/Face filter while editing, and the views menu,
+  projection, framing, grid, measurements and shading modes (top right). The title
+  bar switches between **Object** and **Edit** modes.
+- Drag any numeric inspector field left or right to adjust it (hold `Shift` for
+  fine steps; one undo step per drag), or click it to type an exact expression.
+  Double-click an object in the scene list to rename it in place.
+- Drag the divider between the viewport and the scene list/inspector to
+  adjust their widths, and the divider between the scene list and the inspector to
+  adjust their heights. Double-click a divider to reset it.
+  Panel sizes are kept for the session and do not change the project.
 
 OBJ import combines groups into one object. Texture coordinates, supplied normals
 and MTL materials are not retained; normals are generated from the editable
@@ -133,9 +143,9 @@ Forma's **Y up** convention; there is no automatic conversion to Z up. STL carri
 geometry without materials. Invalid imports leave the scene intact, and failed
 exports preserve an existing destination file.
 
-Open **Formats** beside **Export image** in the title bar to choose PNG, OBJ or
-STL. At narrower window widths, Formats appears as a chevron. The direct
-**Export image** button remains available for PNG export.
+Open the chevron beside **Export** in the title bar to choose PNG, OBJ or STL.
+**Export** itself exports a PNG image directly; at narrower window widths it
+shows only its icon.
 
 ## Render modes
 
@@ -166,7 +176,8 @@ for sharp Retina rendering, within a proportional 2560 × 1600 resolution cap.
 Camera updates and completed frames use event-driven delivery. Material Preview
 uses Metal ray-tracing acceleration on the native macOS backend where supported, keeping full preview quality
 during navigation.
-Its lighting dropdown provides Studio, Courtyard and Sunset
+Its lighting popover (the sun button beside the shading modes, or **Environment**
+on the inspector's **Render** page) provides Studio, Courtyard and Sunset
 environments, custom Radiance `.hdr` loading, rotation, intensity, background
 visibility and blur. **Scene world** uses the project's world color and strength.
 Otherwise preview lighting is independent of the scene world. Visible emission
@@ -204,7 +215,7 @@ The in-app command panel opens with
 
 | Action | Input |
 | --- | --- |
-| Select object / component | Left click; toolbar selects Object, Face, Edge, or Vertex; `Tab` toggles Object and the last component mode |
+| Select object / component | Left click; the title bar switches Object and Edit, and the viewport filter selects Vertex, Edge, or Face; `Tab` toggles Object and the last component mode |
 | Extend selection | `Shift` + click; works on objects and mesh components |
 | All / none / invert / linked | `A` / `Alt+A` / `⌘I` / `L` (linked selects connected mesh components) |
 | Box selection | `B`, then drag; `Shift` adds and `Ctrl` subtracts |
@@ -251,7 +262,7 @@ text or appends at the end. Unsupported or multiline paste leaves the existing
 input intact. `Tab` and `Shift+Tab` move through the current inspector group,
 skipping hidden controls; invalid input keeps its field active for correction.
 
-Inspector **Dimensions · m (local)** measures the mesh along its local axes after its
+Inspector **Dimensions** (metres, local) measures the mesh along its local axes after its
 own scale, excluding rotation and parent transforms; changing a dimension adjusts
 that scale axis and preserves mirroring. Flat axes require geometry before they can
 be given thickness. **World dimensions** measures the visible selection's bounding
@@ -259,9 +270,9 @@ box along world axes, including rotation and hierarchy. Edge mode also shows the
 total selected edge length and up to 12 individual labels. Measurement overlays
 are session controls and never appear in exported images.
 
-In Object mode, **Apply scale** bakes local scale into selected meshes and resets
-their scale to one. **Apply rot / scale** also bakes rotation and resets it to zero.
-**Origin to geometry center** moves each origin to its mesh's local bounding-box
+In Object mode, **Apply → Scale** bakes local scale into selected meshes and resets
+their scale to one. **Apply → Rot & scale** also bakes rotation and resets it to zero.
+**Origin → To geometry center** moves each origin to its mesh's local bounding-box
 center. These commands preserve world geometry, material links and descendant
 transforms. Edited objects receive independent mesh data when needed to protect
 other linked instances; unchanged objects keep their existing links. Each command

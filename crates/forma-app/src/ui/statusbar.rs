@@ -137,12 +137,13 @@ pub(super) fn statusbar(
     let text = |chars: usize| chars as f32 * 6.2;
     let message = text(s.status.chars().count()).min(if wide { 420. } else { 260. }) + 24.;
     let selection = selection_summary(s).map_or(0., |summary| text(summary.len()) + 25.);
-    let device = if wide {
-        text(s.device_name.chars().count()).min(260.) + 30.
+    let device_width = if wide { 260. } else { 150. };
+    let device = text(s.device_name.chars().count()).min(device_width) + 30.;
+    let rendered = if s.settings.mode == RenderMode::Rendered {
+        130.
     } else {
         0.
     };
-    let rendered = if s.settings.mode == RenderMode::Rendered { 130. } else { 0. };
     let mut budget = width - message - selection - device - rendered - 190.;
     let hints: Vec<_> = input_hints(s)
         .into_iter()
@@ -152,7 +153,7 @@ pub(super) fn statusbar(
         })
         .collect();
     let update = match &s.updates.state {
-        State::Ready(_) => Some(("Restart to update", BadgeTone::Accent)),
+        State::Ready(_) => Some(("Update ready", BadgeTone::Accent)),
         State::Downloading(_) => Some(("Downloading update…", BadgeTone::Neutral)),
         State::Available(_) => Some(("Update available", BadgeTone::Accent)),
         _ => None,
@@ -240,25 +241,23 @@ pub(super) fn statusbar(
                 .child(segment_text(t, format!("{:.1} ms", s.render_ms)))
                 .tooltip(tip(t, "Last frame render time", None)),
         )
-        .when(wide, |d| {
-            d.child(
-                row()
-                    .id("render-device")
-                    .gap(px(SP_1))
-                    .flex_shrink_0()
-                    .max_w(px(260.))
-                    .child(icon(Icon::Device, 12., t.text_faint))
-                    .child(
-                        div()
-                            .min_w(px(0.))
-                            .overflow_hidden()
-                            .text_ellipsis()
-                            .whitespace_nowrap()
-                            .child(s.device_name.clone()),
-                    )
-                    .tooltip(tip(t, s.device_name.clone(), None)),
-            )
-        })
+        .child(
+            row()
+                .id("render-device")
+                .gap(px(SP_1))
+                .flex_shrink_0()
+                .max_w(px(device_width))
+                .child(icon(Icon::Device, 12., t.text_faint))
+                .child(
+                    div()
+                        .min_w(px(0.))
+                        .overflow_hidden()
+                        .text_ellipsis()
+                        .whitespace_nowrap()
+                        .child(s.device_name.clone()),
+                )
+                .tooltip(tip(t, s.device_name.clone(), None)),
+        )
         .child(match update {
             Some((label, tone)) => on_command(
                 row()
