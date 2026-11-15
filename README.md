@@ -1,13 +1,69 @@
 # Forma
 
-A native Rust geometry editor built with GPUI, Metal, and wgpu. Forma combines a compact,
-keyboard-driven workspace with direct mesh editing and a progressive path-traced
-viewport on macOS, Windows, and Linux.
+Forma is a native 3D modeller where polygon meshes and parametric CAD parts live
+in the same scene. Shape freeform objects with Blender-style mesh editing, build
+precise parts from sketches with a Fusion-style feature timeline, or push and
+pull faces directly — and move geometry between the two whenever the work calls
+for it. It is written in Rust with a GPUI interface, a B-rep kernel on
+[truck](https://github.com/ricosjp/truck) and a GPU path tracer (Metal or wgpu),
+and runs on macOS, Windows and Linux.
 
-The application opens into a small studio scene: a teal torus, metallic sphere,
-rounded cube, plinth and emissive area light.
+![Forma: polygon meshes and a parametric bracket in one scene](docs/images/workspace.png)
 
-![Forma native GPUI workspace](docs/images/workspace.png)
+Forma opens on a small studio: a torus, a copper sphere and a rounded cube are
+polygon meshes; the machined bracket beside them is a CAD part with a real
+history — an L profile sketched and extruded, a gusset, mounting holes cut from
+sketches on two faces, and chamfered corners. The bracket starts selected, so
+its timeline sits at the bottom of the viewport: click any step to change it and
+the part regenerates. **New project** (`⌘N`) opens the same scene.
+
+## Three ways to make geometry
+
+| Mesh editing | Draw, then features | Direct modelling |
+| --- | --- | --- |
+| ![Face editing on the torus mesh](docs/images/mesh-editing.png) | ![Draw mode with shaded profile regions on the ground plane](docs/images/draw-mode.png) | ![Extrude tool previewing a join on a part face](docs/images/direct-modelling.png) |
+
+**Mesh editing.** Polygon meshes with Object and Edit modes in the Blender
+mould: vertex, edge and face selection; move, rotate and scale with axis and
+plane constraints and typed expressions (`25mm`, `(2+3)*10cm`); extrude, inset,
+Catmull–Clark subdivision, convex bevel, triangulation and normal repair; PBR,
+glass and custom-shader materials. See [meshes and the workspace](#meshes-and-the-workspace).
+
+**Draw, then features.** [Draw mode](#draw-mode) sketches exact 2D geometry on
+the ground, a view plane or any flat face, with snapping, inference and typed
+dimensions; closed regions become profiles. Extrude or revolve them into a
+[part](#parts): every step becomes a feature on the part's
+[timeline](#feature-timeline), its values stay editable in the inspector, and
+the sketch stays linked, so editing it later updates the part.
+
+**Direct modelling.** Point at a sketch region and press `E` to extrude it, or
+`P` to push and pull a face of a part *or* a mesh. Join and Cut are inferred from
+where the sketch lies; `Tab` on a part selects its B-rep faces and edges for
+push/pull and chamfers; a small panel keeps the last operation adjustable. On a
+part, each step still lands on the timeline as a feature. See
+[direct modelling](#direct-modelling).
+
+### Meshes and parts together
+
+- **One scene.** Parts and meshes share the outliner, transforms, parenting,
+  collections, materials, the four render modes, picking, measurements, undo
+  and `.forma` files.
+- **Convert either way.** **Convert to part** turns a closed, manifold mesh into
+  a B-rep solid (flat polygons become faces; coplanar neighbours merge).
+  **Convert to mesh** bakes a part into editable polygons (undo restores the
+  history).
+- **Booleans across types.** **Join**, **Cut** and **Intersect** combine any
+  selected parts and meshes into the active object; meshes convert on the way,
+  and each tool keeps its own history inside the new feature.
+- **Push/pull on both.** On a part it adds a feature; on a mesh the polygon
+  slides with its neighbours or extrudes.
+- **Exchange.** STEP imports and exports parts as exact B-rep solids; OBJ and
+  STL carry everything as triangles (part tessellations included); PNG exports
+  the current render mode.
+
+The kernel runs in a separate worker process, so a slow or crashing boolean
+never freezes or takes down the editor. Its limits are listed honestly under
+[limitations](#limitations).
 
 ## Downloads and releases
 
@@ -81,10 +137,13 @@ For an optimized executable:
 cargo run --locked --release -p forma
 ```
 
-## Current workflow
+## Meshes and the workspace
 
-- Add cubes, spheres, cylinders, tori and planes; select objects in the viewport
-  or outliner, duplicate, hide and delete them.
+- Add cubes, spheres, cylinders, tori and planes from the **Add** menu on the
+  tool rail (which also adds part primitives and imports OBJ, STL and STEP);
+  select objects in the viewport or outliner, duplicate, hide and delete them.
+  An empty scene offers the same starts — mesh, part, a sketch on the ground —
+  in the middle of the viewport.
 - Move, rotate and scale object groups and component selections with global/local axis and plane constraints,
   arithmetic and unit input, and viewport handles. Set exact local dimensions in the inspector;
   copy/paste numeric expressions and use `Tab` between fields. Show world dimensions and selected
@@ -122,7 +181,7 @@ cargo run --locked --release -p forma
 - The viewport fills the window. Floating controls hold the tools and **Add** menu
   (left), the Vertex/Edge/Face filter while editing, and the views menu,
   projection, framing, grid, measurements and shading modes (top right). The title
-  bar switches between **Object** and **Edit** modes.
+  bar switches between **Object**, **Edit** and **Draw** modes.
 - Drag any numeric inspector field left or right to adjust it (hold `Shift` for
   fine steps; one undo step per drag), or click it to type an exact expression.
   Double-click an object in the scene list to rename it in place.
@@ -130,6 +189,8 @@ cargo run --locked --release -p forma
   adjust their widths, and the divider between the scene list and the inspector to
   adjust their heights. Double-click a divider to reset it.
   Panel sizes are kept for the session and do not change the project.
+
+![The torus mesh selected: transform, dimensions and surface in the inspector](docs/images/material-preview.png)
 
 OBJ import combines groups into one object. Texture coordinates, supplied normals
 and MTL materials are not retained; normals are generated from the editable
@@ -146,9 +207,10 @@ Forma's **Y up** convention; there is no automatic conversion to Z up. STL carri
 geometry without materials. Invalid imports leave the scene intact, and failed
 exports preserve an existing destination file.
 
-Open the chevron beside **Export** in the title bar to choose PNG, OBJ or STL.
-**Export** itself exports a PNG image directly; at narrower window widths it
-shows only its icon.
+Open the chevron beside **Export** in the title bar to choose PNG, OBJ, STL or
+STEP. A format with nothing to write stays listed, dimmed, with the reason
+(“Needs a CAD part”, “Every part is hidden”). **Export** itself exports a PNG
+image directly; at narrower window widths it shows only its icon.
 
 ## Draw mode
 
@@ -156,7 +218,8 @@ Draw mode sketches 2D curves on a plane. Closed regions become **profiles**,
 which CAD features extrude or revolve.
 
 **Start a sketch** with `D`, the **Draw** button in the title bar, or **Draw: New
-sketch** in the command panel. The sketch goes on the planar face under the
+sketch** in the command panel (an empty scene's **Draw a sketch** always starts
+on the ground). The sketch goes on the planar face under the
 pointer (aligned to that face's longest edge, with its origin on a face corner),
 else on the plane of the current orthographic view (Front, Top, …), else on the
 ground. The camera eases round to look straight at the plane (and zooms in on a
@@ -231,7 +294,7 @@ to OBJ/STL like any object.
 | **Join / Cut / Intersect** | command panel (“Combine: …”), **Part** menu | Select the tools, then the target last: the tools are combined into the target and removed. Meshes are converted on the way. The tools keep their own histories inside the new feature. |
 | **Convert to part** | command panel, **Part** menu | A closed, manifold mesh becomes a part; flat polygons become faces and coplanar neighbours merge. |
 | **Convert to mesh** | command panel, **Part** menu | Bakes a part into an editable mesh: flat faces become single polygons, curved faces triangles. |
-| **Import / Export STEP…** | **Add → Import**, **File** menu, command panel | STEP (ISO 10303-21) in millimetres; export uses the selected parts, or all visible parts. |
+| **Import / Export STEP…** | **Add → Import**, the **Export** menu, **File** menu, command panel | STEP (ISO 10303-21) in millimetres; export uses the selected parts, or all visible parts. |
 
 Regeneration runs in a separate `forma --cad-worker` process, so editing never
 waits on the kernel and a kernel crash or hang cannot take Forma down: the
@@ -240,6 +303,8 @@ tools do not apply to parts; `Tab` on a part edits its B-rep faces and edges
 instead (see [part edit mode](#part-edit-mode)).
 
 ### Direct modelling
+
+![Push/Pull on a part face: the ghost shows the pulled face and its distance](docs/images/push-pull.png)
 
 The same direct tools work on sketches, parts and meshes. Every tool previews
 instantly with a ghost drawn in the viewport — neutral for a new part, accent
@@ -323,6 +388,8 @@ back, add a feature in the middle of the history, and roll forward again.
 
 ### Feature timeline
 
+![The startup bracket with its Upright holes cut selected: timeline chips below, feature values in the inspector](docs/images/timeline.png)
+
 Selecting a part shows its history as a strip of chips at the bottom of the
 viewport, one per feature: its kind, name and a compact value (`0.6 m`,
 `2.2×0.3×1.5`). A red glyph marks a feature the kernel could not apply (the
@@ -377,7 +444,9 @@ if the part moved) and returns to the feature when you finish. If the sketch was
 deleted, it is rebuilt from the feature's embedded copy as a hidden sketch and
 relinked.
 
-Current limitations, honestly:
+### Limitations
+
+Honestly, as of this release:
 
 - Join and Cut are inferred only for sketches lying on a part's face; other
   placements start as a new part (override in the HUD). Revolve does not infer
@@ -391,9 +460,9 @@ Current limitations, honestly:
   change settles; very heavy parts show the ghost for a moment longer.
 - Region picks and face/edge references are stored geometrically; heavy sketch
   edits can still leave a feature pointing at nothing, which the timeline flags.
-- truck 0.4 has no fillets. Chamfers work on straight, convex edges between
-  flat faces that end at convex corners.
-- Booleans with spheres, cones and tori usually fail in truck 0.4 (the feature
+- The pinned truck releases have no fillets. Chamfers work on straight, convex
+  edges between flat faces that end at convex corners.
+- Booleans with spheres, cones and tori usually fail in truck (the feature
   is reported and skipped); boxes, cylinders, extrusions and converted meshes
   combine reliably. Sketches on a face cut and join exactly; other faces that
   touch exactly are retried with the tool enlarged by a fraction of a
@@ -463,9 +532,12 @@ there is no UV editor. See [surface shaders and textures](docs/MATERIALS.md) for
 custom code, image controls, glass behavior and limits. Rendered mode uses
 Open Image Denoise for the viewport and PNG exports. HDR environment
 imports currently support Radiance `.hdr` files for Material Preview. Animation,
-sculpting, modifiers beyond destructive subdivision, UV editing and a full
-vertex/edge modelling toolkit are outside the current application. See the
-[renderer notes](crates/forma-render/README.md) for transport details and limits.
+sculpting, a modifier stack (subdivision is destructive), UV editing and mesh
+tools such as loop cut, knife, merge, bridge and per-edge bevel are not
+implemented yet. See the [renderer notes](crates/forma-render/README.md) for
+transport details and limits.
+
+![Rendered mode: the studio scene path traced and denoised](docs/images/rendered.png)
 
 ## Controls
 
@@ -473,6 +545,8 @@ The tables use macOS notation: on Windows/Linux use **Ctrl** in place of **⌘**
 and **Alt** in place of **Option**. The viewport must have keyboard focus.
 The in-app command panel opens with
 `⌘K`, `Space` or `Shift+A`; `H` opens the shortcut reference.
+
+![The command panel: every editor command, grouped by area, with its shortcut](docs/images/commands.png)
 
 | Action | Input |
 | --- | --- |
@@ -573,11 +647,18 @@ cargo run --locked -p forma-render --bin render-smoke -- artifacts/render 128
 ```
 
 The native smoke test opens its own GPUI window without taking keyboard focus.
-It exercises keyboard dispatch, continuous pointer-handler input, real GPU
-frames, modelling commands, background document operations, and concurrent PNG
-export. On macOS it captures its own window; other platforms export viewport images
-from the smoke workflow. Native file-picker
-interaction and OS pointer routing remain manual checks.
+It checks the startup scene, then exercises keyboard dispatch, continuous
+pointer-handler input, real GPU frames, modelling, Draw, part, timeline and
+direct-modelling workflows (through a real CAD worker process), background
+document operations, and concurrent PNG export. On macOS, and on Linux under
+X11 or Xwayland, it captures its own window; other platforms export viewport
+images from the smoke workflow. Native file-picker interaction and OS pointer
+routing remain manual checks.
+
+`forma --ui-capture DIR [state…]` saves full-window screenshots of the
+workspace states listed in `crates/forma-app/src/capture.rs` (panels, menus,
+themes, Draw, timeline and tool states) for design review; the images in
+`docs/images/` come from it.
 
 Core geometry tests can run independently with `cargo test --locked -p forma-core`.
 For CPU-only triangulation and validation timings, run
