@@ -1097,19 +1097,57 @@ pub(super) fn crossing_points(entities: &[SketchEntity], tol: f64) -> Vec<Vec2> 
         .map(|entity| Geo::new(&entity.curve))
         .collect();
     let bounds: Vec<_> = curves.iter().map(Geo::bounds).collect();
-    let mut points: Vec<DVec2> = Vec::new();
+    let mut points = PointSet::new(tol);
     for (i, j) in overlapping_pairs(&bounds, tol) {
         for (ti, tj) in intersect(&curves[i], &curves[j], tol) {
             let at_end = |geo: &Geo, t: f64| !geo.is_closed() && (t <= 0.0 || t >= 1.0);
-            let p = curves[i].point(ti);
             // Shared endpoints are already endpoint snaps.
             if at_end(&curves[i], ti) && at_end(&curves[j], tj) {
                 continue;
             }
-            if !points.iter().any(|q| q.distance(p) <= tol) {
-                points.push(p);
-            }
+            points.insert(curves[i].point(ti));
         }
     }
-    points.into_iter().map(|p| p.as_vec2()).collect()
+    points.points.into_iter().map(|p| p.as_vec2()).collect()
+}
+
+/// Points kept at least `tol` apart, found through a spatial hash so
+/// inserting stays constant time however many points there are.
+struct PointSet {
+    tol: f64,
+    cells: HashMap<(i64, i64), Vec<usize>>,
+    points: Vec<DVec2>,
+}
+
+impl PointSet {
+    fn new(tol: f64) -> Self {
+        Self {
+            tol: tol.max(1.0e-12),
+            cells: HashMap::new(),
+            points: Vec::new(),
+        }
+    }
+
+    /// Adds `p` unless a point within tolerance is already present.
+    fn insert(&mut self, p: DVec2) -> bool {
+        let key = |v: f64| (v / self.tol).floor() as i64;
+        let (x, y) = (key(p.x), key(p.y));
+        for dx in -1..=1 {
+            for dy in -1..=1 {
+                if let Some(bucket) = self.cells.get(&(x + dx, y + dy))
+                    && bucket
+                        .iter()
+                        .any(|&i| self.points[i].distance(p) <= self.tol)
+                {
+                    return false;
+                }
+            }
+        }
+        self.cells
+            .entry((x, y))
+            .or_default()
+            .push(self.points.len());
+        self.points.push(p);
+        true
+    }
 }

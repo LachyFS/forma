@@ -1592,4 +1592,26 @@ mod tests {
         assert_eq!(profiles.len(), 2);
         assert_eq!(profiles[0].holes.len(), 1);
     }
+
+    #[test]
+    fn dense_grids_find_intersections_quickly() {
+        // Review case "grid": 402 lines and 40 000 crossings took 1.2 s.
+        let mut entities = Vec::new();
+        for i in 0..=200 {
+            let x = i as f32;
+            entities.push(line((x, 0.0), (x, 200.0)));
+            entities.push(line((0.0, x), (200.0, x)));
+        }
+        let sketch = sketch_of(entities);
+        let started = std::time::Instant::now();
+        let points = sketch.intersection_points(SKETCH_TOLERANCE);
+        // Interior crossings plus T-junctions on the border (corners are
+        // shared endpoints, not crossings).
+        assert_eq!(points.len(), 199 * 199 + 4 * 199);
+        assert!(
+            started.elapsed() < std::time::Duration::from_millis(600),
+            "intersection points took {:?}",
+            started.elapsed()
+        );
+    }
 }
