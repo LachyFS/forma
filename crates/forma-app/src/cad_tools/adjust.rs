@@ -22,6 +22,14 @@ pub enum AdjustParam {
 }
 
 impl AdjustParam {
+    /// The inspector field editing the same value.
+    pub(crate) fn feature_field(self) -> crate::timeline::FeatureField {
+        match self {
+            Self::Distance => crate::timeline::FeatureField::Distance,
+            Self::Angle => crate::timeline::FeatureField::Angle,
+        }
+    }
+
     /// Display units per pointer pixel when scrubbing, and decimals shown.
     pub(crate) fn scrub_step(self) -> (f32, usize) {
         match self {
@@ -259,9 +267,22 @@ impl Studio {
         }
     }
 
-    /// The adjustable value of a panel field, in display units.
+    /// The adjustable value of a panel field, in display units. Part
+    /// features are read through the inspector's `timeline::params`, so the
+    /// panel and the inspector always show the same value.
     pub(crate) fn adjust_value(&self, param: AdjustParam) -> Option<f32> {
         let last = self.adjustable_operation()?;
+        if let Some(feature) = last
+            .part
+            .and_then(|part| self.scene.part(part))
+            .and_then(|part| part.feature(last.feature))
+        {
+            let value = crate::timeline::params::value(feature, param.feature_field())?;
+            return Some(match param {
+                AdjustParam::Distance => value / last.scale,
+                AdjustParam::Angle => value,
+            });
+        }
         Some(match param {
             AdjustParam::Distance => last.value,
             AdjustParam::Angle => last.value.to_degrees(),
@@ -502,36 +523,27 @@ impl Studio {
     }
 }
 
-/// Sets the adjusted distance or angle on a feature.
+/// Sets the adjusted distance (world units) or angle (radians) on a
+/// feature through the inspector's parameter rules (`timeline::params`).
 fn amend_value(last: &mut LastOperation, kind: &mut FeatureKind, value: f32) -> Result<(), String> {
-    let local = value * last.scale;
-    match kind {
-        FeatureKind::Extrude(extrude) => {
-            if value.abs() < 1.0e-5 {
-                return Err("The distance must not be zero".into());
-            }
-            extrude.distance = local;
+    if matches!(last.kind, LastKind::MeshPushPull { .. }) {
+        // A mesh push has no feature: only the distance is checked.
+        if value.abs() < 1.0e-5 {
+            return Err("The distance must not be zero".into());
         }
-        FeatureKind::Revolve(revolve) => {
-            if value.abs() < 1.0e-3 {
-                return Err("The angle must not be zero".into());
-            }
-            revolve.angle = value;
-        }
-        FeatureKind::PushPull(push) => {
-            if value.abs() < 1.0e-5 {
-                return Err("The distance must not be zero".into());
-            }
-            push.distance = local;
-        }
-        FeatureKind::Chamfer(chamfer) => {
-            if value <= 1.0e-5 {
-                return Err("The chamfer distance must be positive".into());
-            }
-            chamfer.distance = local;
+        last.value = value;
+        return Ok(());
+    }
+    let (field, display) = match kind {
+        FeatureKind::Revolve(_) => (AdjustParam::Angle, value.to_degrees()),
+        FeatureKind::Extrude(_) | FeatureKind::PushPull(_) | FeatureKind::Chamfer(_) => {
+            (AdjustParam::Distance, value * last.scale)
         }
         _ => return Err("Nothing to adjust".into()),
-    }
+    };
+    let mut feature = forma_core::Feature::new(1, "Adjust", kind.clone());
+    crate::timeline::params::set(&mut feature, field.feature_field(), display)?;
+    *kind = feature.kind;
     last.value = value;
     Ok(())
 }

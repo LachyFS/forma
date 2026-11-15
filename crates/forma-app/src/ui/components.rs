@@ -704,7 +704,7 @@ pub(crate) fn numeric_field(
     let active = s.field_is_active(f);
     let selected = s.field_selection_active(f);
     let scrubbing = s.panels.scrubbing_field() == Some(f);
-    let name = f == Field::Name;
+    let name = f.is_text();
     let value = match mark {
         // Dense axis fields round their display; the exact value is edited.
         FieldMark::Axis(_) if !active => compact_number(s.field_value(f), AXIS_FIELD_CHARS),

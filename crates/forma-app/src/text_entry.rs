@@ -85,6 +85,17 @@ pub(crate) fn erase(text: &mut String, selected: &mut bool, how: Erase) -> bool 
     text.len() != before
 }
 
+/// The feature section's fields in Tab order.
+const FEATURE_FIELDS: [Field; crate::timeline::FeatureField::ORDER.len()] = {
+    let mut fields = [Field::Name; crate::timeline::FeatureField::ORDER.len()];
+    let mut index = 0;
+    while index < fields.len() {
+        fields[index] = Field::Feature(crate::timeline::FeatureField::ORDER[index]);
+        index += 1;
+    }
+    fields
+};
+
 /// Tab stays in the current inspector section and skips controls hidden by the
 /// current shader, texture configuration or viewport mode.
 pub(crate) fn next_field(
@@ -137,6 +148,7 @@ pub(crate) fn next_field(
             PreviewOpacity,
             PreviewBlur,
         ],
+        Feature(_) => &FEATURE_FIELDS,
     };
     let Some(index) = group.iter().position(|field| *field == current) else {
         return current;

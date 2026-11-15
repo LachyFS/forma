@@ -29,7 +29,7 @@ pub fn start(window: WindowHandle<Studio>, output: PathBuf, cx: &mut App) {
     .detach();
 }
 
-async fn settle(window: WindowHandle<Studio>, cx: &mut AsyncApp) -> Result<()> {
+pub(crate) async fn settle(window: WindowHandle<Studio>, cx: &mut AsyncApp) -> Result<()> {
     let deadline = Instant::now() + Duration::from_secs(20);
     loop {
         Timer::after(Duration::from_millis(60)).await;
@@ -1385,6 +1385,7 @@ async fn run(window: WindowHandle<Studio>, output: PathBuf, cx: &mut AsyncApp) -
     check_numeric_entry_workflow(window, cx).await?;
     check_draw_workflow(window, cx).await?;
     check_cad_workflow(window, &output, cx).await?;
+    crate::timeline::smoke::check_timeline_workflow(window, cx).await?;
     keys(window, &["0"], cx).await?;
     let (id, before_x) = window.update(cx, |s, w, cx| {
         s.execute(Command::Add(Primitive::Cube), w, cx);

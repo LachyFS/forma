@@ -4,10 +4,12 @@
 //! - `tokens`, `assets`, `components`, `commands`: the design system.
 //! - `titlebar`, `modes`, `hud`, `outliner`, `inspector`, `statusbar`: the shell.
 //! - `slots`: reserved hooks other features fill (viewport dock, adjust panel).
+//! - `timeline`, `feature_inspector`: the part history dock and its inspector.
 //! - `overlays`: menus, palette, dialogs and popovers.
 pub(crate) mod assets;
 pub(crate) mod commands;
 pub(crate) mod components;
+mod feature_inspector;
 mod hud;
 mod inspector;
 pub(crate) mod modes;
@@ -15,6 +17,7 @@ mod outliner;
 mod overlays;
 pub(crate) mod slots;
 mod statusbar;
+pub(crate) mod timeline;
 mod titlebar;
 pub(crate) mod tokens;
 
@@ -60,6 +63,7 @@ impl PanelSection {
                 Self::Render,
                 Field::Samples | Field::Bounces | Field::Exposure | Field::WorldStrength
             ) | (Self::Denoise, Field::DenoiseStart)
+                | (Self::Part, Field::Feature(_))
         )
     }
 
@@ -75,12 +79,13 @@ impl PanelSection {
         }
     }
 
-    const FIELD_SECTIONS: [Self; 5] = [
+    const FIELD_SECTIONS: [Self; 6] = [
         Self::Transform,
         Self::Surface,
         Self::Textures,
         Self::Render,
         Self::Denoise,
+        Self::Part,
     ];
 }
 
@@ -171,6 +176,8 @@ pub(crate) struct PanelState {
     pub(crate) rename_in_outliner: bool,
     /// The update version whose ready notice was dismissed for this session.
     pub(crate) dismissed_update: Option<String>,
+    /// Feature timeline selection, context menu and marker drag.
+    pub(crate) timeline: crate::timeline::TimelineState,
 }
 
 impl Default for PanelState {
@@ -204,6 +211,7 @@ impl Default for PanelState {
             recent: Vec::new(),
             rename_in_outliner: false,
             dismissed_update: None,
+            timeline: Default::default(),
         }
     }
 }
@@ -298,6 +306,10 @@ impl PanelState {
         }
         if field != Field::Name {
             self.rename_in_outliner = false;
+        }
+        if let Field::Feature(_) = field {
+            self.tab = InspectorTab::Object;
+            self.open[PanelSection::Part as usize] = true;
         }
     }
 
@@ -448,6 +460,7 @@ fn scrub_step(field: Field) -> (f32, usize) {
         Field::Samples => (4., 0),
         Field::Bounces => (0.1, 0),
         Field::DenoiseStart => (1., 0),
+        Field::Feature(field) => field.scrub_step(),
         Field::Name => (0., 0),
         Field::CadAdjust(param) => param.scrub_step(),
     }
@@ -604,6 +617,8 @@ mod panel_tests {
             PreviewStrength,
             PreviewOpacity,
             PreviewBlur,
+            Feature(crate::timeline::FeatureField::Distance),
+            Feature(crate::timeline::FeatureField::Rotation(2)),
         ] {
             assert!(scrub_step(field).0 > 0., "{field:?}");
         }

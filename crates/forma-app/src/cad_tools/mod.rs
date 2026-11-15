@@ -808,6 +808,36 @@ impl AxisDrag {
     }
 }
 
+/// Adds a feature where the timeline's rollback marker sits (the end when
+/// the history is not rolled back), keeping the marker after it so the new
+/// feature is evaluated. Returns its id.
+pub(crate) fn insert_feature(
+    part: &mut forma_core::PartData,
+    name: &str,
+    kind: forma_core::FeatureKind,
+    source: Option<u64>,
+) -> u64 {
+    let at = crate::timeline::marker(part);
+    let id = part.allocate_feature_id();
+    let mut feature = forma_core::Feature::new(id, name, kind);
+    feature.source = source;
+    part.features.insert(at, feature);
+    if part.rollback.is_some() {
+        part.rollback = Some(at + 1);
+    }
+    part.restamp();
+    id
+}
+
+impl Studio {
+    /// Shows a committed feature in the timeline and inspector.
+    pub(crate) fn reveal_feature(&mut self, object: u64, feature: u64) {
+        self.panels
+            .timeline
+            .select(crate::timeline::Selection { object, feature });
+    }
+}
+
 /// Distance of `p` to the segment `a`–`b`.
 pub(crate) fn segment_distance(p: Vec2, a: Vec2, b: Vec2) -> f32 {
     let d = b - a;
@@ -876,6 +906,34 @@ mod tests {
         assert_eq!(typed_on_side(0.2, -0.5), -0.2);
         assert_eq!(typed_on_side(-0.2, -0.5), 0.2);
         assert_eq!(typed_on_side(0.2, 0.0), 0.2);
+    }
+
+    #[test]
+    fn features_insert_at_the_rollback_marker() {
+        use forma_core::{FeatureKind, FeatureOperation, PartData, Placement, PrimitiveFeature, PrimitiveShape};
+        let box_kind = || {
+            FeatureKind::Primitive(PrimitiveFeature {
+                shape: PrimitiveShape::Box { size: glam::Vec3::ONE },
+                placement: Placement::default(),
+                operation: FeatureOperation::Join,
+            })
+        };
+        let mut part = PartData::new(1, "Part");
+        let a = part.push_feature("A", box_kind());
+        let b = part.push_feature("B", box_kind());
+        let end = insert_feature(&mut part, "End", box_kind(), Some(9));
+        assert_eq!(part.features.last().unwrap().id, end);
+        assert_eq!(part.features.last().unwrap().source, Some(9));
+        assert_eq!(part.rollback, None);
+        // Rolled back to just after A: the new feature lands there and stays evaluated.
+        part.rollback = Some(1);
+        part.restamp();
+        let inserted = insert_feature(&mut part, "Mid", box_kind(), None);
+        let order: Vec<u64> = part.features.iter().map(|f| f.id).collect();
+        assert_eq!(order, vec![a, inserted, b, end]);
+        assert_eq!(part.rollback, Some(2));
+        assert!(part.active_features().any(|f| f.id == inserted));
+        part.validate().unwrap();
     }
 
     #[test]

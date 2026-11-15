@@ -725,12 +725,14 @@ impl Studio {
             self.cancel_cad_tool(cx);
             return;
         };
-        let feature = part.push_feature(
+        let feature = super::insert_feature(
+            part,
             "Chamfer",
             FeatureKind::Chamfer(ChamferFeature {
                 edges: references,
                 distance: local,
             }),
+            None,
         );
         if let Err(error) = part.validate() {
             self.scene = before;
@@ -744,6 +746,7 @@ impl Studio {
         self.dirty = true;
         self.cad.announce = true;
         let color = self.theme_colors().accent;
+        self.prune_pending_ghosts();
         self.cad_tool.pending.push(PendingGhost {
             part: part_id,
             stamp,
@@ -752,6 +755,7 @@ impl Studio {
             color,
         });
         self.cad_tool.edit.edges.clear();
+        self.reveal_feature(object, feature);
         self.cad_tool.last = Some(super::LastOperation::chamfer(
             object, part_id, feature, stamp, distance, scale, edges, &self.scene, self.edit_mode,
         ));

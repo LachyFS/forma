@@ -59,6 +59,14 @@ icons! {
     Mesh => "forma-mesh",
     Part => "cuboid",
     Sketch => "spline",
+    Cone => "forma-cone",
+    // CAD features.
+    Revolve => "forma-revolve",
+    Join => "forma-join",
+    Subtract => "forma-subtract",
+    Intersect => "forma-intersect",
+    PushPull => "forma-push-pull",
+    ExtrudeCut => "forma-extrude-cut",
     // Draw tools.
     DrawLine => "pen-line",
     DrawRectangle => "square",
@@ -76,14 +84,9 @@ icons! {
     CollectionOpen => "folder-open",
     Scene => "layers",
     // CAD tools.
-    PushPull => "move-vertical",
-    Revolve => "rotate-ccw-square",
     Symmetric => "unfold-vertical",
     FlipDirection => "flip-horizontal-2",
-    OpNew => "square-plus",
-    OpJoin => "squares-unite",
-    OpCut => "squares-subtract",
-    OpIntersect => "squares-intersect",
+    NewPart => "square-plus",
     // Mesh operations.
     Extrude => "arrow-up-from-line",
     Inset => "square-square",

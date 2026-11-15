@@ -486,6 +486,9 @@ impl Studio {
             }
         }
         self.status = summary;
+        // Linked features catch up; a sketch opened from the part timeline
+        // returns to its part.
+        self.timeline_after_draw(object, cx);
         // Selection highlights render through the GPU frame.
         self.invalidate(false, cx);
     }
@@ -727,6 +730,10 @@ impl Studio {
         }
         self.sketch.revision += 1;
         self.dirty = true;
+        // Features made from this sketch follow it, in the same undo step.
+        if let Some(id) = self.session_object() {
+            self.sync_sketch_links(id, cx);
+        }
         cx.notify();
         true
     }

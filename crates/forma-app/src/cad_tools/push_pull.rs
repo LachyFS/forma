@@ -571,6 +571,7 @@ impl Studio {
         let modal = active.modal;
         let before = self.scene.clone();
         let mut scene = self.scene.clone();
+        self.prune_pending_ghosts();
         let mut pending = Vec::new();
         let mut features = Vec::new();
         let mut mesh_record = None;
@@ -585,12 +586,14 @@ impl Studio {
                         continue;
                     };
                     let distance = active.distance / face.scale;
-                    let id = part.push_feature(
+                    let id = super::insert_feature(
+                        part,
                         "Push/pull",
                         FeatureKind::PushPull(PushPullFeature {
                             face: *reference,
                             distance,
                         }),
+                        None,
                     );
                     if let Err(error) = part.validate() {
                         self.status = format!("Push/pull: {error:#}");
@@ -637,7 +640,7 @@ impl Studio {
         self.cad_tool.last = super::LastOperation::push_pull(
             &active,
             first,
-            features,
+            features.clone(),
             mesh_record,
             &self.scene,
             self.edit_mode,
@@ -646,6 +649,9 @@ impl Studio {
             self.select_objects([first.object].into_iter().collect(), Some(first.object));
         }
         self.cad_tool.edit.faces.clear();
+        if let Some(&feature) = features.first() {
+            self.reveal_feature(first.object, feature);
+        }
         self.status = format!(
             "{} {} · {}{}",
             if active.distance >= 0.0 {

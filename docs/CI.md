@@ -91,7 +91,7 @@ rustup toolchain install
 cargo fmt --all -- --check
 cargo clippy --locked --workspace --all-targets -- -D warnings
 cargo build --locked --workspace --bins
-cargo test --locked -p forma-core -p forma -p forma-update
+cargo test --locked -p forma-core -p forma-cad -p forma -p forma-update
 node --check site/app.js
 node --check site/releases.mjs
 node --test scripts/tests/*.test.mjs

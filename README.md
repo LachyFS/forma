@@ -234,17 +234,74 @@ to OBJ/STL like any object.
 
 Regeneration runs in a separate `forma --cad-worker` process, so editing never
 waits on the kernel and a kernel crash or hang cannot take Forma down: the
-worker restarts and the feature responsible is skipped and reported. The status
-line shows the outcome, and the inspector's **Part** section lists the features
-with any that failed. Polygon tools do not apply to parts — the editor says
-“Convert to mesh to edit polygons”.
+worker restarts and the feature responsible is skipped and reported. Polygon
+tools do not apply to parts — the editor says “Convert to mesh to edit
+polygons”.
+
+### Feature timeline
+
+Selecting a part shows its history as a strip of chips at the bottom of the
+viewport, one per feature: its kind, name and a compact value (`0.6 m`,
+`2.2×0.3×1.5`). A red glyph marks a feature the kernel could not apply (the
+history continues without it; hover for why and what to try), an amber one a
+feature that still works but needs a look (for example a picked sketch region
+that no longer exists), and a struck-through name a suppressed feature. A pulsing
+dot means the part is regenerating; otherwise the right end shows how long the
+last regeneration took.
+
+| Action | How |
+| --- | --- |
+| Select a feature | Click its chip (or a row in the inspector's History list); **←** / **→** step through the history. |
+| Edit a feature | Double-click it or press **Return**: sketch-based features open their sketch in Draw, others focus their first value in the inspector. |
+| Roll back | Drag the accent marker between chips, click a gap, use **⇧ ←** / **⇧ →**, or **Roll back to here**. Features after the marker are dimmed and not evaluated; **›** rolls to the end. |
+| Suppress, rename, delete | Right-click a chip, or **F2** (rename) and **Delete** with a feature selected. **Esc** deselects. |
+
+Every change is one undo step — including a whole marker drag or value scrub —
+and the part regenerates live while you drag. The timeline gives way to the Draw
+toolbar while you sketch.
+
+### Editing features
+
+With a feature selected, the inspector's **Part** section (first for parts)
+shows its values as the same fields used everywhere else: drag to scrub, click
+to type exact expressions (`25mm`, `1/8in`, `90deg`). Primitives show their
+dimensions, position, rotation and how they combine (Join, Cut, Intersect or a
+new body); extrusions their distance, extent (one side, symmetric or two sides),
+direction and operation; revolutions their angle; push/pull and chamfers their
+distance; combines their tools. Failures and warnings appear inline with a
+suggestion, and **Suppress**, **Roll back here** and **Delete** sit beneath.
+
+With no feature selected, the section summarises the part — status, feature,
+face and triangle counts, the last regeneration time, any issues (click one to
+jump to its feature) and the history — with **Convert to mesh** (which bakes the
+history away; undo restores it) and **Export STEP…**. Selecting several parts or
+meshes adds a **Combine** row (Join, Cut, Intersect into the active object), and
+a mesh's Geometry section checks whether it is closed and manifold before
+offering **Convert to part**.
+
+### Sketches stay linked
+
+Features made from a sketch remember it. Editing that sketch in Draw — any
+committed change, not just finishing — updates every feature made from it, in
+the same undo step, so the part follows as you draw. Region picks follow the
+regions they chose: a circle drawn inside a picked plate makes a hole rather than
+stealing the pick. If the part and the sketch still sit where they were when the
+feature was made, the feature follows the sketch's plane through their world
+placement; if either has moved since, the profile keeps its place in the part
+and only the curves change. **Edit sketch** on a feature opens its sketch in
+Draw (a hidden, consumed sketch stays hidden and is first put back on its part
+if the part moved) and returns to the feature when you finish. If the sketch was
+deleted, it is rebuilt from the feature's embedded copy as a hidden sketch and
+relinked.
 
 Current limitations, honestly:
 
-- The interactive CAD tools — feature timeline, editing feature parameters,
-  push/pull and chamfer handles — are the next phase. Today those features
-  exist in the data model and kernel, and the inspector shows them read-only.
-  **Extrude sketch** always extrudes 1 m.
+- Interactive viewport tools (extrude, push/pull and chamfer handles) are the
+  next phase; until then **Extrude sketch** extrudes 1 m and you adjust it in the
+  inspector. New features are appended after the whole history, so roll to the
+  end before adding one.
+- Region picks and face/edge references are stored geometrically; heavy sketch
+  edits can still leave a feature pointing at nothing, which the timeline flags.
 - truck 0.4 has no fillets. Chamfers work on straight, convex edges between
   flat faces that end at convex corners.
 - Booleans with spheres, cones and tori usually fail in truck 0.4 (the feature

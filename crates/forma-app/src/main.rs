@@ -12,6 +12,7 @@ mod sketch;
 mod smoke;
 mod text_entry;
 mod theme;
+mod timeline;
 #[cfg(target_os = "macos")]
 mod trackpad;
 mod transform;

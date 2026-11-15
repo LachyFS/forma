@@ -42,10 +42,10 @@ fn end_field(s: &mut Studio, _: &mut gpui::Window, cx: &mut gpui::Context<Studio
     s.panels.rename_in_outliner = false;
     cx.notify();
 }
-fn resize(window: &mut gpui::Window, width: f32, height: f32) {
+pub(crate) fn resize(window: &mut gpui::Window, width: f32, height: f32) {
     window.resize(gpui::size(gpui::px(width), gpui::px(height)));
 }
-fn restore_size(s: &mut Studio, w: &mut gpui::Window, cx: &mut gpui::Context<Studio>) {
+pub(crate) fn restore_size(s: &mut Studio, w: &mut gpui::Window, cx: &mut gpui::Context<Studio>) {
     resize(w, 1512., 960.);
     s.invalidate(false, cx);
 }
@@ -69,7 +69,7 @@ fn restore_scene(s: &mut Studio, cx: &mut gpui::Context<Studio>) {
 }
 
 /// The CAD showcase scene, with `select` selected, in `mode`.
-fn parts(
+pub(crate) fn parts(
     s: &mut Studio,
     w: &mut gpui::Window,
     cx: &mut gpui::Context<Studio>,
@@ -89,7 +89,7 @@ fn parts(
     s.execute(Command::SetMode(mode), w, cx);
     s.invalidate(true, cx);
 }
-fn leave_parts(s: &mut Studio, w: &mut gpui::Window, cx: &mut gpui::Context<Studio>) {
+pub(crate) fn leave_parts(s: &mut Studio, w: &mut gpui::Window, cx: &mut gpui::Context<Studio>) {
     restore_scene(s, cx);
     let first = s.scene.objects.first().map(|object| object.id);
     s.select_objects(first.into_iter().collect(), first);
@@ -127,7 +127,7 @@ fn tool_scenarios() -> Vec<Scenario> {
 /// Workspace states captured by `--ui-capture`. Add a scenario here whenever a
 /// new panel, overlay or mode lands so its appearance can be reviewed.
 pub(crate) fn scenarios() -> Vec<Scenario> {
-    vec![
+    let mut scenarios = vec![
         Scenario {
             name: "workspace",
             enter: nothing,
@@ -481,10 +481,10 @@ pub(crate) fn scenarios() -> Vec<Scenario> {
             enter: |s, w, cx| parts(s, w, cx, RenderMode::Wireframe, Some("Block")),
             leave: leave_parts,
         },
-    ]
-    .into_iter()
-    .chain(tool_scenarios())
-    .collect()
+    ];
+    scenarios.extend(crate::timeline::capture::scenarios());
+    scenarios.extend(tool_scenarios());
+    scenarios
 }
 
 pub fn start(window: WindowHandle<Studio>, output: PathBuf, filter: Vec<String>, cx: &mut App) {

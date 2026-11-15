@@ -11,10 +11,10 @@ use gpui::{AnyElement, Context, Div, MouseMoveEvent, SharedString, div, prelude:
 
 pub(crate) fn operation_icon(operation: Operation) -> Icon {
     match operation {
-        Operation::NewPart => Icon::OpNew,
-        Operation::Join => Icon::OpJoin,
-        Operation::Cut => Icon::OpCut,
-        Operation::Intersect => Icon::OpIntersect,
+        Operation::NewPart => Icon::NewPart,
+        Operation::Join => Icon::Join,
+        Operation::Cut => Icon::Subtract,
+        Operation::Intersect => Icon::Intersect,
     }
 }
 
@@ -423,8 +423,8 @@ impl Studio {
             "Revolve" => Icon::Revolve,
             "Push/Pull" => Icon::PushPull,
             "Chamfer" => Icon::Bevel,
-            "Cut" => Icon::OpCut,
-            "Intersect" => Icon::OpIntersect,
+            "Cut" => Icon::Subtract,
+            "Intersect" => Icon::Intersect,
             _ => Icon::Extrude,
         };
         let param = last.param();

@@ -551,54 +551,18 @@ impl SketchTool {
     }
 }
 
-/// The sketch, its region picks and a length expressed in another space
-/// (`relative` maps the sketch object's space into it). Rejects uneven
-/// scales, which would distort the profile.
-fn sketch_in_space(sketch: &Sketch, picks: &[Vec2], relative: Mat4) -> Result<(Sketch, Vec<Vec2>, f32), String> {
-    let x = relative.transform_vector3(sketch.plane.x_axis);
-    let y = relative.transform_vector3(sketch.plane.y_axis);
-    let n = relative.transform_vector3(sketch.plane.normal());
-    let (sx, sy, sn) = (x.length(), y.length(), n.length());
-    let uneven = |a: f32, b: f32| (a - b).abs() > a.max(b) * 1.0e-4;
-    if uneven(sx, sy) || uneven(sx, sn) || x.dot(y).abs() > sx * sy * 1.0e-4 {
-        return Err("The part is scaled unevenly · Apply its scale first".into());
-    }
-    let plane = sketch
-        .plane
-        .transformed(relative)
-        .ok_or("The part's transform collapses the sketch plane")?;
-    let scale = |p: Vec2| p * sx;
-    let mut moved = Sketch::new(plane);
-    moved.entities = sketch
-        .entities
-        .iter()
-        .map(|entity| {
-            let mut entity = *entity;
-            entity.curve = match entity.curve {
-                SketchCurve::Line { start, end } => SketchCurve::Line {
-                    start: scale(start),
-                    end: scale(end),
-                },
-                SketchCurve::Arc {
-                    center,
-                    radius,
-                    start_angle,
-                    sweep,
-                } => SketchCurve::Arc {
-                    center: scale(center),
-                    radius: radius * sx,
-                    start_angle,
-                    sweep,
-                },
-                SketchCurve::Circle { center, radius } => SketchCurve::Circle {
-                    center: scale(center),
-                    radius: radius * sx,
-                },
-            };
-            entity
-        })
-        .collect();
-    Ok((moved, picks.iter().map(|p| scale(*p)).collect(), sx))
+/// The sketch and its region picks in another space (`relative` maps the
+/// sketch object's space into it), mapped exactly as the timeline's sketch
+/// links map them, so the feature stays associative. Rejects transforms that
+/// would distort the profile.
+fn sketch_in_space(
+    sketch: &Sketch,
+    picks: &[Vec2],
+    relative: Mat4,
+) -> Result<(Sketch, Vec<Vec2>, f32), String> {
+    let (moved, scale) = crate::timeline::links::map_sketch(sketch, relative)
+        .ok_or("The part is scaled unevenly · Apply its scale first")?;
+    Ok((moved, picks.iter().map(|p| *p * scale).collect(), scale))
 }
 
 /// Where a built candidate landed in the scene.
@@ -623,7 +587,7 @@ impl SketchTool {
             return Err("Pick a closed region of the sketch".into());
         }
         let operation = self.operation();
-        let (local_distance, extent) = match self.kind {
+        let (world_distance, extent) = match self.kind {
             SketchToolKind::Extrude => {
                 if self.distance.abs() < MIN_DISTANCE {
                     return Err("Drag the arrow or type a distance".into());
@@ -633,7 +597,7 @@ impl SketchTool {
                 } else {
                     ExtrudeExtent::OneSide
                 };
-                (self.distance / regions.normal_scale(), extent)
+                (self.distance, extent)
             }
             SketchToolKind::Revolve => {
                 if self.axis.is_none() {
@@ -655,12 +619,19 @@ impl SketchTool {
             (SketchToolKind::Revolve, Operation::Cut) => "Revolve cut",
             (SketchToolKind::Revolve, _) => "Revolve",
         };
-        let kind_for = |sketch: Sketch, picks: Vec<Vec2>, length_scale: f32, op: FeatureOperation| {
+        // `per_world` converts world lengths along the sketch normal into the
+        // feature's space.
+        // `axis_scale` maps sketch coordinates into the feature's sketch.
+        let kind_for = |sketch: Sketch,
+                        picks: Vec<Vec2>,
+                        per_world: f32,
+                        axis_scale: f32,
+                        op: FeatureOperation| {
             match self.kind {
                 SketchToolKind::Extrude => FeatureKind::Extrude(ExtrudeFeature {
                     sketch,
                     profiles: picks,
-                    distance: local_distance * length_scale,
+                    distance: world_distance * per_world,
                     extent,
                     flip: false,
                     operation: op,
@@ -670,7 +641,7 @@ impl SketchTool {
                     FeatureKind::Revolve(RevolveFeature {
                         sketch,
                         profiles: picks,
-                        axis_origin: axis.origin * length_scale,
+                        axis_origin: axis.origin * axis_scale,
                         axis_direction: axis.direction,
                         angle: self.angle.clamp(-std::f32::consts::TAU, std::f32::consts::TAU),
                         operation: op,
@@ -684,11 +655,18 @@ impl SketchTool {
                 .cloned()
                 .ok_or("The sketch no longer exists")?;
             let mut part = PartData::new(0, name);
-            let feature = part.push_feature(
+            let feature = super::insert_feature(
+                &mut part,
                 name,
-                kind_for(regions.sketch.clone(), picks, 1.0, operation.feature()),
+                kind_for(
+                    regions.sketch.clone(),
+                    picks,
+                    1.0 / regions.normal_scale(),
+                    1.0,
+                    operation.feature(),
+                ),
+                Some(regions.object),
             );
-            part.edit_feature(feature, |f| f.source = Some(regions.object));
             part.validate().map_err(|e| format!("{e:#}"))?;
             let suffix = match self.kind {
                 SketchToolKind::Extrude => "extrusion",
@@ -717,13 +695,22 @@ impl SketchTool {
         let part_matrix = scene
             .world_transform(target.object)
             .ok_or("The target part no longer exists")?;
-        let relative = part_matrix.inverse() * regions.matrix;
-        let (sketch, picks, scale) = sketch_in_space(&regions.sketch, &picks, relative)?;
+        let relative = crate::timeline::links::sketch_to_part(scene, regions.object, target.object)
+            .unwrap_or(part_matrix.inverse() * regions.matrix);
+        let (sketch, mapped, axis_scale) = sketch_in_space(&regions.sketch, &picks, relative)?;
+        let per_world = part_matrix
+            .inverse()
+            .transform_vector3(regions.normal())
+            .length();
         let part = scene
             .object_part_mut(target.object)
             .ok_or("The target is no longer a part")?;
-        let feature = part.push_feature(name, kind_for(sketch, picks, scale, operation.feature()));
-        part.edit_feature(feature, |f| f.source = Some(regions.object));
+        let feature = super::insert_feature(
+            part,
+            name,
+            kind_for(sketch, mapped, per_world, axis_scale, operation.feature()),
+            Some(regions.object),
+        );
         part.validate().map_err(|e| format!("{e:#}"))?;
         let part = part.id;
         Ok(Applied {
@@ -1458,6 +1445,8 @@ impl Studio {
         let stamp = self.scene.part(applied.part).map(|p| p.stamp).unwrap_or(0);
         let color = super::operation_color(&self.theme_colors(), operation);
         let (start, end) = tool.offsets();
+        self.reveal_feature(applied.object, applied.feature);
+        self.prune_pending_ghosts();
         if tool.kind == SketchToolKind::Extrude {
             self.cad_tool.pending.push(PendingGhost {
                 part: applied.part,
@@ -1804,7 +1793,8 @@ mod tests {
         assert_eq!(factor, 2.0);
         assert_eq!(picks[0], Vec2::new(1.0, 0.0));
         assert!(matches!(moved.entities[4].curve, SketchCurve::Circle { radius, .. } if (radius - 0.6).abs() < 1.0e-6));
-        let uneven = Mat4::from_scale(Vec3::new(1.0, 2.0, 1.0));
+        // Squashing the plane would make circles elliptical.
+        let uneven = Mat4::from_scale(Vec3::new(2.0, 1.0, 1.0));
         assert!(sketch_in_space(&sketch, &[], uneven).is_err());
         assert!(line_hits_box(Vec3::ZERO, Vec3::Y, Vec3::new(-1.0, 3.0, -1.0), Vec3::ONE * 5.0));
         assert!(!line_hits_box(Vec3::new(9.0, 0.0, 0.0), Vec3::Y, Vec3::splat(-1.0), Vec3::ONE));

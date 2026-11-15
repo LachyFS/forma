@@ -52,6 +52,9 @@ pub(crate) fn input_hints(s: &Studio) -> Vec<(&'static str, &'static str)> {
             ("⇧ Tab", "Previous"),
         ];
     }
+    if let Some(hints) = s.timeline_input_hints() {
+        return hints;
+    }
     if s.edit_mode == EditMode::Object {
         vec![
             ("Click", "Select"),
