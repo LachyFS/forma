@@ -170,11 +170,14 @@ impl Studio {
     pub(crate) fn sketch_inspector(&self, t: Colors, cx: &mut Context<Self>) -> Option<gpui::Div> {
         let id = self.selected?;
         let sketch = self.scene.object_sketch(id)?;
-        let profiles = self
-            .sketch_displays()
-            .iter()
-            .find(|display| display.id == id)
-            .map_or(0, |display| display.fills.len());
+        let profiles = if self.session_object() == Some(id) {
+            self.sketch_analysis().map_or(0, |a| a.profiles.len())
+        } else {
+            self.sketch_displays()
+                .iter()
+                .find(|display| display.id == id)
+                .map_or(0, |display| display.fills.len())
+        };
         let construction = sketch.entities.iter().filter(|e| e.construction).count();
         let matrix = self.scene.world_transform(id).unwrap_or_default();
         let normal = matrix

@@ -3522,6 +3522,41 @@ async fn check_draw_workflow(window: WindowHandle<Studio>, cx: &mut AsyncApp) ->
     })??;
     keys(window, &["cmd-z"], cx).await?;
 
+    // A line continued by a tangent arc (A inside a chain), then a heptagon.
+    keys(window, &["l"], cx).await?;
+    let base = Vec2::new(-3.0, -3.0);
+    sketch_click(window, base, 1, cx).await?;
+    sketch_click(window, base + Vec2::new(1.0, 0.0), 1, cx).await?;
+    keys(window, &["a"], cx).await?;
+    sketch_click(window, base + Vec2::new(2.0, 1.0), 1, cx).await?;
+    keys(window, &["escape", "p", "+"], cx).await?;
+    sketch_click(window, Vec2::new(3.0, 3.0), 1, cx).await?;
+    keys(window, &["0", ".", "3", "enter"], cx).await?;
+    window.update(cx, |s, _, _| -> Result<()> {
+        let entities = sketch_entities(s);
+        ensure!(
+            entities.len() == 18,
+            "line, arc and heptagon made {} curves",
+            entities.len() - 9
+        );
+        let (line, arc) = (entities[9].curve, entities[10].curve);
+        ensure!(
+            matches!(arc, SketchCurve::Arc { .. })
+                && arc.start().distance(line.end()) < 1.0e-5
+                && arc.tangent_at(0.0).distance(line.tangent_at(1.0)) < 1.0e-3,
+            "A did not continue the line with a tangent arc: {line:?} {arc:?}"
+        );
+        let sides = &entities[11..];
+        ensure!(
+            sides.len() == 7
+                && sides
+                    .iter()
+                    .all(|e| (e.curve.start().distance(Vec2::new(3.0, 3.0)) - 0.3).abs() < 1.0e-4),
+            "+ and a typed radius did not make a 0.3 m heptagon"
+        );
+        Ok(())
+    })??;
+
     // Esc: cancels a step, then (with nothing selected) finishes the sketch.
     keys(window, &["l"], cx).await?;
     sketch_click(window, Vec2::new(4.0, 4.0), 1, cx).await?;
@@ -3545,7 +3580,7 @@ async fn check_draw_workflow(window: WindowHandle<Studio>, cx: &mut AsyncApp) ->
             "finishing did not restore the ground grid"
         );
         ensure!(
-            s.scene.object_sketch(sketch_id).unwrap().entities.len() == 9,
+            s.scene.object_sketch(sketch_id).unwrap().entities.len() == 18,
             "finishing changed the committed curves"
         );
         Ok(())
@@ -3689,7 +3724,7 @@ async fn check_draw_workflow(window: WindowHandle<Studio>, cx: &mut AsyncApp) ->
         Ok(())
     })??;
     println!(
-        "draw_workflow=ground,numeric_rectangle,inference_polyline,snap_close,circle,trim,undo_redo,select_delete,corner_drag,esc,edit,object_pick,face,palette PASS"
+        "draw_workflow=ground,numeric_rectangle,inference_polyline,snap_close,circle,trim,undo_redo,select_delete,corner_drag,tangent_arc,polygon,esc,edit,object_pick,face,palette PASS"
     );
     Ok(())
 }

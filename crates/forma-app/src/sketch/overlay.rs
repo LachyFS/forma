@@ -17,6 +17,9 @@ use std::{collections::BTreeSet, rc::Rc};
 /// A visible sketch object other than the one being edited.
 pub(crate) struct SketchDisplay {
     pub id: u64,
+    /// The sketch and transform this was built from, so unchanged sketches
+    /// are reused when another one is edited.
+    source: (forma_core::Sketch, Mat4),
     pub curves: Vec<(Vec<Vec3>, bool)>,
     /// Each profile's outer loop and holes.
     pub fills: Vec<Vec<Vec<Vec3>>>,
@@ -70,7 +73,7 @@ pub(crate) type Visibility = Vec<Vec<Vec<bool>>>;
 
 pub(crate) struct SketchOverlay {
     pub colors: Colors,
-    pub others: Rc<Vec<SketchDisplay>>,
+    pub others: Rc<Vec<Rc<SketchDisplay>>>,
     pub visibility: Option<Rc<Visibility>>,
     pub selected: BTreeSet<u64>,
     pub active_id: Option<u64>,
@@ -93,25 +96,36 @@ pub(crate) fn format_angle(radians: f32) -> String {
 
 impl Studio {
     /// World-space display data for every visible sketch, cached per edit.
-    pub(crate) fn sketch_displays(&self) -> Rc<Vec<SketchDisplay>> {
-        let key = (self.scene_revision, self.sketch.revision);
+    pub(crate) fn sketch_displays(&self) -> Rc<Vec<Rc<SketchDisplay>>> {
+        // The sketch being edited is painted from its own live analysis.
+        let editing = self.session_object();
+        let key = (self.scene_revision, self.sketch.revision, editing);
         let mut cache = self.sketch.display.borrow_mut();
         if let Some((cached, displays)) = cache.as_ref()
             && *cached == key
         {
             return displays.clone();
         }
+        let previous = cache.take().map(|(_, displays)| displays);
         let mut displays = Vec::new();
         for object in &self.scene.objects {
             let ObjectData::Sketch { sketch } = &object.data else {
                 continue;
             };
-            if !self.scene.is_effectively_visible(object.id) {
+            if Some(object.id) == editing || !self.scene.is_effectively_visible(object.id) {
                 continue;
             }
             let Some(matrix) = self.scene.world_transform(object.id) else {
                 continue;
             };
+            if let Some(reused) = previous.as_ref().and_then(|previous| {
+                previous
+                    .iter()
+                    .find(|d| d.id == object.id && d.source.1 == matrix && d.source.0 == *sketch)
+            }) {
+                displays.push(reused.clone());
+                continue;
+            }
             let world = |p: Vec2| matrix.transform_point3(sketch.plane.to_world(p));
             let curves = sketch
                 .entities
@@ -145,11 +159,12 @@ impl Studio {
                         .collect()
                 })
                 .collect();
-            displays.push(SketchDisplay {
+            displays.push(Rc::new(SketchDisplay {
                 id: object.id,
+                source: (sketch.clone(), matrix),
                 curves,
                 fills,
-            });
+            }));
         }
         let displays = Rc::new(displays);
         *cache = Some((key, displays.clone()));
@@ -159,7 +174,7 @@ impl Studio {
     /// Which points of each inactive sketch are hidden behind geometry, so
     /// overlays read like hidden lines. Rays are cast every few pixels along
     /// each curve and cached until the camera or the scene changes.
-    fn sketch_visibility(&self, displays: &Rc<Vec<SketchDisplay>>) -> Option<Rc<Visibility>> {
+    fn sketch_visibility(&self, displays: &Rc<Vec<Rc<SketchDisplay>>>) -> Option<Rc<Visibility>> {
         if displays.is_empty() || self.scene.mesh_instances().next().is_none() {
             return None;
         }

@@ -80,6 +80,18 @@ fn groups() -> [Vec<Group>; 3] {
                 ],
             ),
             (
+                "Draw",
+                vec![
+                    ("New sketch / edit sketch", "D / Return"),
+                    ("Line / rectangle / circle", "L / R / C"),
+                    ("Arc / polygon / trim", "A / P / T"),
+                    ("Construction", "X"),
+                    ("Exact value / next value", "0–9 / Tab"),
+                    ("Place without snapping", "Ctrl"),
+                    ("Cancel step, then finish", "Esc"),
+                ],
+            ),
+            (
                 "Workspace",
                 vec![
                     ("Commands", platform_shortcut("⌘ K", "Ctrl K")),
