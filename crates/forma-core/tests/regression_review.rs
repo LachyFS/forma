@@ -17,6 +17,7 @@ fn crossing_polygon_with_nonzero_signed_area_is_rejected() {
             Vec3::new(3., 0., 0.),
         ],
         faces: vec![vec![0, 1, 2, 3]],
+        groups: Vec::new(),
     };
     assert!(
         mesh.validate().is_err(),

@@ -45,6 +45,7 @@ impl Mesh {
         let edited = Self {
             positions: self.positions.clone(),
             faces,
+            groups: Vec::new(),
         };
         edited.validate()?;
         *self = edited;
@@ -228,6 +229,7 @@ impl Mesh {
         let mut output = Self {
             positions: Vec::with_capacity(corners),
             faces: Vec::new(),
+            groups: Vec::new(),
         };
         let mut offsets = Vec::with_capacity(source.faces.len());
         let mut starts = vec![None; source.positions.len()];

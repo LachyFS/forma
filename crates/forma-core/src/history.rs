@@ -117,7 +117,12 @@ fn scene_bytes(scene: &Scene) -> usize {
                     .sum::<usize>()
         })
         .sum::<usize>();
-    objects + meshes + materials
+    let parts = scene
+        .parts
+        .iter()
+        .map(crate::PartData::approximate_bytes)
+        .sum::<usize>();
+    objects + meshes + materials + parts
 }
 
 #[cfg(test)]

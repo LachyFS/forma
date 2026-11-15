@@ -211,6 +211,56 @@ region highlights it. In Object mode, sketches stay visible in every render
 mode; parts hidden behind geometry are drawn faintly, and clicking a sketch's
 curves selects it.
 
+## Parts
+
+**Parts** are parametric B-rep solids, built on the
+[truck](https://github.com/ricosjp/truck) CAD kernel, that live in the same
+scene as meshes. A part keeps an ordered feature history — primitives, sketch
+extrusions and revolutions, joins/cuts/intersections, push/pull and chamfers —
+and shows a tessellation regenerated from it: flat faces stay flat with crisp
+edges, curved faces shade smoothly, and Wireframe, picking and selection
+outlines follow the real B-rep faces and edges rather than triangles. Parts
+move, rotate, scale, duplicate, delete, save, undo, take materials and export
+to OBJ/STL like any object.
+
+| Command | Where | Does |
+| --- | --- | --- |
+| **Box / Cylinder / Sphere part** | **Add** menu, command panel (“Part: …”), **Part** menu | A parametric primitive at the origin. |
+| **Extrude sketch** | command panel, **Part** menu | Extrudes the selected sketch's outer regions (with their holes) 1 m into a new part. |
+| **Join / Cut / Intersect** | command panel (“Combine: …”), **Part** menu | Select the tools, then the target last: the tools are combined into the target and removed. Meshes are converted on the way. The tools keep their own histories inside the new feature. |
+| **Convert to part** | command panel, **Part** menu | A closed, manifold mesh becomes a part; flat polygons become faces and coplanar neighbours merge. |
+| **Convert to mesh** | command panel, **Part** menu | Bakes a part into an editable mesh: flat faces become single polygons, curved faces triangles. |
+| **Import / Export STEP…** | **Add → Import**, **File** menu, command panel | STEP (ISO 10303-21) in millimetres; export uses the selected parts, or all visible parts. |
+
+Regeneration runs in a separate `forma --cad-worker` process, so editing never
+waits on the kernel and a kernel crash or hang cannot take Forma down: the
+worker restarts and the feature responsible is skipped and reported. The status
+line shows the outcome, and the inspector's **Part** section lists the features
+with any that failed. Polygon tools do not apply to parts — the editor says
+“Convert to mesh to edit polygons”.
+
+Current limitations, honestly:
+
+- The interactive CAD tools — feature timeline, editing feature parameters,
+  push/pull and chamfer handles — are the next phase. Today those features
+  exist in the data model and kernel, and the inspector shows them read-only.
+  **Extrude sketch** always extrudes 1 m.
+- truck 0.4 has no fillets. Chamfers work on straight, convex edges between
+  flat faces that end at convex corners.
+- Booleans with spheres, cones and tori usually fail in truck 0.4 (the feature
+  is reported and skipped); boxes, cylinders, extrusions and converted meshes
+  combine reliably. Faces that touch exactly are retried automatically but can
+  still fail.
+- Push/pull works on flat faces of polyhedral parts, of parts that are
+  extrusions along the face normal (such as drilled plates), and otherwise
+  when the neighbouring faces are not coplanar with the move.
+- Imported STEP parts render and export but cannot be combined yet; convert
+  them to a mesh and back to a part (they become faceted).
+- Parts converted from curved meshes keep one flat face per polygon, so
+  booleans on dense meshes are slow.
+- Boolean-heavy parts take about 0.5–2 s to regenerate from scratch; edits to
+  the last feature reuse everything before it.
+
 ## Render modes
 
 Press **Z** to open the shading pie at the cursor. Hold Z, move toward a mode,
@@ -393,6 +443,11 @@ cargo run --locked --release -p forma-core --bin surface-query-bench
 cargo test --locked --release -p forma-render --lib geometry_preparation_benchmark -- --ignored --nocapture
 ```
 
+CAD regeneration timings (primitives, a 12-hole plate, push/pull, mesh
+conversion and STEP) are reported by
+`cargo test --locked --release -p forma-cad --test bench -- --ignored --nocapture`;
+`cargo test -p forma-cad` also runs the worker crash-isolation tests through
+the real worker process.
 These report timings without device-specific pass/fail thresholds. The geometry
 preparation benchmark compares the retained reference implementation with the
 current implementation and checks exact output equality before timing.

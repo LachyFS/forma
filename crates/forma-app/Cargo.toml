@@ -7,6 +7,7 @@ default-run = "forma"
 
 [dependencies]
 forma-core = { path = "../forma-core" }
+forma-cad = { path = "../forma-cad" }
 forma-render = { path = "../forma-render" }
 forma-update = { path = "../forma-update" }
 anyhow.workspace = true

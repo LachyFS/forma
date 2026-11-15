@@ -1,5 +1,13 @@
 [workspace]
-members = ["crates/forma-core", "crates/forma-render", "crates/forma-app", "crates/forma-update"]
+members = [
+    "crates/forma-core",
+    "crates/forma-cad",
+    "crates/forma-render",
+    "crates/forma-app",
+    "crates/forma-update",
+]
+# Vendored third-party crates are path patches, not workspace members.
+exclude = ["vendor"]
 resolver = "2"
 
 [workspace.package]
@@ -32,6 +40,17 @@ opt-level = 2
 [profile.dev.package.forma-render]
 opt-level = 2
 
+# B-rep evaluation runs in a worker process on every feature edit.
+[profile.dev.package.forma-cad]
+opt-level = 2
+
 [profile.release]
 lto = "thin"
 codegen-units = 1
+
+[patch.crates-io]
+# crates.io truck-meshalgo 0.4.0 with the `vtk` default feature removed (it
+# pulls vtkio, lz4_flex and quick-xml with open RustSec advisories, plus an
+# lzma C build) and a toolchain-fragile `deny(warnings)` dropped. See
+# vendor/truck-meshalgo/FORMA-PATCH.md.
+truck-meshalgo = { path = "vendor/truck-meshalgo" }

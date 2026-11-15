@@ -59,6 +59,7 @@ fn tiled_mesh(size: u32, corners: usize) -> Mesh {
     let mut mesh = Mesh {
         positions: Vec::with_capacity(face_count * corners),
         faces: Vec::with_capacity(face_count),
+        groups: Vec::new(),
     };
     for y in 0..size {
         for x in 0..size {

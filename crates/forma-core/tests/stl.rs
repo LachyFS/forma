@@ -394,6 +394,7 @@ fn export_ear_clips_concave_polygons_without_overlapping_fans() {
             Vec3::new(0., 3., 0.),
         ],
         faces: vec![vec![0, 1, 2, 3, 4]],
+        groups: Vec::new(),
     };
     let data = scene.create_mesh_data("Concave", mesh).unwrap();
     let material = scene

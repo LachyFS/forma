@@ -483,9 +483,10 @@ fn pick_component(
     let matrix = scene.camera.projection_matrix(aspect) * scene.camera.view_matrix();
     let mut closest = 10.0;
     let mut picked = None;
+    // CAD parts show a regenerated tessellation, not editable components.
     for object in scene
         .mesh_instances()
-        .filter(|o| scene.is_effectively_visible(o.id) && o.selectable)
+        .filter(|o| scene.is_effectively_visible(o.id) && o.selectable && o.data.is_editable_mesh())
     {
         let candidates: Box<dyn Iterator<Item = [u32; 2]>> = if mode == EditMode::Vertex {
             Box::new((0..object.mesh.positions.len() as u32).map(|i| [i, i]))
@@ -845,7 +846,8 @@ impl Studio {
                 .filter(|id| Some(*id) != self.selected)
             {
                 if let Some(object) = self.scene.mesh_instance(id) {
-                    for edge in object.mesh.edges() {
+                    // Parts outline their B-rep edges, not tessellation diagonals.
+                    for edge in object.mesh.display_edges() {
                         let points = edge.map(|i| {
                             object
                                 .world_transform

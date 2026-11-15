@@ -1384,6 +1384,7 @@ async fn run(window: WindowHandle<Studio>, output: PathBuf, cx: &mut AsyncApp) -
     check_exchange_object_workflow(window, &output, cx).await?;
     check_numeric_entry_workflow(window, cx).await?;
     check_draw_workflow(window, cx).await?;
+    check_cad_workflow(window, &output, cx).await?;
     keys(window, &["0"], cx).await?;
     let (id, before_x) = window.update(cx, |s, w, cx| {
         s.execute(Command::Add(Primitive::Cube), w, cx);
@@ -3780,6 +3781,216 @@ async fn check_draw_workflow(window: WindowHandle<Studio>, cx: &mut AsyncApp) ->
     })??;
     println!(
         "draw_workflow=ground,numeric_rectangle,inference_polyline,snap_close,circle,trim,undo_redo,select_delete,corner_drag,tangent_arc,polygon,esc,edit,object_pick,face,hidden_pick,palette PASS"
+    );
+    Ok(())
+}
+
+/// CAD parts end to end through the real worker process: create, combine
+/// (cut), guard polygon tools, STEP out and back in, part ↔ mesh, and undo.
+async fn check_cad_workflow(
+    window: WindowHandle<Studio>,
+    output: &std::path::Path,
+    cx: &mut AsyncApp,
+) -> Result<()> {
+    use crate::cad::{CadCommand, PartShape};
+    use forma_core::FeatureOperation;
+    let started = Instant::now();
+    let saved = window.update(cx, |s, w, cx| {
+        let saved = (
+            s.scene.clone(),
+            std::mem::take(&mut s.history),
+            s.selected,
+            s.objects_selected.clone(),
+            s.settings.clone(),
+            s.dirty,
+        );
+        s.execute(Command::SetEditMode(EditMode::Object), w, cx);
+        s.scene = Scene::empty();
+        s.select_objects(Default::default(), None);
+        s.settings.mode = RenderMode::Solid;
+        s.invalidate(true, cx);
+        saved
+    })?;
+    let idle = |s: &Studio| s.cad_idle();
+    let block = window.update(cx, |s, w, cx| {
+        s.execute(Command::Cad(CadCommand::AddPart(PartShape::Box)), w, cx);
+        s.selected.unwrap()
+    })?;
+    wait_for(window, cx, idle).await?;
+    window.update(cx, |s, _, _| -> Result<()> {
+        let object = s.scene.object(block).unwrap();
+        let mesh = s.scene.object_mesh(block);
+        ensure!(
+            object.kind() == "part",
+            "Part: Box created a {}",
+            object.kind()
+        );
+        ensure!(
+            mesh.is_some_and(|mesh| mesh.has_groups()
+                && mesh
+                    .groups
+                    .iter()
+                    .collect::<std::collections::BTreeSet<_>>()
+                    .len()
+                    == 6),
+            "a box part did not tessellate into six face groups"
+        );
+        ensure!(
+            s.scene.object_part(block).unwrap().is_evaluated()
+                && s.scene.object_part(block).unwrap().issues().is_empty(),
+            "the box part has regeneration issues"
+        );
+        Ok(())
+    })??;
+    // A thin cylinder through the box, then Cut with the box active.
+    let tool = window.update(cx, |s, w, cx| {
+        s.execute(
+            Command::Cad(CadCommand::AddPart(PartShape::Cylinder)),
+            w,
+            cx,
+        );
+        let tool = s.selected.unwrap();
+        s.scene.object_mut(tool).unwrap().transform.scale = glam::Vec3::new(0.4, 1.5, 0.4);
+        s.invalidate(true, cx);
+        tool
+    })?;
+    wait_for(window, cx, idle).await?;
+    window.update(cx, |s, w, cx| {
+        s.select_objects([block, tool].into_iter().collect(), Some(block));
+        s.execute(
+            Command::Cad(CadCommand::Combine(FeatureOperation::Cut)),
+            w,
+            cx,
+        );
+    })?;
+    wait_for(window, cx, idle).await?;
+    settle(window, cx).await?;
+    prepare_capture(window, cx).await?;
+    window.update(cx, |s, w, _| -> Result<()> {
+        let _ = capture_window(s, w, &output.join("cad-parts.png"));
+        ensure!(
+            s.scene.object(tool).is_none(),
+            "the cut tool stayed in the scene"
+        );
+        let part = s.scene.object_part(block).unwrap();
+        ensure!(
+            part.features.len() == 2 && part.issues().is_empty(),
+            "Cut did not add a clean combine feature: {:?}",
+            part.issues()
+        );
+        let groups: std::collections::BTreeSet<_> =
+            s.scene.object_mesh(block).unwrap().groups.iter().collect();
+        ensure!(
+            groups.len() == 7,
+            "the drilled box has {} faces",
+            groups.len()
+        );
+        Ok(())
+    })??;
+    // Polygon tools refuse parts instead of editing the cached tessellation.
+    window.update(cx, |s, w, cx| -> Result<()> {
+        s.execute(Command::SetEditMode(EditMode::Face), w, cx);
+        ensure!(
+            s.edit_mode == EditMode::Object && s.status.contains("Convert to mesh"),
+            "component editing reached a part: {}",
+            s.status
+        );
+        s.execute(Command::Subdivide, w, cx);
+        ensure!(
+            s.status.contains("Convert to mesh"),
+            "Subdivide reached a part"
+        );
+        Ok(())
+    })??;
+    // STEP out and back in.
+    let step = output.join("cad-part.step");
+    let _ = std::fs::remove_file(&step);
+    window.update(cx, |s, _, _| {
+        let parts = vec![forma_cad::StepPart {
+            name: "Drilled block".into(),
+            part: s.scene.object_part(block).unwrap().clone(),
+            transform: s.scene.world_transform(block).unwrap(),
+        }];
+        s.export_step_to(step.clone(), parts);
+    })?;
+    wait_for(window, cx, |s| s.status.starts_with("STEP export")).await?;
+    let text = std::fs::read_to_string(&step)?;
+    ensure!(
+        text.starts_with("ISO-10303-21;") && text.contains("2000-01-01T00:00:00"),
+        "STEP export is not a deterministic ISO 10303-21 file"
+    );
+    let objects = window.update(cx, |s, _, cx| {
+        s.import_step_from(step.clone(), cx);
+        s.scene.objects.len()
+    })?;
+    wait_for(window, cx, move |s| {
+        s.scene.objects.len() > objects && s.cad_idle()
+    })
+    .await?;
+    window.update(cx, |s, _, _| -> Result<()> {
+        let imported = s.selected.unwrap();
+        ensure!(
+            s.scene.object(imported).unwrap().name == "cad-part"
+                && s.scene
+                    .object_mesh(imported)
+                    .is_some_and(|mesh| mesh.has_groups()),
+            "the STEP import did not render as a part"
+        );
+        Ok(())
+    })??;
+    // Part → mesh → part, then undo back to the mesh.
+    window.update(cx, |s, w, cx| {
+        s.select_objects([block].into_iter().collect(), Some(block));
+        s.execute(Command::Cad(CadCommand::ConvertToMesh), w, cx);
+    })?;
+    wait_for(window, cx, move |s| {
+        s.scene.object(block).is_some_and(|o| o.kind() == "mesh")
+    })
+    .await?;
+    window.update(cx, |s, w, cx| -> Result<()> {
+        let mesh = s.scene.object_mesh(block).unwrap();
+        forma_cad::check_closed_manifold(mesh).map_err(anyhow::Error::msg)?;
+        ensure!(
+            mesh.groups.is_empty(),
+            "the baked mesh kept part face groups"
+        );
+        s.execute(Command::Cad(CadCommand::ConvertToPart), w, cx);
+        Ok(())
+    })??;
+    wait_for(window, cx, idle).await?;
+    window.update(cx, |s, w, cx| -> Result<()> {
+        let part = s.scene.object_part(block);
+        ensure!(
+            part.is_some_and(|p| p.is_evaluated() && p.issues().is_empty()),
+            "the mesh did not convert back into a clean part: {:?}",
+            part.map(|p| p.issues().to_vec())
+        );
+        s.execute(Command::Undo, w, cx);
+        ensure!(
+            s.scene.object(block).unwrap().kind() == "mesh",
+            "undo did not restore the mesh"
+        );
+        s.execute(Command::Undo, w, cx);
+        ensure!(
+            s.scene.object(block).unwrap().kind() == "part",
+            "undo did not restore the part"
+        );
+        Ok(())
+    })??;
+    wait_for(window, cx, idle).await?;
+    window.update(cx, |s, _, cx| {
+        let (scene, history, selected, objects, settings, dirty) = saved;
+        s.scene = scene;
+        s.history = history;
+        s.select_objects(objects, selected);
+        s.settings = settings;
+        s.dirty = dirty;
+        s.invalidate(true, cx);
+    })?;
+    settle(window, cx).await?;
+    println!(
+        "cad_workflow=part_cut_guard_step_round_trip_part_mesh_part_undo_pass ({:.1} s)",
+        started.elapsed().as_secs_f32()
     );
     Ok(())
 }

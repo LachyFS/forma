@@ -121,6 +121,11 @@ impl Scene {
                 .object(id)
                 .with_context(|| format!("Object {id} does not exist"))?;
             ensure!(
+                !object.is_part(),
+                "'{}' is a CAD part · Convert it to a mesh to bake its transform",
+                object.name
+            );
+            ensure!(
                 object.mesh_id().is_some(),
                 "Object '{}' is not a mesh",
                 object.name

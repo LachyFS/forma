@@ -154,6 +154,7 @@ impl MeshBuilder {
             mesh: Mesh {
                 positions: Vec::new(),
                 faces: Vec::new(),
+                groups: Vec::new(),
             },
             vertices: HashMap::new(),
             metres_per_unit: f64::from(metres_per_unit),

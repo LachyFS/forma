@@ -245,6 +245,7 @@ fn invalid_rays_empty_mesh_and_nonfinite_unused_vertices_match_exhaustive() {
     *scene.object_mesh_mut(id).unwrap() = Mesh {
         positions: vec![],
         faces: vec![],
+        groups: Vec::new(),
     };
     assert_same(&scene, ray);
 }
@@ -291,6 +292,7 @@ fn grazing_and_skinny_triangle_rays_match_exhaustive_across_scales() {
         *scene.object_mesh_mut(id).unwrap() = Mesh {
             positions: shape.into_iter().map(|point| point * size).collect(),
             faces: vec![vec![0, 1, 2]],
+            groups: Vec::new(),
         };
         scene.object_mut(id).unwrap().transform = Transform {
             translation: Vec3::new(random() - 0.5, random() - 0.5, random() - 0.5) * size,
@@ -385,6 +387,7 @@ fn loose_vertices_and_large_polygons_match_exhaustive() {
             })
             .collect(),
         faces: vec![(0..64).collect()],
+        groups: Vec::new(),
     };
     for x in [0.0, 0.5, 2.0] {
         assert_same(

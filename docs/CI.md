@@ -40,7 +40,13 @@ initial audit found no known vulnerabilities but did report unmaintained
 transitive dependencies including `async-std`, `instant`, `paste`,
 `proc-macro-error2`, `rustls-pemfile`, `rustybuzz`, and `ttf-parser`. Resolving these
 requires updates in their parent dependencies; warning-free dependency health is
-not implied by a passing vulnerability audit. The lockfile updates `rustls` to
+not implied by a passing vulnerability audit. The truck CAD kernel adds
+informational advisories for `cgmath` 0.18 (unmaintained, and unsound
+`Matrix{2,3,4}::swap_columns` with equal indices, which neither truck nor Forma
+calls) and `proc-macro-error` (unmaintained, build time only). truck's
+`truck-meshalgo` is vendored without its `vtk` default feature, which would
+otherwise add `lz4_flex` and `quick-xml` vulnerabilities; see
+`vendor/truck-meshalgo/FORMA-PATCH.md`. The lockfile updates `rustls` to
 0.23.45 to fix [RUSTSEC-2026-0285](https://rustsec.org/advisories/RUSTSEC-2026-0285.html).
 Release runs reuse this audit and block both packaging and publication if it fails.
 

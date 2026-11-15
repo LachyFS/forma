@@ -3,8 +3,10 @@
 //! Shortcuts use the keycap format understood by `components::keycaps`.
 use super::assets::Icon;
 use crate::app::{Command, EditMode, Tool};
+use crate::cad::{CadCommand, PartShape};
 use crate::platform_shortcut;
 use crate::sketch::{DrawCommand, DrawTool};
+use forma_core::FeatureOperation;
 use forma_core::Primitive;
 use forma_render::RenderMode;
 
@@ -164,6 +166,48 @@ pub(crate) fn command_info(command: Command) -> CommandInfo {
         Command::LoadPreviewHdri => info("Load a Radiance HDR environment"),
         Command::ResetPreview => info("Reset preview lighting"),
         Command::Draw(command) => draw_info(command),
+        Command::Cad(command) => cad_info(command),
+    }
+}
+
+fn cad_info(command: CadCommand) -> CommandInfo {
+    match command {
+        CadCommand::AddPart(PartShape::Box) => explained("Box part", "Parametric B-rep solid"),
+        CadCommand::AddPart(PartShape::Cylinder) => {
+            explained("Cylinder part", "Parametric B-rep solid")
+        }
+        CadCommand::AddPart(PartShape::Sphere) => {
+            explained("Sphere part", "Parametric B-rep solid")
+        }
+        CadCommand::ExtrudeSketch => explained(
+            "Extrude sketch",
+            "The selected sketch's outer regions, 1 m, as a new part",
+        ),
+        CadCommand::Combine(FeatureOperation::Cut) => explained(
+            "Cut",
+            "Subtract the other selected objects from the active one",
+        ),
+        CadCommand::Combine(FeatureOperation::Intersect) => explained(
+            "Intersect",
+            "Keep only where the selected objects overlap the active one",
+        ),
+        CadCommand::Combine(_) => explained(
+            "Join",
+            "Merge the other selected objects into the active one",
+        ),
+        CadCommand::ConvertToPart => explained(
+            "Convert to part",
+            "Closed meshes become B-rep solids; flat polygons become faces",
+        ),
+        CadCommand::ConvertToMesh => explained(
+            "Convert to mesh",
+            "Bake the part into polygons you can edit",
+        ),
+        CadCommand::ImportStep => info("Import STEP…"),
+        CadCommand::ExportStep => explained(
+            "Export STEP…",
+            "Selected parts, or all visible parts, in millimetres",
+        ),
     }
 }
 
@@ -299,6 +343,17 @@ pub(crate) fn command_icon(command: Command) -> Option<Icon> {
         Command::Draw(DrawCommand::ToggleConstruction) => Icon::DrawConstruction,
         Command::Draw(DrawCommand::ToggleRectangleMode) => Icon::DrawCenterRectangle,
         Command::Draw(DrawCommand::PolygonSides(_)) => Icon::DrawPolygon,
+        Command::Cad(CadCommand::AddPart(PartShape::Box)) => Icon::Part,
+        Command::Cad(CadCommand::AddPart(PartShape::Cylinder)) => Icon::Cylinder,
+        Command::Cad(CadCommand::AddPart(PartShape::Sphere)) => Icon::Sphere,
+        Command::Cad(CadCommand::ExtrudeSketch) => Icon::Extrude,
+        Command::Cad(CadCommand::Combine(FeatureOperation::Cut)) => Icon::Minus,
+        Command::Cad(CadCommand::Combine(FeatureOperation::Intersect)) => Icon::Inset,
+        Command::Cad(CadCommand::Combine(_)) => Icon::Plus,
+        Command::Cad(CadCommand::ConvertToPart) => Icon::Part,
+        Command::Cad(CadCommand::ConvertToMesh) => Icon::Mesh,
+        Command::Cad(CadCommand::ImportStep) => Icon::Import,
+        Command::Cad(CadCommand::ExportStep) => Icon::Export,
         _ => return None,
     })
 }
@@ -327,6 +382,7 @@ pub(crate) fn command_group(command: Command) -> &'static str {
         | Command::ExportImage => "File",
         Command::Add(_) => "Add",
         Command::Draw(_) => "Draw",
+        Command::Cad(_) => "Part",
         Command::Duplicate
         | Command::Delete
         | Command::ApplyScale
