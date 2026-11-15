@@ -260,7 +260,7 @@ pub struct Studio {
     #[cfg(target_os = "macos")]
     _pinch_monitor: Option<crate::trackpad::PinchMonitor>,
     worker: RenderWorker,
-    path: Option<PathBuf>,
+    pub(crate) path: Option<PathBuf>,
     pub(crate) scene_revision: u64,
     pub(crate) surface_query: OnceCell<forma_core::SurfaceQuery>,
     generation: u64,
