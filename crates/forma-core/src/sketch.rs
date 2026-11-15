@@ -6,6 +6,8 @@
 //! so scenes stay independent of the modelling kernel that consumes them.
 use crate::Ray;
 use anyhow::{Result, ensure};
+
+mod arrangement;
 use glam::{Mat4, Vec2, Vec3};
 use serde::{Deserialize, Serialize};
 use std::f32::consts::TAU;
@@ -335,6 +337,86 @@ impl SketchCurve {
         }
     }
 
+    /// The portion between normalized parameters `t0` and `t1`. A circle's
+    /// portion is an arc; `t1` may exceed one to wrap past angle zero.
+    pub fn sub_curve(&self, t0: f32, t1: f32) -> Self {
+        match *self {
+            Self::Line { .. } => Self::Line {
+                start: self.point_at(t0),
+                end: self.point_at(t1),
+            },
+            Self::Arc {
+                center,
+                radius,
+                start_angle,
+                sweep,
+            } => Self::Arc {
+                center,
+                radius,
+                start_angle: start_angle + sweep * t0,
+                sweep: sweep * (t1 - t0),
+            },
+            Self::Circle { center, radius } => Self::Arc {
+                center,
+                radius,
+                start_angle: TAU * t0,
+                sweep: TAU * (t1 - t0),
+            },
+        }
+    }
+
+    /// The same curve translated by `offset`.
+    pub fn translated(&self, offset: Vec2) -> Self {
+        match *self {
+            Self::Line { start, end } => Self::Line {
+                start: start + offset,
+                end: end + offset,
+            },
+            Self::Arc {
+                center,
+                radius,
+                start_angle,
+                sweep,
+            } => Self::Arc {
+                center: center + offset,
+                radius,
+                start_angle,
+                sweep,
+            },
+            Self::Circle { center, radius } => Self::Circle {
+                center: center + offset,
+                radius,
+            },
+        }
+    }
+
+    /// Points where a circle or arc reaches its extreme x or y.
+    pub fn quadrant_points(&self) -> Vec<Vec2> {
+        match *self {
+            Self::Line { .. } => Vec::new(),
+            Self::Circle { center, radius } => (0..4)
+                .map(|i| center + Vec2::from_angle(i as f32 * std::f32::consts::FRAC_PI_2) * radius)
+                .collect(),
+            Self::Arc {
+                center,
+                radius,
+                start_angle,
+                sweep,
+            } => (0..4)
+                .filter_map(|i| {
+                    let angle = i as f32 * std::f32::consts::FRAC_PI_2;
+                    let relative = (angle - start_angle).rem_euclid(TAU);
+                    let along = if sweep >= 0.0 {
+                        relative
+                    } else {
+                        (TAU - relative).rem_euclid(TAU)
+                    };
+                    (along <= sweep.abs()).then(|| center + Vec2::from_angle(angle) * radius)
+                })
+                .collect(),
+        }
+    }
+
     /// Axis-aligned bounds as (min, max).
     pub fn bounds(&self) -> (Vec2, Vec2) {
         match *self {
@@ -435,9 +517,26 @@ pub struct ProfileLoop {
 }
 
 impl ProfileLoop {
-    /// Positive for counter-clockwise loops.
+    /// Positive for counter-clockwise loops. Exact for lines and arcs.
     pub fn signed_area(&self) -> f32 {
-        signed_area(&self.polygon(self.tolerance()))
+        let mut area = 0.0_f64;
+        for segment in &self.segments {
+            match *segment {
+                SketchCurve::Line { start, end } => {
+                    area += start.as_dvec2().perp_dot(end.as_dvec2());
+                }
+                SketchCurve::Arc { radius, sweep, .. } => {
+                    // Chord triangle from the origin plus the circular segment.
+                    let (start, end) = (segment.start().as_dvec2(), segment.end().as_dvec2());
+                    let (r, w) = (radius as f64, sweep as f64);
+                    area += start.perp_dot(end) + r * r * (w - w.sin());
+                }
+                SketchCurve::Circle { radius, .. } => {
+                    area += std::f64::consts::TAU * (radius as f64).powi(2);
+                }
+            }
+        }
+        (area * 0.5) as f32
     }
 
     /// The loop as a closed polygon (first point not repeated).
@@ -453,33 +552,6 @@ impl ProfileLoop {
 
     pub fn contains(&self, point: Vec2) -> bool {
         point_in_polygon(point, &self.polygon(self.tolerance()))
-    }
-
-    /// The same loop traversed the other way. A circle has no direction, so
-    /// a reversed circle becomes two clockwise half arcs of the same entity.
-    fn reversed(&self) -> Self {
-        let mut segments = Vec::with_capacity(self.segments.len() + 1);
-        let mut entities = Vec::with_capacity(self.segments.len() + 1);
-        for (segment, entity) in self.segments.iter().zip(&self.entities).rev() {
-            match *segment {
-                SketchCurve::Circle { center, radius } => {
-                    for start_angle in [0.0, -std::f32::consts::PI] {
-                        segments.push(SketchCurve::Arc {
-                            center,
-                            radius,
-                            start_angle,
-                            sweep: -std::f32::consts::PI,
-                        });
-                        entities.push(*entity);
-                    }
-                }
-                curve => {
-                    segments.push(curve.reversed());
-                    entities.push(*entity);
-                }
-            }
-        }
-        Self { segments, entities }
     }
 
     fn tolerance(&self) -> f32 {
@@ -541,167 +613,110 @@ impl Sketch {
         Ok(())
     }
 
-    /// Closed regions formed by non-construction curves.
+    /// Closed regions formed by non-construction curves: the bounded faces
+    /// of their planar arrangement.
     ///
-    /// Curves are joined end to end where endpoints coincide within
-    /// `tolerance`; circles are closed loops on their own. Loops nested inside
-    /// another loop become holes, alternating with depth so islands inside
-    /// holes are profiles again. Curves that cross without sharing endpoints
-    /// are not split.
+    /// Curves are split wherever they cross, touch or overlap, and endpoints
+    /// closer than `tolerance` are joined, so overlapping rectangles yield one
+    /// profile per region and lines overshooting a corner still close it.
+    /// Dangling curves never bound a region. Each profile's outer loop runs
+    /// counter clockwise; connected groups of curves lying wholly inside it
+    /// are clockwise holes, and the regions inside those groups are profiles
+    /// of their own. Consecutive pieces of one curve are merged again, so a
+    /// lone circle stays a single circle segment. Profiles are ordered from
+    /// largest to smallest area.
     pub fn profiles(&self, tolerance: f32) -> Vec<Profile> {
-        let tolerance = tolerance.max(SKETCH_TOLERANCE);
-        let mut loops = closed_loops(&self.entities, tolerance);
-        // Normalize every loop to counter-clockwise before nesting.
-        for profile_loop in &mut loops {
-            if profile_loop.signed_area() < 0.0 {
-                *profile_loop = profile_loop.reversed();
-            }
-        }
-        loops.retain(|l| l.signed_area().abs() > tolerance * tolerance);
-        let areas: Vec<f32> = loops.iter().map(ProfileLoop::signed_area).collect();
-        let samples: Vec<Vec2> = loops.iter().map(interior_sample).collect();
-        // parent = smallest loop strictly containing this one.
-        let parents: Vec<Option<usize>> = (0..loops.len())
-            .map(|i| {
-                (0..loops.len())
-                    .filter(|&j| j != i && areas[j] > areas[i] && loops[j].contains(samples[i]))
-                    .min_by(|&a, &b| areas[a].total_cmp(&areas[b]))
-            })
-            .collect();
-        let depth = |mut i: usize| {
-            let mut depth = 0;
-            while let Some(parent) = parents[i] {
-                depth += 1;
-                i = parent;
-                if depth > loops.len() {
-                    break;
-                }
-            }
-            depth
-        };
-        let depths: Vec<usize> = (0..loops.len()).map(depth).collect();
-        let mut profiles = Vec::new();
-        for i in (0..loops.len()).filter(|&i| depths[i].is_multiple_of(2)) {
-            let holes = (0..loops.len())
-                .filter(|&j| parents[j] == Some(i))
-                .map(|j| loops[j].reversed())
-                .collect();
-            profiles.push(Profile {
-                outer: loops[i].clone(),
-                holes,
-            });
-        }
-        profiles
+        arrangement::profiles(&self.entities, tolerance.max(SKETCH_TOLERANCE))
     }
-}
 
-/// A point strictly inside a counter-clockwise or clockwise loop, used to test
-/// nesting without being confused by shared boundaries.
-fn interior_sample(profile_loop: &ProfileLoop) -> Vec2 {
-    let polygon = profile_loop.polygon(profile_loop.tolerance());
-    let (min, max) = profile_loop.bounds();
-    let size = (max - min).max_element().max(1.0e-6);
-    for segment in &profile_loop.segments {
-        let point = segment.midpoint();
-        let normal = segment.tangent_at(0.5).perp();
-        for offset in [1.0e-4, 1.0e-3, 1.0e-2] {
-            for side in [1.0, -1.0] {
-                let candidate = point + normal * side * offset * size;
-                if point_in_polygon(candidate, &polygon) {
-                    return candidate;
-                }
-            }
-        }
+    /// Points where two curves cross or touch away from shared endpoints,
+    /// including construction curves. Useful as snapping targets.
+    pub fn intersection_points(&self, tolerance: f32) -> Vec<Vec2> {
+        arrangement::crossing_points(&self.entities, tolerance.max(SKETCH_TOLERANCE) as f64)
     }
-    polygon.iter().copied().sum::<Vec2>() / polygon.len().max(1) as f32
-}
 
-fn closed_loops(entities: &[SketchEntity], tolerance: f32) -> Vec<ProfileLoop> {
-    let mut loops = Vec::new();
-    let mut open = Vec::new();
-    for (index, entity) in entities.iter().enumerate() {
-        if entity.construction || !entity.curve.is_valid() {
-            continue;
-        }
-        if entity.curve.is_closed() {
-            loops.push(ProfileLoop {
-                segments: vec![entity.curve],
-                entities: vec![index],
-            });
-        } else {
-            open.push(index);
-        }
-    }
-    // Greedy chaining: start from each unused curve and follow the unique
-    // continuation at each end; branch points stop a chain.
-    let mut used = vec![false; entities.len()];
-    let near = |a: Vec2, b: Vec2| a.distance(b) <= tolerance;
-    let degree = |point: Vec2| {
-        open.iter()
-            .filter(|&&i| {
-                let curve = entities[i].curve;
-                near(curve.start(), point) || near(curve.end(), point)
-            })
-            .count()
-    };
-    for &first in &open {
-        if used[first] {
-            continue;
-        }
-        let mut segments = vec![entities[first].curve];
-        let mut indices = vec![first];
-        let mut chain_used = vec![first];
-        let start = entities[first].curve.start();
-        let mut closed = false;
-        loop {
-            let end = segments.last().unwrap().end();
-            if segments.len() > 1 && near(end, start) {
-                closed = true;
-                break;
+    /// The piece of curve `entity` between the nearest curve contacts on
+    /// either side of `at`, and what remains of the curve without it.
+    /// Contacts include construction curves and T-junctions. A curve that
+    /// meets nothing is removed whole.
+    pub fn trim_piece(&self, entity: usize, at: Vec2, tolerance: f32) -> Option<TrimPiece> {
+        let tol = tolerance.max(SKETCH_TOLERANCE) as f64;
+        let (geo, params) = arrangement::split_parameters(&self.entities, entity, tol)?;
+        let (t, _) = geo.closest(at.as_dvec2());
+        let piece = |a: f64, b: f64| geo.sub(a, b).to_curve();
+        let valid = |curve: &SketchCurve| curve.is_valid();
+        if geo.is_closed() {
+            if params.len() < 2 {
+                return Some(TrimPiece {
+                    entity,
+                    removed: self.entities[entity].curve,
+                    kept: Vec::new(),
+                });
             }
-            if degree(end) != 2 {
-                break;
-            }
-            let next = open.iter().copied().find(|&i| {
-                !used[i] && !chain_used.contains(&i) && {
-                    let curve = entities[i].curve;
-                    near(curve.start(), end) || near(curve.end(), end)
-                }
-            });
-            let Some(next) = next else { break };
-            let curve = entities[next].curve;
-            let oriented = if near(curve.start(), end) {
-                curve
+            let after = params.iter().position(|&p| p > t).unwrap_or(params.len());
+            let (start, end) = if after == 0 || after == params.len() {
+                (params[params.len() - 1], params[0] + 1.0)
             } else {
-                curve.reversed()
+                (params[after - 1], params[after])
             };
-            segments.push(oriented);
-            indices.push(next);
-            chain_used.push(next);
-            if segments.len() > open.len() {
-                break;
-            }
-        }
-        if closed {
-            for &i in &chain_used {
-                used[i] = true;
-            }
-            loops.push(ProfileLoop {
-                segments,
-                entities: indices,
+            let kept = piece(end, start + 1.0);
+            return Some(TrimPiece {
+                entity,
+                removed: piece(start, end),
+                kept: [kept].into_iter().filter(valid).collect(),
             });
         }
+        let after = params
+            .iter()
+            .position(|&p| p > t)
+            .unwrap_or(params.len() - 1)
+            .max(1);
+        let (start, end) = (params[after - 1], params[after]);
+        let mut kept = Vec::new();
+        if start > 0.0 {
+            kept.push(piece(0.0, start));
+        }
+        if end < 1.0 {
+            kept.push(piece(end, 1.0));
+        }
+        kept.retain(valid);
+        Some(TrimPiece {
+            entity,
+            removed: piece(start, end),
+            kept,
+        })
     }
-    loops
+
+    /// Removes the piece found by [`Sketch::trim_piece`]. The remaining
+    /// parts keep the curve's construction flag; a second remaining part is
+    /// appended. Returns whether anything changed.
+    pub fn trim(&mut self, entity: usize, at: Vec2, tolerance: f32) -> bool {
+        let Some(trim) = self.trim_piece(entity, at, tolerance) else {
+            return false;
+        };
+        let construction = self.entities[entity].construction;
+        let mut kept = trim.kept.into_iter();
+        match kept.next() {
+            Some(first) => self.entities[entity].curve = first,
+            None => {
+                self.entities.remove(entity);
+            }
+        }
+        self.entities.extend(kept.map(|curve| SketchEntity {
+            curve,
+            construction,
+        }));
+        true
+    }
 }
 
-pub(crate) fn signed_area(points: &[Vec2]) -> f32 {
-    let mut area = 0.0;
-    for (i, a) in points.iter().enumerate() {
-        let b = points[(i + 1) % points.len()];
-        area += a.perp_dot(b);
-    }
-    area * 0.5
+/// Result of [`Sketch::trim_piece`].
+#[derive(Clone, Debug, PartialEq)]
+pub struct TrimPiece {
+    pub entity: usize,
+    pub removed: SketchCurve,
+    /// Zero, one or two curves that replace the trimmed entity.
+    pub kept: Vec<SketchCurve>,
 }
 
 pub(crate) fn point_in_polygon(point: Vec2, polygon: &[Vec2]) -> bool {
@@ -825,7 +840,8 @@ mod tests {
             .into(),
         );
         let profiles = sketch.profiles(SKETCH_TOLERANCE);
-        assert_eq!(profiles.len(), 1);
+        // The ring around the circle and the disc inside it are both regions.
+        assert_eq!(profiles.len(), 2);
         let profile = &profiles[0];
         assert_eq!(profile.holes.len(), 1);
         assert!(profile.outer.signed_area() > 0.0);
@@ -834,10 +850,18 @@ mod tests {
         assert!((profile.area() - expected).abs() < 0.01);
         assert!(profile.contains(Vec2::new(0.5, 0.5)));
         assert!(!profile.contains(Vec2::new(2.0, 1.5)));
+        let disc = &profiles[1];
+        assert!(disc.holes.is_empty());
+        assert_eq!(disc.outer.segments.len(), 1, "a lone circle stays whole");
+        assert!(matches!(disc.outer.segments[0], SketchCurve::Circle { .. }));
+        assert!(disc.contains(Vec2::new(2.0, 1.5)));
+        // The hole is the same circle, traversed clockwise in two halves.
+        assert_eq!(profile.holes[0].entities, vec![4, 4]);
+        assert_loops_are_closed(&profiles);
     }
 
     #[test]
-    fn islands_inside_holes_are_profiles_and_construction_is_ignored() {
+    fn nested_loops_are_separate_regions_and_construction_is_ignored() {
         let mut sketch = Sketch::new(SketchPlane::front());
         sketch.entities = rectangle((0.0, 0.0), (10.0, 10.0));
         sketch.entities.extend(rectangle((2.0, 2.0), (8.0, 8.0)));
@@ -850,11 +874,23 @@ mod tests {
         construction.construction = true;
         sketch.entities.push(construction);
         let profiles = sketch.profiles(SKETCH_TOLERANCE);
-        assert_eq!(profiles.len(), 2);
-        let ring = profiles.iter().find(|p| !p.holes.is_empty()).unwrap();
-        assert!((ring.area() - 64.0).abs() < 1.0e-3);
-        let island = profiles.iter().find(|p| p.holes.is_empty()).unwrap();
-        assert!((island.area() - 4.0).abs() < 1.0e-3);
+        assert_eq!(profiles.len(), 3);
+        let areas: Vec<f32> = profiles.iter().map(Profile::area).collect();
+        for (area, expected) in areas.iter().zip([64.0, 32.0, 4.0]) {
+            assert!((area - expected).abs() < 1.0e-3, "{areas:?}");
+        }
+        assert_eq!(profiles[0].holes.len(), 1);
+        assert_eq!(profiles[1].holes.len(), 1);
+        assert!(profiles[2].holes.is_empty());
+        // Every region is reported once: the point sets do not overlap.
+        for point in [
+            Vec2::new(1.0, 1.0),
+            Vec2::new(3.0, 3.0),
+            Vec2::new(5.0, 5.0),
+        ] {
+            assert_eq!(profiles.iter().filter(|p| p.contains(point)).count(), 1);
+        }
+        assert_loops_are_closed(&profiles);
     }
 
     #[test]
@@ -903,5 +939,357 @@ mod tests {
         assert!(sketch.validate().is_ok());
         sketch.plane.x_axis = Vec3::new(2.0, 0.0, 0.0);
         assert!(sketch.validate().is_err());
+    }
+
+    fn circle(center: (f32, f32), radius: f32) -> SketchEntity {
+        SketchCurve::Circle {
+            center: Vec2::new(center.0, center.1),
+            radius,
+        }
+        .into()
+    }
+
+    fn sketch_of(entities: Vec<SketchEntity>) -> Sketch {
+        Sketch {
+            entities,
+            ..Sketch::default()
+        }
+    }
+
+    fn sorted_areas(profiles: &[Profile]) -> Vec<f32> {
+        let mut areas: Vec<f32> = profiles.iter().map(Profile::area).collect();
+        areas.sort_by(f32::total_cmp);
+        areas
+    }
+
+    fn assert_close(actual: &[f32], expected: &[f32], tolerance: f32) {
+        assert_eq!(actual.len(), expected.len(), "{actual:?} vs {expected:?}");
+        for (a, e) in actual.iter().zip(expected) {
+            assert!((a - e).abs() <= tolerance, "{actual:?} vs {expected:?}");
+        }
+    }
+
+    /// Every loop is a closed chain and outer/hole orientations are correct.
+    fn assert_loops_are_closed(profiles: &[Profile]) {
+        for profile in profiles {
+            assert!(profile.outer.signed_area() > 0.0);
+            for hole in &profile.holes {
+                assert!(hole.signed_area() < 0.0);
+            }
+            for profile_loop in std::iter::once(&profile.outer).chain(&profile.holes) {
+                assert_eq!(profile_loop.segments.len(), profile_loop.entities.len());
+                let count = profile_loop.segments.len();
+                for (i, segment) in profile_loop.segments.iter().enumerate() {
+                    assert!(segment.is_valid(), "{segment:?}");
+                    if count == 1 {
+                        assert!(
+                            segment.is_closed() || segment.start().distance(segment.end()) < 1.0e-4
+                        );
+                        continue;
+                    }
+                    let next = profile_loop.segments[(i + 1) % count];
+                    assert!(
+                        segment.end().distance(next.start()) < 1.0e-4,
+                        "gap between {segment:?} and {next:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn overlapping_rectangles_split_into_three_regions() {
+        let mut entities = rectangle((0.0, 0.0), (4.0, 2.0));
+        entities.extend(rectangle((2.0, 1.0), (6.0, 3.0)));
+        let profiles = sketch_of(entities).profiles(SKETCH_TOLERANCE);
+        assert_close(&sorted_areas(&profiles), &[2.0, 6.0, 6.0], 1.0e-4);
+        let overlap = profiles
+            .iter()
+            .find(|p| p.contains(Vec2::new(3.0, 1.5)))
+            .unwrap();
+        assert!((overlap.area() - 2.0).abs() < 1.0e-4);
+        // The overlap is bounded by pieces of both rectangles.
+        assert!(overlap.outer.entities.iter().any(|&e| e < 4));
+        assert!(overlap.outer.entities.iter().any(|&e| e >= 4));
+        assert_loops_are_closed(&profiles);
+    }
+
+    #[test]
+    fn overlapping_circles_form_a_lens_and_two_moons() {
+        let sketch = sketch_of(vec![circle((0.0, 0.0), 1.0), circle((1.0, 0.0), 1.0)]);
+        let profiles = sketch.profiles(SKETCH_TOLERANCE);
+        let lens = 2.0 * std::f32::consts::PI / 3.0 - 3.0_f32.sqrt() / 2.0;
+        let moon = std::f32::consts::PI - lens;
+        assert_close(&sorted_areas(&profiles), &[lens, moon, moon], 2.0e-3);
+        for profile in &profiles {
+            assert!(
+                profile
+                    .outer
+                    .segments
+                    .iter()
+                    .all(|s| matches!(s, SketchCurve::Arc { .. }))
+            );
+        }
+        assert_loops_are_closed(&profiles);
+    }
+
+    #[test]
+    fn rectangle_crossed_by_circle_and_line_splits_regions() {
+        let mut entities = rectangle((0.0, 0.0), (4.0, 4.0));
+        entities.push(circle((4.0, 2.0), 1.0));
+        let profiles = sketch_of(entities.clone()).profiles(SKETCH_TOLERANCE);
+        let half = std::f32::consts::PI * 0.5;
+        assert_close(&sorted_areas(&profiles), &[half, half, 16.0 - half], 1.0e-3);
+        // A chord line across the square adds one more split.
+        entities.push(line((0.0, 3.0), (4.0, 3.0)));
+        let profiles = sketch_of(entities).profiles(SKETCH_TOLERANCE);
+        assert_eq!(profiles.len(), 4);
+        assert_loops_are_closed(&profiles);
+    }
+
+    #[test]
+    fn t_junctions_and_overshoots_split_regions() {
+        let mut entities = rectangle((0.0, 0.0), (4.0, 2.0));
+        // Ends exactly on the top and bottom edges.
+        entities.push(line((1.0, 0.0), (1.0, 2.0)));
+        // Overshoots both edges; the dangling ends are ignored.
+        entities.push(line((3.0, -1.0), (3.0, 3.0)));
+        // A dangling spur inside a region does not change it.
+        entities.push(line((2.0, 1.0), (2.5, 1.5)));
+        let profiles = sketch_of(entities).profiles(SKETCH_TOLERANCE);
+        assert_close(&sorted_areas(&profiles), &[2.0, 2.0, 4.0], 1.0e-4);
+        assert_loops_are_closed(&profiles);
+        // Corners where four lines overshoot each other still close.
+        let profiles = sketch_of(vec![
+            line((-0.5, 0.0), (2.5, 0.0)),
+            line((2.0, -0.5), (2.0, 2.5)),
+            line((2.5, 2.0), (-0.5, 2.0)),
+            line((0.0, 2.5), (0.0, -0.5)),
+        ])
+        .profiles(SKETCH_TOLERANCE);
+        assert_close(&sorted_areas(&profiles), &[4.0], 1.0e-4);
+        assert_eq!(profiles[0].outer.segments.len(), 4);
+    }
+
+    #[test]
+    fn tangent_circles_touch_without_merging_regions() {
+        // Internal tangency: a circle touching the inside of a square.
+        let mut entities = rectangle((0.0, 0.0), (2.0, 2.0));
+        entities.push(circle((1.0, 0.5), 0.5));
+        let profiles = sketch_of(entities).profiles(SKETCH_TOLERANCE);
+        let disc = std::f32::consts::PI * 0.25;
+        assert_close(&sorted_areas(&profiles), &[disc, 4.0 - disc], 1.0e-3);
+        assert_loops_are_closed(&profiles);
+        // External tangency: two discs that only share one point.
+        let profiles = sketch_of(vec![circle((0.0, 0.0), 1.0), circle((2.0, 0.0), 1.0)])
+            .profiles(SKETCH_TOLERANCE);
+        let disc = std::f32::consts::PI;
+        assert_close(&sorted_areas(&profiles), &[disc, disc], 2.0e-3);
+        // A line tangent to a circle does not cut it.
+        let mut entities = rectangle((-2.0, -1.0), (2.0, 3.0));
+        entities.push(circle((0.0, 0.0), 1.0));
+        let profiles = sketch_of(entities).profiles(SKETCH_TOLERANCE);
+        let disc = std::f32::consts::PI;
+        assert_close(&sorted_areas(&profiles), &[disc, 16.0 - disc], 2.0e-3);
+    }
+
+    #[test]
+    fn gaps_close_only_within_tolerance() {
+        let tolerance = 1.0e-3;
+        let gap = |size: f32| {
+            sketch_of(vec![
+                line((0.0, 0.0), (1.0, 0.0)),
+                line((1.0, 0.0), (1.0, 1.0)),
+                line((1.0, 1.0), (0.0, 1.0)),
+                line((0.0, 1.0), (0.0, size)),
+            ])
+            .profiles(tolerance)
+        };
+        assert_eq!(gap(tolerance * 0.5).len(), 1);
+        assert!(gap(tolerance * 3.0).is_empty());
+        // A line stopping just short of another closes when within tolerance.
+        let mut entities = rectangle((0.0, 0.0), (2.0, 1.0));
+        entities.push(line((1.0, tolerance * 0.4), (1.0, 1.0 - tolerance * 0.4)));
+        assert_eq!(sketch_of(entities).profiles(tolerance).len(), 2);
+    }
+
+    #[test]
+    fn duplicate_and_collinear_overlapping_curves_are_merged() {
+        let mut entities = rectangle((0.0, 0.0), (2.0, 2.0));
+        entities.extend(rectangle((0.0, 0.0), (2.0, 2.0)));
+        let profiles = sketch_of(entities).profiles(SKETCH_TOLERANCE);
+        assert_close(&sorted_areas(&profiles), &[4.0], 1.0e-4);
+        // Bottom edge drawn as two overlapping lines.
+        let profiles = sketch_of(vec![
+            line((0.0, 0.0), (1.5, 0.0)),
+            line((0.5, 0.0), (2.0, 0.0)),
+            line((2.0, 0.0), (2.0, 2.0)),
+            line((2.0, 2.0), (0.0, 2.0)),
+            line((0.0, 2.0), (0.0, 0.0)),
+        ])
+        .profiles(SKETCH_TOLERANCE);
+        assert_close(&sorted_areas(&profiles), &[4.0], 1.0e-4);
+        assert_loops_are_closed(&profiles);
+        // Overlapping concentric arcs forming a full circle.
+        let arc = |start: f32, sweep: f32| -> SketchEntity {
+            SketchCurve::Arc {
+                center: Vec2::ZERO,
+                radius: 1.0,
+                start_angle: start,
+                sweep,
+            }
+            .into()
+        };
+        let profiles = sketch_of(vec![arc(0.0, 4.0), arc(3.0, 4.0)]).profiles(SKETCH_TOLERANCE);
+        assert_close(&sorted_areas(&profiles), &[std::f32::consts::PI], 2.0e-3);
+    }
+
+    #[test]
+    fn bridges_and_islands_become_holes() {
+        // A square island joined to its surrounding square by a line.
+        let mut entities = rectangle((0.0, 0.0), (10.0, 10.0));
+        entities.extend(rectangle((4.0, 4.0), (6.0, 6.0)));
+        entities.push(line((0.0, 5.0), (4.0, 5.0)));
+        let profiles = sketch_of(entities).profiles(SKETCH_TOLERANCE);
+        assert_close(&sorted_areas(&profiles), &[4.0, 96.0], 1.0e-3);
+        let ring = &profiles[0];
+        assert_eq!(ring.holes.len(), 1);
+        assert_eq!(
+            ring.outer.segments.len(),
+            4,
+            "the bridge is not part of the loop"
+        );
+        assert_loops_are_closed(&profiles);
+    }
+
+    #[test]
+    fn many_curves_build_regions_quickly() {
+        let started = std::time::Instant::now();
+        let mut entities = Vec::new();
+        for i in 0..=20 {
+            let x = i as f32;
+            entities.push(line((x, 0.0), (x, 20.0)));
+            entities.push(line((0.0, x), (20.0, x)));
+        }
+        let profiles = sketch_of(entities).profiles(SKETCH_TOLERANCE);
+        assert_eq!(profiles.len(), 400);
+        assert!(profiles.iter().all(|p| (p.area() - 1.0).abs() < 1.0e-3));
+        let mut entities = Vec::new();
+        for i in 0..600 {
+            let (x, y) = ((i % 30) as f32 * 3.0, (i / 30) as f32 * 3.0);
+            entities.push(circle((x, y), 1.0));
+            entities.extend(rectangle((x + 1.2, y), (x + 1.8, y + 0.6)));
+        }
+        let profiles = sketch_of(entities).profiles(SKETCH_TOLERANCE);
+        assert_eq!(profiles.len(), 1200);
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(10),
+            "arrangement took {:?}",
+            started.elapsed()
+        );
+    }
+
+    #[test]
+    fn intersection_points_skip_shared_endpoints() {
+        let mut entities = rectangle((0.0, 0.0), (2.0, 2.0));
+        entities.push(line((1.0, -1.0), (1.0, 3.0)));
+        entities.push(circle((2.0, 2.0), 0.5));
+        let points = sketch_of(entities).intersection_points(SKETCH_TOLERANCE);
+        // The circle around the corner meets both edges that end there.
+        let expect = [
+            Vec2::new(1.0, 0.0),
+            Vec2::new(1.0, 2.0),
+            Vec2::new(1.5, 2.0),
+            Vec2::new(2.0, 1.5),
+        ];
+        assert_eq!(points.len(), expect.len(), "{points:?}");
+        for p in expect {
+            assert!(
+                points.iter().any(|q| q.distance(p) < 1.0e-4),
+                "{p} in {points:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn trimming_removes_the_piece_between_neighbouring_contacts() {
+        // A horizontal line crossed by two verticals: trim its middle.
+        let mut sketch = sketch_of(vec![
+            line((0.0, 0.0), (4.0, 0.0)),
+            line((1.0, -1.0), (1.0, 1.0)),
+            line((3.0, -1.0), (3.0, 1.0)),
+        ]);
+        let trim = sketch
+            .trim_piece(0, Vec2::new(2.0, 0.1), SKETCH_TOLERANCE)
+            .unwrap();
+        assert_eq!(trim.kept.len(), 2);
+        assert!(trim.removed.start().distance(Vec2::new(1.0, 0.0)) < 1.0e-5);
+        assert!(trim.removed.end().distance(Vec2::new(3.0, 0.0)) < 1.0e-5);
+        assert!(sketch.trim(0, Vec2::new(2.0, 0.1), SKETCH_TOLERANCE));
+        assert_eq!(sketch.entities.len(), 4);
+        // The end piece has one contact; the outer end disappears.
+        let index = sketch
+            .entities
+            .iter()
+            .position(|e| e.curve.start().x < 0.5 && e.curve.start().y == 0.0)
+            .unwrap();
+        assert!(sketch.trim(index, Vec2::new(0.2, 0.0), SKETCH_TOLERANCE));
+        assert_eq!(sketch.entities.len(), 3);
+        // A curve that meets nothing is removed whole.
+        let mut lonely = sketch_of(vec![line((0.0, 0.0), (1.0, 0.0))]);
+        assert!(lonely.trim(0, Vec2::new(0.5, 0.0), SKETCH_TOLERANCE));
+        assert!(lonely.entities.is_empty());
+    }
+
+    #[test]
+    fn trimming_circles_keeps_the_remaining_arc() {
+        let mut entities = rectangle((0.0, 0.0), (2.0, 2.0));
+        entities.push(circle((2.0, 1.0), 0.5));
+        let mut sketch = sketch_of(entities);
+        // Trim the half of the circle outside the square.
+        let trim = sketch
+            .trim_piece(4, Vec2::new(2.6, 1.0), SKETCH_TOLERANCE)
+            .unwrap();
+        assert_eq!(trim.kept.len(), 1);
+        assert!((trim.removed.length() - std::f32::consts::PI * 0.5).abs() < 1.0e-4);
+        let kept = trim.kept[0];
+        assert!(kept.midpoint().distance(Vec2::new(1.5, 1.0)) < 1.0e-4);
+        assert!(sketch.trim(4, Vec2::new(2.6, 1.0), SKETCH_TOLERANCE));
+        // The square's right edge between the arc ends is a separate piece.
+        let profiles = sketch.profiles(SKETCH_TOLERANCE);
+        let half = std::f32::consts::PI * 0.125;
+        assert_close(&sorted_areas(&profiles), &[half, 4.0 - half], 1.0e-3);
+        // A lone circle is removed whole; construction curves count as contacts.
+        let mut lone = sketch_of(vec![circle((0.0, 0.0), 1.0)]);
+        assert!(lone.trim(0, Vec2::new(1.0, 0.0), SKETCH_TOLERANCE));
+        assert!(lone.entities.is_empty());
+        let mut guide: SketchEntity = line((0.0, -2.0), (0.0, 2.0));
+        guide.construction = true;
+        let mut cut = sketch_of(vec![circle((0.0, 0.0), 1.0), guide]);
+        assert!(cut.trim(0, Vec2::new(1.0, 0.0), SKETCH_TOLERANCE));
+        assert!(matches!(cut.entities[0].curve, SketchCurve::Arc { .. }));
+        assert!(cut.entities[1].construction);
+    }
+
+    #[test]
+    fn sub_curves_quadrants_and_translation() {
+        let arc = SketchCurve::arc_through(
+            Vec2::new(1.0, 0.0),
+            Vec2::new(0.0, 1.0),
+            Vec2::new(-1.0, 0.0),
+        )
+        .unwrap();
+        let half = arc.sub_curve(0.0, 0.5);
+        assert!(half.end().distance(Vec2::new(0.0, 1.0)) < 1.0e-5);
+        assert_eq!(arc.quadrant_points().len(), 3);
+        let circle = SketchCurve::Circle {
+            center: Vec2::ZERO,
+            radius: 2.0,
+        };
+        assert_eq!(circle.quadrant_points().len(), 4);
+        let wrapped = circle.sub_curve(0.75, 1.25);
+        assert!(wrapped.midpoint().distance(Vec2::new(2.0, 0.0)) < 1.0e-5);
+        let moved = circle.translated(Vec2::new(1.0, 1.0));
+        assert_eq!(moved.center(), Some(Vec2::new(1.0, 1.0)));
     }
 }
