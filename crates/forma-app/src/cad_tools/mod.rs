@@ -132,6 +132,8 @@ pub(crate) struct RegionHover {
 }
 
 type Cached<K, T> = RefCell<Option<(K, Rc<T>)>>;
+/// A cached face highlight: scene revision, camera, refined, mask.
+pub(crate) type FaceCacheEntry = (u64, forma_core::Camera, bool, Rc<overlay::FaceHighlight>);
 /// Per-part topology for one scene revision.
 type TopologyCache = RefCell<Option<(u64, Vec<(u64, Rc<edit::Topology>)>)>>;
 
@@ -149,14 +151,9 @@ pub(crate) struct CadToolState {
     regions: Cached<(u64, u64), Vec<Rc<Regions>>>,
     /// B-rep edges and face data of part tessellations, per scene revision.
     pub(crate) topology: TopologyCache,
-    /// Visible triangles and outline of highlighted part faces.
-    #[allow(clippy::type_complexity)]
-    pub(crate) faces: RefCell<
-        std::collections::HashMap<
-            (u64, u32),
-            (u64, forma_core::Camera, Rc<overlay::FaceHighlight>),
-        >,
-    >,
+    /// Visible triangles and outline of highlighted part faces, per scene
+    /// revision and camera, and whether the mask is refined.
+    pub(crate) faces: RefCell<std::collections::HashMap<(u64, u32), FaceCacheEntry>>,
     /// Pointer position of the last hover update, to skip redundant picks.
     last_hover: Option<Vec2>,
 }

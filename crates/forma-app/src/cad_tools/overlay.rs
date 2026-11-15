@@ -584,9 +584,11 @@ impl Studio {
         }
     }
 
-    /// Splits a triangle until its pieces are small on screen, keeping the
-    /// pieces whose centre is unoccluded: large planar facets partly behind
-    /// other geometry are tinted only where they show.
+    /// Keeps the unoccluded part of a triangle: wholly visible or hidden
+    /// triangles (corners and centre agree) are decided at once; only those
+    /// crossing an occlusion boundary are split, down to a few pixels. So a
+    /// large planar facet partly behind other geometry is tinted only where
+    /// it shows, for a bounded number of visibility rays.
     fn visible_pieces(
         &self,
         [a, b, c]: [Vec3; 3],
@@ -595,24 +597,50 @@ impl Studio {
         budget: &mut usize,
         out: &mut Vec<Vec<Vec3>>,
     ) {
-        let span = match (
+        let (span, area) = match (
             self.world_to_screen(a),
             self.world_to_screen(b),
             self.world_to_screen(c),
         ) {
-            (Some(p), Some(q), Some(r)) => p.distance(q).max(q.distance(r)).max(r.distance(p)),
-            _ => 0.0,
+            (Some(p), Some(q), Some(r)) => (
+                p.distance(q).max(q.distance(r)).max(r.distance(p)),
+                (q - p).perp_dot(r - p).abs() * 0.5,
+            ),
+            _ => (0.0, 0.0),
         };
-        // Each split costs three more visibility rays; the budget keeps a
-        // huge, close face cheap while orbiting.
-        if depth < 4 && span > 32.0 && *budget >= 3 {
-            *budget -= 3;
+        let centre = (a + b + c) / 3.0;
+        // Corners, edge midpoints and centre: a long sliver crossing an
+        // occluder shows the crossing at its midpoints.
+        // Samples sit slightly inside the piece: points exactly on the face's
+        // own boundary (a hole's rim, the foot of a boss) graze neighbouring
+        // faces and would read as occluded, refining every boundary.
+        let inset = |p: Vec3| p + (centre - p) * 0.08;
+        let samples = [
+            centre,
+            inset(a),
+            inset(b),
+            inset(c),
+            inset((a + b) * 0.5),
+            inset((b + c) * 0.5),
+            inset((c + a) * 0.5),
+        ];
+        let flags: Vec<bool> = samples.iter().map(|p| visible(*p)).collect();
+        let mixed = flags.iter().any(|v| *v) && !flags.iter().all(|v| *v);
+        // Very large pieces are split regardless, since an occluder can sit
+        // wholly inside them; otherwise only pieces crossing a boundary.
+        let split = area > 4000.0 || (mixed && span > 5.0);
+        if !split || depth >= 10 || *budget == 0 {
+            if flags[0] {
+                out.push(vec![a, b, c]);
+            }
+            return;
+        }
+        {
+            *budget -= 1;
             let (ab, bc, ca) = ((a + b) * 0.5, (b + c) * 0.5, (c + a) * 0.5);
             for piece in [[a, ab, ca], [ab, b, bc], [ca, bc, c], [ab, bc, ca]] {
                 self.visible_pieces(piece, depth + 1, visible, budget, out);
             }
-        } else if visible((a + b + c) / 3.0) {
-            out.push(vec![a, b, c]);
         }
     }
 
@@ -622,9 +650,14 @@ impl Studio {
     fn face_highlight(&self, object: u64, group: u32) -> Rc<FaceHighlight> {
         let camera = self.scene.camera;
         let key = (object, group);
-        if let Some((revision, cached_camera, face)) = self.cad_tool.faces.borrow().get(&key)
+        // While the view moves, a cheap pass (one ray per triangle) keeps
+        // navigation smooth; the refined mask follows when it settles.
+        let refine = self.navigation.is_none();
+        if let Some((revision, cached_camera, refined, face)) =
+            self.cad_tool.faces.borrow().get(&key)
             && *revision == self.scene_revision
             && *cached_camera == camera
+            && (*refined || !refine)
         {
             return face.clone();
         }
@@ -645,11 +678,17 @@ impl Studio {
             let visible = |p: Vec3| crate::viewport::visible_in_query(camera, query, p);
             let faces = super::geometry::group_faces(mesh, group);
             let prism = super::push_pull::face_prism(mesh, &faces, matrix, Vec3::ZERO);
-            let mut budget = 3000;
+            let mut budget = 4000;
             for triangle in &prism.triangles {
                 let [a, b, c] = triangle.map(|i| prism.points[i as usize]);
-                if facing((b - a).cross(c - a), (a + b + c) / 3.0) {
+                let centre = (a + b + c) / 3.0;
+                if !facing((b - a).cross(c - a), centre) {
+                    continue;
+                }
+                if refine {
                     self.visible_pieces([a, b, c], 0, &visible, &mut budget, &mut face.fill);
+                } else if visible(centre) {
+                    face.fill.push(vec![a, b, c]);
                 }
             }
             for edge in super::geometry::group_boundary(mesh, &faces) {
@@ -663,10 +702,10 @@ impl Studio {
         }
         let face = Rc::new(face);
         let mut cache = self.cad_tool.faces.borrow_mut();
-        cache.retain(|_, (revision, cached_camera, _)| {
+        cache.retain(|_, (revision, cached_camera, _, _)| {
             *revision == self.scene_revision && *cached_camera == camera
         });
-        cache.insert(key, (self.scene_revision, camera, face.clone()));
+        cache.insert(key, (self.scene_revision, camera, refine, face.clone()));
         face
     }
 }
