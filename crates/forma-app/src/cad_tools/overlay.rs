@@ -269,10 +269,11 @@ impl Studio {
         let dragging = tool.drag.as_ref().is_some_and(|d| d.started());
         // Once the kernel's real result is on screen, the ghost recedes to an outline.
         let real = !dragging
-            && tool.session.preview.as_ref().is_some_and(|preview| {
-                self.scene
-                    .part(preview.part)
-                    .is_some_and(|part| part.is_evaluated() && part.issues().is_empty())
+            && tool.preview.as_ref().is_some_and(|preview| {
+                preview.key == tool.preview_key()
+                    && preview.outcome.as_ref().is_some_and(|outcome| {
+                        !outcome.failed && outcome.issues.iter().all(|issue| issue.warning)
+                    })
             });
         let fill = if real { 0.0 } else { 1.0 };
         match tool.kind {

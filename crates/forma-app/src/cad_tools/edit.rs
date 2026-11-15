@@ -844,6 +844,7 @@ impl Studio {
             edges,
             &self.scene,
             self.edit_mode,
+            self.history_version(),
         ));
         self.status = format!(
             "Chamfered {} edge{} by {} · Regenerating…",

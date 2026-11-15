@@ -68,6 +68,7 @@ pub(crate) fn snap_angle(angle: f32, step: f32) -> f32 {
 // Polygons and triangulation
 
 /// Twice the signed area: positive for counter-clockwise loops.
+#[cfg(test)]
 pub(crate) fn signed_area(points: &[Vec2]) -> f32 {
     let mut sum = 0.0;
     for (i, a) in points.iter().enumerate() {

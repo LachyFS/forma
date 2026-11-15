@@ -359,8 +359,7 @@ pub(crate) async fn check_cad_tools_workflow(
         s.scene.camera
     })?;
     wait_for(window, cx, |s| {
-        matches!(&s.cad_tool.tool, Some(Tool::Sketch(tool)) if tool.session.preview.is_some())
-            && s.cad_idle()
+        matches!(&s.cad_tool.tool, Some(Tool::Sketch(tool)) if tool.preview.as_ref().is_some_and(|p| p.outcome.is_some()))
     })
     .await
     .context("the kernel preview did not apply")?;

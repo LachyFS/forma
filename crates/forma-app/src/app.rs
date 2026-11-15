@@ -777,7 +777,8 @@ impl Studio {
 
     fn submit_render(&mut self) {
         if self.needs_snapshot {
-            self.scene_snapshot = Arc::new(self.scene.clone());
+            // The document, plus a modelling tool's display-only preview.
+            self.scene_snapshot = Arc::new(self.render_scene());
             self.needs_snapshot = false;
         }
         self.worker.request(self.request());
@@ -1594,6 +1595,7 @@ impl Studio {
         self.preview_load_id += 1;
         self.preview_loading = false;
         self.project_epoch += 1;
+        self.reset_cad_tools();
         self.scene = Scene::default();
         self.history = History::default();
         self.restore_render_preferences();
@@ -1787,6 +1789,7 @@ impl Studio {
                 }
                 match result {
                     Ok((scene, Some(id))) => {
+                        s.reset_cad_tools();
                         s.history.checkpoint(&s.scene);
                         s.scene = scene;
                         s.selected = Some(id);
@@ -1799,6 +1802,7 @@ impl Studio {
                     }
                     Ok((scene, None)) => {
                         s.project_epoch += 1;
+                        s.reset_cad_tools();
                         s.scene = scene;
                         s.restore_render_preferences();
                         s.history = History::default();

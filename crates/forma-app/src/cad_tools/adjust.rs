@@ -22,6 +22,13 @@ pub enum AdjustParam {
 }
 
 impl AdjustParam {
+    pub(crate) fn label(self) -> &'static str {
+        match self {
+            Self::Distance => "distance",
+            Self::Angle => "angle",
+        }
+    }
+
     /// The inspector field editing the same value.
     pub(crate) fn feature_field(self) -> crate::timeline::FeatureField {
         match self {
@@ -45,6 +52,10 @@ pub(crate) enum LastKind {
         symmetric: bool,
         operation: Operation,
         prism: Rc<Prism>,
+        /// When Join/Cut was inferred from the face the sketch lies on: the
+        /// sketch normal and the face's outward normal (world), so Flip can
+        /// infer again as the tool's F does.
+        inference: Option<(Vec3, Vec3)>,
     },
     Revolve {
         operation: Operation,
@@ -81,6 +92,9 @@ pub(crate) struct LastOperation {
     transform: Transform,
     mesh_marker: Option<(usize, usize)>,
     edit_mode: EditMode,
+    /// `History::version` after the commit; amendments keep it. Any other
+    /// undo step (an inspector edit, a move, undo) hides the panel.
+    history: u64,
 }
 
 impl LastOperation {
@@ -102,7 +116,13 @@ impl LastOperation {
         (transform, marker)
     }
 
-    pub(crate) fn sketch(tool: &SketchTool, applied: Applied, stamp: u64, scene: &Scene) -> Self {
+    pub(crate) fn sketch(
+        tool: &SketchTool,
+        applied: Applied,
+        stamp: u64,
+        scene: &Scene,
+        history: u64,
+    ) -> Self {
         let (transform, mesh_marker) = Self::base(scene, applied.object, EditMode::Object);
         let operation = tool.operation();
         let (kind, value, scale) = match tool.kind {
@@ -118,6 +138,11 @@ impl LastOperation {
                         symmetric: tool.symmetric,
                         operation,
                         prism: tool.prism.clone(),
+                        inference: tool
+                            .inferred()
+                            .then(|| tool.target.as_ref().and_then(|t| t.outward))
+                            .flatten()
+                            .map(|outward| (tool.regions.normal(), outward)),
                     },
                     tool.distance,
                     world_normal,
@@ -136,6 +161,7 @@ impl LastOperation {
             transform,
             mesh_marker,
             edit_mode: EditMode::Object,
+            history,
         }
     }
 
@@ -146,6 +172,7 @@ impl LastOperation {
         mesh: Option<(Mesh, usize, Vec3)>,
         scene: &Scene,
         edit_mode: EditMode,
+        history: u64,
     ) -> Option<Self> {
         let (transform, mesh_marker) = Self::base(scene, first.object, edit_mode);
         let part = scene.object(first.object).and_then(|o| o.part_id());
@@ -172,6 +199,7 @@ impl LastOperation {
             transform,
             mesh_marker,
             edit_mode,
+            history,
         })
     }
 
@@ -186,6 +214,7 @@ impl LastOperation {
         edges: Vec<ChamferEdge>,
         scene: &Scene,
         edit_mode: EditMode,
+        history: u64,
     ) -> Self {
         let (transform, mesh_marker) = Self::base(scene, object, edit_mode);
         Self {
@@ -199,6 +228,7 @@ impl LastOperation {
             transform,
             mesh_marker,
             edit_mode,
+            history,
         }
     }
 
@@ -257,6 +287,7 @@ impl Studio {
             || self.transform_drag.is_some()
             || self.selected != Some(last.object)
             || self.edit_mode != last.edit_mode
+            || self.history_version() != last.history
         {
             return None;
         }
@@ -314,8 +345,15 @@ impl Studio {
             return;
         };
         self.active_field = None;
-        if self.adjustable_operation().is_none() {
+        let Some(last) = self.adjustable_operation() else {
             self.status = "Nothing to adjust".into();
+            cx.notify();
+            return;
+        };
+        if last.param() != param {
+            // Only the panel's own parameter can be edited; a distance is
+            // never applied as an angle or the other way round.
+            self.status = format!("{} has no {}", last.label(), param.label());
             cx.notify();
             return;
         }
@@ -323,7 +361,7 @@ impl Studio {
             AdjustParam::Distance => value,
             AdjustParam::Angle => value.clamp(-std::f32::consts::TAU, std::f32::consts::TAU),
         };
-        self.amend_last(|last, kind| amend_value(last, kind, value), cx);
+        self.amend_last(|last, kind| amend_value(last, kind, param, value), cx);
     }
 
     pub(crate) fn adjust_operation(&mut self, operation: Operation, cx: &mut Context<Self>) {
@@ -378,8 +416,33 @@ impl Studio {
         let Some(last) = self.adjustable_operation() else {
             return;
         };
-        let value = -last.value;
-        self.amend_last(|last, kind| amend_value(last, kind, value), cx);
+        let (param, value) = (last.param(), -last.value);
+        self.amend_last(
+            |last, kind| {
+                amend_value(last, kind, param, value)?;
+                // An inferred Join or Cut follows the new direction, as F
+                // does in the tool.
+                if let (
+                    LastKind::Extrude {
+                        symmetric: false,
+                        operation,
+                        inference: Some((normal, outward)),
+                        ..
+                    },
+                    FeatureKind::Extrude(extrude),
+                ) = (&mut last.kind, kind)
+                {
+                    let direction = *normal * value.signum();
+                    let inferred = Operation::from_feature(super::geometry::infer_operation(
+                        direction, *outward,
+                    ));
+                    *operation = inferred;
+                    extrude.operation = inferred.feature();
+                }
+                Ok(())
+            },
+            cx,
+        );
     }
 
     /// Applies `edit` to the last operation's feature (or redoes its mesh
@@ -496,6 +559,7 @@ impl Studio {
                 symmetric,
                 operation,
                 prism,
+                ..
             } => {
                 let (start, end) = if *symmetric {
                     (-value.abs() * 0.5, value.abs() * 0.5)
@@ -535,7 +599,16 @@ impl Studio {
 
 /// Sets the adjusted distance (world units) or angle (radians) on a
 /// feature through the inspector's parameter rules (`timeline::params`).
-fn amend_value(last: &mut LastOperation, kind: &mut FeatureKind, value: f32) -> Result<(), String> {
+/// The value's parameter must be the operation's own.
+fn amend_value(
+    last: &mut LastOperation,
+    kind: &mut FeatureKind,
+    param: AdjustParam,
+    value: f32,
+) -> Result<(), String> {
+    if param != last.param() {
+        return Err(format!("{} has no {}", last.label(), param.label()));
+    }
     if matches!(last.kind, LastKind::MeshPushPull { .. }) {
         // A mesh push has no feature: only the distance is checked.
         if value.abs() < 1.0e-5 {
@@ -575,6 +648,7 @@ mod tests {
             transform: Transform::default(),
             mesh_marker: None,
             edit_mode: EditMode::Object,
+            history: 0,
         }
     }
 
@@ -590,10 +664,10 @@ mod tests {
             distance: 0.02,
         });
         let mut op = last(LastKind::Chamfer { edges: Vec::new() }, 0.5);
-        amend_value(&mut op, &mut chamfer, 0.1).unwrap();
+        amend_value(&mut op, &mut chamfer, AdjustParam::Distance, 0.1).unwrap();
         assert!(matches!(&chamfer, FeatureKind::Chamfer(c) if (c.distance - 0.05).abs() < 1.0e-6));
         assert_eq!(op.value, 0.1);
-        assert!(amend_value(&mut op, &mut chamfer, -0.1).is_err());
+        assert!(amend_value(&mut op, &mut chamfer, AdjustParam::Distance, -0.1).is_err());
         assert!(matches!(&chamfer, FeatureKind::Chamfer(c) if (c.distance - 0.05).abs() < 1.0e-6));
         // Revolve angles are radians in, degrees through the inspector field.
         let mut revolve = FeatureKind::Revolve(RevolveFeature {
@@ -610,14 +684,49 @@ mod tests {
             },
             1.0,
         );
-        amend_value(&mut op, &mut revolve, 90f32.to_radians()).unwrap();
+        amend_value(
+            &mut op,
+            &mut revolve,
+            AdjustParam::Angle,
+            90f32.to_radians(),
+        )
+        .unwrap();
         assert!(
             matches!(&revolve, FeatureKind::Revolve(r) if (r.angle - std::f32::consts::FRAC_PI_2).abs() < 1.0e-5)
         );
         assert!(
-            amend_value(&mut op, &mut revolve, 7.0).is_err(),
+            amend_value(&mut op, &mut revolve, AdjustParam::Angle, 7.0).is_err(),
             "more than a turn"
         );
         assert_eq!(op.param(), AdjustParam::Angle);
+    }
+
+    /// Regression (review): Tab in the panel reached the hidden Angle field
+    /// and "5" became a 5° (0.0873) extrusion. Values only ever apply to the
+    /// operation's own parameter.
+    #[test]
+    fn values_for_the_other_parameter_are_refused() {
+        let mut extrude = FeatureKind::Extrude(forma_core::ExtrudeFeature {
+            sketch: Sketch::default(),
+            profiles: Vec::new(),
+            distance: 0.5,
+            extent: forma_core::ExtrudeExtent::OneSide,
+            flip: false,
+            operation: forma_core::FeatureOperation::Join,
+        });
+        let mut op = last(
+            LastKind::Extrude {
+                symmetric: false,
+                operation: Operation::NewPart,
+                prism: Rc::default(),
+                inference: None,
+            },
+            1.0,
+        );
+        assert_eq!(op.param(), AdjustParam::Distance);
+        assert!(amend_value(&mut op, &mut extrude, AdjustParam::Angle, 5f32.to_radians()).is_err());
+        assert!(matches!(&extrude, FeatureKind::Extrude(e) if e.distance == 0.5));
+        amend_value(&mut op, &mut extrude, AdjustParam::Distance, 5.0).unwrap();
+        assert!(matches!(&extrude, FeatureKind::Extrude(e) if e.distance == 5.0));
     }
 }

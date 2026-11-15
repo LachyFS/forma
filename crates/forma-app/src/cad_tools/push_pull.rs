@@ -688,6 +688,7 @@ impl Studio {
             mesh_record,
             &self.scene,
             self.edit_mode,
+            self.history_version(),
         );
         if self.part_editing().is_none_or(|id| id != first.object) {
             self.select_objects([first.object].into_iter().collect(), Some(first.object));

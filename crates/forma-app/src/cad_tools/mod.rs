@@ -4,11 +4,11 @@
 //! last operation" panel.
 //!
 //! Every tool previews instantly with an in-app ghost (no kernel call while
-//! the pointer moves), then hands one feature to the kernel worker. Sessions
-//! that stay open after a drag (Extrude, Revolve) apply their candidate
-//! feature to a live copy of the scene on release, so the real regenerated
-//! result appears before committing; `Session::before` restores the scene
-//! on cancel and is the single undo checkpoint on commit.
+//! the pointer moves), then hands one feature to the kernel worker. Extrude
+//! and Revolve stay open after a drag; on release their candidate feature is
+//! regenerated under a reserved worker job and composed into the renderer's
+//! snapshot only (`render_scene`), so the real result appears before
+//! committing while the document, saves and undo history never see it.
 //!
 //! Hooks other code calls:
 //! - `Studio::cad_tool_key` / `cad_tool_mouse_down|move|up` from the viewport
@@ -35,7 +35,7 @@ pub(crate) use push_pull::PushPullTool;
 pub(crate) use sketch_tool::{Operation, Regions, SketchTool, SketchToolKind};
 
 use crate::app::{Command, EditMode, Studio};
-use forma_core::{Ray, Scene};
+use forma_core::Ray;
 use geometry::Prism;
 use glam::{Vec2, Vec3};
 use gpui::{
@@ -87,31 +87,40 @@ pub(crate) enum Tool {
     Chamfer(Box<ChamferTool>),
 }
 
-/// A scene edit in progress that previews through the kernel before it is
-/// committed: the scene before the tool started, and the candidate applied
-/// to the live scene (if any).
-pub(crate) struct Session {
-    pub before: Scene,
-    pub preview: Option<Preview>,
+/// Worker job ids at or above this are display-only previews, never parts
+/// of the document (whose part ids are small).
+const PREVIEW_JOBS: u64 = 1 << 62;
+
+/// The worker job id previewing a candidate for part `part`.
+pub(crate) fn preview_job(part: u64) -> u64 {
+    PREVIEW_JOBS | part
 }
 
-impl Session {
-    pub(crate) fn new(scene: &Scene) -> Self {
-        Self {
-            before: scene.clone(),
-            preview: None,
-        }
-    }
+/// Whether a regeneration result belongs to a preview.
+pub(crate) fn is_preview_job(id: u64) -> bool {
+    id >= PREVIEW_JOBS
 }
 
-/// The candidate feature currently applied to the live scene.
-#[derive(Clone, Debug, PartialEq)]
+/// A candidate feature the worker regenerates for display only. It lives in
+/// the tool, never in the document; `Studio::render_scene` composes it into
+/// what the renderer draws.
+#[derive(Clone, Debug)]
 pub(crate) struct Preview {
-    /// Parameters the preview was built from; unchanged parameters reuse it.
+    /// Parameters the candidate was built from.
     pub key: String,
-    pub object: u64,
-    pub part: u64,
+    pub job: u64,
     pub feature: u64,
+    pub stamp: u64,
+    pub outcome: Option<PreviewOutcome>,
+}
+
+/// What the worker returned for a preview.
+#[derive(Clone, Debug)]
+pub(crate) struct PreviewOutcome {
+    pub mesh: Option<forma_core::Mesh>,
+    pub issues: Vec<forma_core::FeatureIssue>,
+    /// The regeneration failed outright (`issues` says why).
+    pub failed: bool,
 }
 
 /// A committed operation whose kernel result has not arrived yet: its ghost
@@ -200,6 +209,25 @@ impl Studio {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // Commands of the running tool keep it; anything else (another tool,
+        // Sketch on face) ends it first.
+        let keeps = match (self.cad_tool.tool.as_ref(), command) {
+            (None, _) => true,
+            (
+                Some(Tool::Sketch(_)),
+                ToolCommand::Extrude
+                | ToolCommand::Revolve
+                | ToolCommand::SetOperation(_)
+                | ToolCommand::ToggleSymmetric
+                | ToolCommand::SketchAxis(_),
+            ) => true,
+            (Some(Tool::PushPull(_)), ToolCommand::PushPull) => true,
+            (_, ToolCommand::Done | ToolCommand::Cancel | ToolCommand::Flip) => true,
+            _ => false,
+        };
+        if !keeps {
+            self.cancel_cad_tool(cx);
+        }
         match command {
             ToolCommand::Extrude | ToolCommand::Revolve => {
                 let kind = if command == ToolCommand::Extrude {
@@ -301,12 +329,11 @@ impl Studio {
             return;
         };
         self.cad_tool.preview_token += 1;
-        // Push/Pull and Chamfer preview with ghosts only; Extrude and
-        // Revolve may have applied a kernel preview to the live scene.
+        // The document was never touched; only the renderer's snapshot
+        // carries a kernel preview.
         if let Tool::Sketch(tool) = tool
-            && tool.session.preview.is_some()
+            && tool.preview.is_some()
         {
-            self.replace_scene(tool.session.before);
             self.invalidate(true, cx);
         }
         self.status = "Cancelled".into();
@@ -751,11 +778,22 @@ impl Studio {
         }
     }
 
-    /// Swaps in a scene built from a session's starting point, keeping the
-    /// live view: the camera may have moved since the tool started.
-    pub(crate) fn replace_scene(&mut self, mut scene: Scene) {
-        scene.camera = self.scene.camera;
-        self.scene = scene;
+    /// Forgets every tool state tied to the current document. Called when a
+    /// new or opened project (or an import) replaces it: ids in the old
+    /// state would name other objects.
+    pub(crate) fn reset_cad_tools(&mut self) {
+        let state = &mut self.cad_tool;
+        state.tool = None;
+        state.last = None;
+        state.pending.clear();
+        state.edit = EditState::default();
+        state.region_hover = None;
+        state.preview_token += 1;
+    }
+
+    /// A counter that changes with every undo step (checkpoint, undo, redo).
+    pub(crate) fn history_version(&self) -> u64 {
+        self.history.version()
     }
 
     /// Removes pending ghosts whose part has been regenerated or changed.

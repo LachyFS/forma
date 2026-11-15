@@ -7,7 +7,7 @@
 //! release the candidate feature is applied to the live scene so the kernel's
 //! real result replaces the ghost before the user commits.
 use super::geometry::{self, Lathe, Prism};
-use super::{AxisDrag, DRAG_PIXELS, PICK_PIXELS, PendingGhost, Preview, Session, Tool};
+use super::{AxisDrag, DRAG_PIXELS, PICK_PIXELS, PendingGhost, Preview, PreviewOutcome, Tool};
 use crate::app::{EditMode, Studio};
 use forma_core::{
     ExtrudeExtent, ExtrudeFeature, FeatureKind, FeatureOperation, Mat4, PartData, Profile, Ray,
@@ -326,7 +326,8 @@ pub(crate) struct SketchTool {
     press: Option<RegionPress>,
     pub prism: Rc<Prism>,
     pub lathe: Option<Rc<Lathe>>,
-    pub session: Session,
+    /// The candidate regenerating (or regenerated) for display.
+    pub preview: Option<Preview>,
     /// The drag snapped to a target face height.
     pub snapped_face: bool,
     pub error: Option<String>,
@@ -442,7 +443,7 @@ impl SketchTool {
     }
 
     /// Key identifying the candidate feature, for reusing a live preview.
-    fn preview_key(&self) -> String {
+    pub(crate) fn preview_key(&self) -> String {
         format!(
             "{:?}|{:?}|{}|{}|{}|{:?}|{:?}",
             self.kind,
@@ -781,7 +782,7 @@ impl Studio {
             press: None,
             prism: Rc::default(),
             lathe: None,
-            session: Session::new(&self.scene),
+            preview: None,
             snapped_face: false,
             error: None,
         };
@@ -796,7 +797,7 @@ impl Studio {
     /// The part the picked regions can combine with: the part whose planar
     /// face the sketch lies on, else a part the sweep would pass through.
     fn infer_target(&self, tool: &SketchTool) -> Option<Target> {
-        let scene = &tool.session.before;
+        let scene = &self.scene;
         let regions = &tool.regions;
         let plane = regions.world_plane();
         let normal = regions.normal();
@@ -1310,22 +1311,23 @@ impl Studio {
         cx.notify();
     }
 
-    /// Restores the live scene to the session's start, so a drag shows only
-    /// the ghost (not a stale kernel result beside it).
+    /// Drops the kernel preview, so a drag shows only the ghost (not a
+    /// stale kernel result beside it).
     fn clear_sketch_preview(&mut self, cx: &mut Context<Self>) {
         self.cad_tool.preview_token += 1;
         let Some(Tool::Sketch(tool)) = self.cad_tool.tool.as_mut() else {
             return;
         };
-        if tool.session.preview.take().is_some() {
-            let before = tool.session.before.clone();
-            self.replace_scene(before);
+        if tool.preview.take().is_some() {
+            // The renderer's snapshot drops the preview part.
             self.invalidate(true, cx);
         }
     }
 
-    /// Applies the candidate feature to a copy of the scene the session
-    /// started from, so the kernel regenerates the real result.
+    /// Sends the candidate feature to the worker for display. The candidate
+    /// never enters the document: it is regenerated under a reserved job id
+    /// and composed into the renderer's snapshot (see `render_scene`), so
+    /// no edit, save or undo step can capture it.
     pub(crate) fn apply_sketch_preview(&mut self, cx: &mut Context<Self>) {
         let Some(Tool::Sketch(tool)) = self.cad_tool.tool.as_ref() else {
             return;
@@ -1334,26 +1336,35 @@ impl Studio {
             return;
         }
         let key = tool.preview_key();
-        if tool.session.preview.as_ref().is_some_and(|p| p.key == key) {
+        if tool.preview.as_ref().is_some_and(|p| p.key == key) {
             return;
         }
-        let mut scene = tool.session.before.clone();
+        let mut scene = self.scene.clone();
         let result = tool.build_into(&mut scene);
-        let had_preview = tool.session.preview.is_some();
+        let had_preview = tool.preview.is_some();
+        let submitted = result.and_then(|applied| {
+            let part = scene
+                .part(applied.part)
+                .cloned()
+                .ok_or_else(|| "The candidate part is missing".to_owned())?;
+            let job = super::preview_job(applied.part);
+            let stamp = part.stamp;
+            self.cad.submit_preview(job, part)?;
+            Ok(Preview {
+                key,
+                job,
+                feature: applied.feature,
+                stamp,
+                outcome: None,
+            })
+        });
         let Some(Tool::Sketch(tool)) = self.cad_tool.tool.as_mut() else {
             return;
         };
-        match result {
-            Ok(applied) => {
-                tool.session.preview = Some(Preview {
-                    key,
-                    object: applied.object,
-                    part: applied.part,
-                    feature: applied.feature,
-                });
+        match submitted {
+            Ok(preview) => {
+                tool.preview = Some(preview);
                 tool.error = None;
-                keep_evaluated(&self.scene, &mut scene);
-                self.replace_scene(scene);
                 self.invalidate(true, cx);
             }
             Err(message) => {
@@ -1361,9 +1372,7 @@ impl Studio {
                 let quiet = message.starts_with("Drag") || message.starts_with("Pick an axis");
                 tool.error = (!quiet).then_some(message);
                 if had_preview {
-                    tool.session.preview = None;
-                    let before = tool.session.before.clone();
-                    self.replace_scene(before);
+                    tool.preview = None;
                     self.invalidate(true, cx);
                 }
             }
@@ -1371,8 +1380,9 @@ impl Studio {
         cx.notify();
     }
 
-    /// Commits the sketch tool as one undo step: the new part or feature,
-    /// with the consumed sketch hidden.
+    /// Commits the sketch tool as one undo step on the current document:
+    /// the new part or feature, with the consumed sketch hidden. Edits made
+    /// while the tool was open (a rename, a material) are kept.
     pub(crate) fn commit_sketch_tool(&mut self, cx: &mut Context<Self>) {
         self.apply_typed_value();
         let Some(Tool::Sketch(tool)) = self.cad_tool.tool.as_ref() else {
@@ -1383,52 +1393,55 @@ impl Studio {
             cx.notify();
             return;
         }
-        let key = tool.preview_key();
-        let reuse = tool
-            .session
-            .preview
-            .as_ref()
-            .filter(|p| p.key == key)
-            .cloned();
-        let (applied, mut scene) = match reuse {
-            Some(preview) => (
-                Applied {
-                    object: preview.object,
-                    part: preview.part,
-                    feature: preview.feature,
-                },
-                self.scene.clone(),
-            ),
-            None => {
-                let mut scene = tool.session.before.clone();
-                match tool.build_into(&mut scene) {
-                    Ok(applied) => {
-                        keep_evaluated(&self.scene, &mut scene);
-                        (applied, scene)
-                    }
-                    Err(message) => {
-                        self.status = message.clone();
-                        if let Some(Tool::Sketch(tool)) = self.cad_tool.tool.as_mut() {
-                            tool.error = Some(message);
-                        }
-                        cx.notify();
-                        return;
-                    }
+        // The document may have changed while the tool was open: the sketch
+        // must still be the one the regions were built from.
+        let regions = &tool.regions;
+        let current = self.scene.object_sketch(regions.object) == Some(&regions.sketch)
+            && self.scene.world_transform(regions.object) == Some(regions.matrix);
+        if !current {
+            self.cancel_cad_tool(cx);
+            self.status =
+                "The sketch changed while the tool was open · Start the tool again".into();
+            cx.notify();
+            return;
+        }
+        let mut scene = self.scene.clone();
+        let applied = match tool.build_into(&mut scene) {
+            Ok(applied) => applied,
+            Err(message) => {
+                self.status = message.clone();
+                if let Some(Tool::Sketch(tool)) = self.cad_tool.tool.as_mut() {
+                    tool.error = Some(message);
                 }
+                cx.notify();
+                return;
             }
         };
+        // A finished preview of the same candidate is the result: no second
+        // regeneration.
+        let key = tool.preview_key();
+        if let Some(preview) = tool.preview.as_ref().filter(|p| p.key == key)
+            && let Some(outcome) = &preview.outcome
+            && !outcome.failed
+        {
+            let _ = scene.set_part_tessellation(
+                applied.part,
+                preview.stamp,
+                outcome.mesh.clone(),
+                outcome.issues.clone(),
+            );
+        }
         let Some(Tool::Sketch(tool)) = self.cad_tool.tool.take() else {
             unreachable!()
         };
         self.cad_tool.preview_token += 1;
-        let mut tool = *tool;
-        let before = std::mem::replace(&mut tool.session.before, Scene::empty());
+        let tool = *tool;
         let sketch = tool.regions.object;
         if let Some(object) = scene.object_mut(sketch) {
             object.visible = false;
         }
         let operation = tool.operation();
-        self.replace_scene(scene);
+        let before = std::mem::replace(&mut self.scene, scene);
         self.history.checkpoint_owned(before);
         self.select_objects([applied.object].into_iter().collect(), Some(applied.object));
         self.dirty = true;
@@ -1452,6 +1465,7 @@ impl Studio {
             applied,
             stamp,
             &self.scene,
+            self.history_version(),
         ));
         self.status = match tool.kind {
             SketchToolKind::Extrude => format!(
@@ -1474,37 +1488,55 @@ impl Studio {
         };
         self.invalidate(true, cx);
     }
-}
 
-/// Carries finished tessellations of unchanged parts from `live` into a
-/// freshly rebuilt `scene`, so re-applying a preview does not regenerate
-/// parts the kernel already finished for the same content.
-fn keep_evaluated(live: &Scene, scene: &mut Scene) {
-    let finished: Vec<(u64, u64)> = scene
-        .parts
-        .iter()
-        .filter(|part| !part.is_evaluated())
-        .filter_map(|part| {
-            let current = live.part(part.id)?;
-            (current.stamp == part.stamp && current.is_evaluated()).then_some((part.id, part.stamp))
-        })
-        .collect();
-    for (part_id, stamp) in finished {
-        let Some(user) = live
-            .objects
-            .iter()
-            .find(|o| o.part_id() == Some(part_id))
-            .map(|o| o.id)
+    /// The scene the renderer draws: the document plus, while a sketch tool
+    /// previews, its candidate with the worker's result once it arrives.
+    pub(crate) fn render_scene(&self) -> Scene {
+        let mut scene = self.scene.clone();
+        if let Some(Tool::Sketch(tool)) = self.cad_tool.tool.as_ref()
+            && let Some(preview) = tool.preview.as_ref()
+            && preview.key == tool.preview_key()
+            && let Ok(applied) = tool.build_into(&mut scene)
+            && let Some(outcome) = preview.outcome.as_ref().filter(|o| !o.failed)
+        {
+            let _ = scene.set_part_tessellation(
+                applied.part,
+                preview.stamp,
+                outcome.mesh.clone(),
+                outcome.issues.clone(),
+            );
+        }
+        scene
+    }
+
+    /// A regeneration result for a preview job.
+    pub(crate) fn receive_preview(
+        &mut self,
+        job: u64,
+        stamp: u64,
+        outcome: PreviewOutcome,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(Tool::Sketch(tool)) = self.cad_tool.tool.as_mut() else {
+            return;
+        };
+        let Some(preview) = tool
+            .preview
+            .as_mut()
+            .filter(|p| p.job == job && p.stamp == stamp)
         else {
-            continue;
+            return;
         };
-        let (Some(mesh), Some(evaluated)) = (
-            live.object_mesh(user).cloned(),
-            live.part(part_id).and_then(|p| p.evaluated.clone()),
-        ) else {
-            continue;
-        };
-        let _ = scene.set_part_tessellation(part_id, stamp, Some(mesh), evaluated.issues);
+        preview.outcome = Some(outcome);
+        self.invalidate(true, cx);
+    }
+
+    /// Whether a kernel preview is still regenerating.
+    pub(crate) fn preview_pending(&self) -> bool {
+        matches!(
+            self.cad_tool.tool.as_ref(),
+            Some(Tool::Sketch(tool)) if tool.preview.as_ref().is_some_and(|p| p.outcome.is_none())
+        )
     }
 }
 
@@ -1599,7 +1631,7 @@ mod tests {
             press: None,
             prism: Rc::default(),
             lathe: None,
-            session: Session::new(scene),
+            preview: None,
             snapped_face: false,
             error: None,
         };

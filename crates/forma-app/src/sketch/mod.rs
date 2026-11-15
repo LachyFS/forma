@@ -303,6 +303,8 @@ impl Studio {
     /// Starts a Draw session. A session already running is finished first,
     /// unless it already edits the requested object.
     pub(crate) fn enter_draw(&mut self, target: DrawTarget, cx: &mut Context<Self>) {
+        // Drawing ends any modelling tool (it would act on a stale view).
+        self.cancel_cad_tool(cx);
         if let (DrawTarget::Object(id), Some(current)) = (&target, self.session_object())
             && *id == current
         {
