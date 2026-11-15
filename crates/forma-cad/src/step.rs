@@ -124,6 +124,7 @@ pub fn import_step(name: &str, text: &str) -> Result<PartData, KernelError> {
     Ok(part)
 }
 
+#[cfg(test)]
 fn evaluated_body(part: &PartData) -> Result<Body, KernelError> {
     evaluated_body_cached(part, &mut RegenCache::default())
 }

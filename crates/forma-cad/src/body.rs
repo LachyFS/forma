@@ -439,7 +439,7 @@ pub(crate) fn sketch_profiles(
             "Fix the sketch in Draw mode",
         )
     })?;
-    let profiles = sketch.profiles(forma_core::SKETCH_TOLERANCE * 10.0);
+    let profiles = sketch.profiles(forma_core::SKETCH_TOLERANCE);
     if profiles.is_empty() {
         return Err(KernelError::new(
             "The sketch has no closed regions",

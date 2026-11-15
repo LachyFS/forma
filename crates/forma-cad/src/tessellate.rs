@@ -527,6 +527,17 @@ mod tests {
         let mesh = editable_mesh(&body, TessellationQuality::Medium).unwrap();
         let ngons = mesh.faces.iter().filter(|f| f.len() > 4).count();
         assert_eq!(ngons, 2, "both caps become n-gons");
+        // The baked volume matches the solid within the chord tolerance.
+        let volume: f64 = mesh
+            .triangles()
+            .iter()
+            .map(|t| {
+                let [a, b, c] = t.map(|i| mesh.positions[i as usize].as_dvec3());
+                a.dot(b.cross(c)) / 6.0
+            })
+            .sum();
+        let exact = std::f64::consts::PI * 0.25;
+        assert!((volume - exact).abs() < exact * 0.01, "{volume} vs {exact}");
         // Welded: every edge is shared by exactly two polygons.
         assert!(crate::convert::check_closed_manifold(&mesh).is_ok());
     }

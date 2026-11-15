@@ -64,7 +64,7 @@ pub fn outermost_regions(profiles: &[Profile]) -> Vec<usize> {
 
 /// Interior points of the default (outermost) regions of a sketch.
 pub fn default_region_points(sketch: &Sketch) -> Vec<Vec2> {
-    let profiles = sketch.profiles(forma_core::SKETCH_TOLERANCE * 10.0);
+    let profiles = sketch.profiles(forma_core::SKETCH_TOLERANCE);
     outermost_regions(&profiles)
         .into_iter()
         .filter_map(|i| interior_point(&profiles[i]))
