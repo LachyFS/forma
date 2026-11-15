@@ -317,7 +317,7 @@ impl Studio {
         let target = match target {
             DrawTarget::AtPointer => {
                 let ray = self.pointer_ray(self.last_mouse);
-                DrawTarget::Choice(plane::choose(&self.scene, camera, ray))
+                DrawTarget::Choice(plane::choose(&self.scene, camera, ray, &self.cad.faces))
             }
             other => other,
         };

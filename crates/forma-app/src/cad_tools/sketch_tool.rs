@@ -1773,6 +1773,104 @@ mod tests {
         assert_eq!(tool.operation(), Operation::Intersect);
     }
 
+    /// Regenerates `object`'s part in-process and installs the tessellation.
+    fn regenerate_part(
+        scene: &mut Scene,
+        object: u64,
+        cache: &mut forma_cad::RegenCache,
+    ) -> forma_cad::RegenResult {
+        let part = scene.object_part(object).unwrap().clone();
+        let result = forma_cad::regenerate(
+            &forma_cad::RegenRequest {
+                part_id: part.id,
+                part: part.clone(),
+                skip: Vec::new(),
+            },
+            cache,
+            &mut |_| {},
+        );
+        scene
+            .set_part_tessellation(
+                part.id,
+                part.stamp,
+                result.mesh.clone(),
+                result.issues.clone(),
+            )
+            .unwrap();
+        result
+    }
+
+    /// A cut sketched on a regenerated part's tilted face lies on the
+    /// kernel's exact face plane, so the boolean is exact: no warning that
+    /// the kernel had to enlarge the tool to find the face.
+    #[test]
+    fn cuts_sketched_on_part_faces_are_exact() {
+        use crate::sketch::plane::{ExactFaces, group_plane_choice};
+        let mut scene = Scene::empty();
+        let mut part = PartData::new(0, "Block");
+        part.push_feature(
+            "Box",
+            FeatureKind::Primitive(forma_core::PrimitiveFeature {
+                shape: forma_core::PrimitiveShape::Box {
+                    size: Vec3::new(1.3, 0.7, 0.9),
+                },
+                placement: forma_core::Placement {
+                    origin: Vec3::new(0.1, 0.35, -0.2),
+                    rotation: Vec3::new(0.3, 0.2, 0.1),
+                },
+                operation: FeatureOperation::Join,
+            }),
+        );
+        let block = scene.add_part("Block", part).unwrap();
+        let mut cache = forma_cad::RegenCache::default();
+        let result = regenerate_part(&mut scene, block, &mut cache);
+        assert!(result.issues.is_empty(), "{:?}", result.issues);
+        let part_id = scene.object(block).unwrap().part_id().unwrap();
+        let mut exact = ExactFaces::new();
+        exact.insert(part_id, result.faces.clone());
+        // The tilted top face.
+        let (group, info) = result
+            .faces
+            .iter()
+            .enumerate()
+            .max_by(|a, b| a.1.normal.y.total_cmp(&b.1.normal.y))
+            .unwrap();
+        let camera = forma_core::Camera::default();
+        let choice = group_plane_choice(&scene, camera, block, group as u32, None, &exact).unwrap();
+        // The plane is the kernel's, to f32 rounding (the plane fitted to
+        // the tessellation alone is 1.2e-7 off here).
+        let normal = info.normal.as_dvec3();
+        let offset = (choice.plane.origin.as_dvec3() - info.point.as_dvec3()).dot(normal);
+        assert!(offset.abs() < 2.0e-8, "{offset:e}");
+        assert!(choice.plane.normal().as_dvec3().cross(normal).length() < 2.0e-8);
+        // A small rectangle around the face's centre, cut 0.2 deep.
+        let centre = choice.plane.to_local(info.point);
+        let mut sketch = Sketch::new(choice.plane);
+        sketch.entities = rectangle(centre - Vec2::splat(0.1), centre + Vec2::splat(0.1));
+        let id = scene.add_sketch("Sketch", sketch).unwrap();
+        let mut tool = tool_for(&scene, id, SketchToolKind::Extrude);
+        let plane = tool.regions.world_plane();
+        let samples = [tool.regions.to_world(tool.regions.samples[0].unwrap())];
+        let matrix = scene.world_transform(block).unwrap();
+        let mesh = scene.object_mesh(block).unwrap();
+        let face = geometry::find_coplanar_face(&plane, &samples, &[(block, matrix, mesh)])
+            .expect("the sketch lies on the face");
+        tool.target = Some(Target {
+            object: block,
+            name: "Block".into(),
+            outward: Some(face.outward),
+            heights: Vec::new(),
+        });
+        tool.distance = -0.2;
+        assert_eq!(tool.operation(), Operation::Cut);
+        tool.build_into(&mut scene).unwrap();
+        let result = regenerate_part(&mut scene, block, &mut cache);
+        assert!(result.mesh.is_some());
+        assert!(result.issues.is_empty(), "{:?}", result.issues);
+        // The pocket adds its floor and four walls.
+        assert_eq!(result.stats.brep_faces, 6 + 5);
+    }
+
     #[test]
     fn revolve_needs_an_axis_beside_the_profile() {
         let mut scene = Scene::empty();

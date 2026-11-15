@@ -654,9 +654,9 @@ impl Studio {
 
     /// Starts a sketch on the face under the pointer, else the selected face.
     pub(crate) fn sketch_on_selected_face(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
-        let under_pointer = self
-            .tool_ray(self.last_mouse)
-            .and_then(|ray| crate::sketch::plane::face_plane(&self.scene, self.scene.camera, ray));
+        let under_pointer = self.tool_ray(self.last_mouse).and_then(|ray| {
+            crate::sketch::plane::face_plane(&self.scene, self.scene.camera, ray, &self.cad.faces)
+        });
         if under_pointer.is_some() {
             self.enter_draw(DrawTarget::AtPointer, cx);
             return;
@@ -671,6 +671,7 @@ impl Studio {
                 id,
                 group,
                 None,
+                &self.cad.faces,
             )
         });
         match choice {
