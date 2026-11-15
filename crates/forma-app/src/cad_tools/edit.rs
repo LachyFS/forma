@@ -27,13 +27,31 @@ pub(crate) enum EditHover {
     Edge(usize),
 }
 
-/// Selection and hover of part edit mode.
+/// Selection and hover of part edit mode. Selections are geometric and
+/// survive regeneration; the hover is an index into one tessellation's
+/// topology, so it is only valid at the scene revision it was picked at.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct EditState {
     pub object: Option<u64>,
     pub faces: Vec<FaceRef>,
     pub edges: Vec<EdgeSelection>,
-    pub hover: Option<EditHover>,
+    hover: Option<(u64, EditHover)>,
+}
+
+impl EditState {
+    /// The hovered face group or edge, if it was picked at `revision`.
+    pub(crate) fn hover(&self, revision: u64) -> Option<EditHover> {
+        self.hover
+            .filter(|(at, _)| *at == revision)
+            .map(|(_, hover)| hover)
+    }
+
+    pub(crate) fn set_hover(&mut self, revision: u64, hover: Option<EditHover>) -> bool {
+        let next = hover.map(|hover| (revision, hover));
+        let changed = next != self.hover;
+        self.hover = next;
+        changed
+    }
 }
 
 /// B-rep edges of one part tessellation, with the welded vertex of every
@@ -252,7 +270,7 @@ impl Studio {
             }
             Command::SetEditMode(mode) => {
                 self.edit_mode = mode;
-                self.edit_state_for(id).hover = None;
+                self.edit_state_for(id).set_hover(0, None);
                 self.status = format!(
                     "Edit part · {} · Click to select · Shift adds",
                     mode.label()
@@ -431,9 +449,8 @@ impl Studio {
     /// Hover over the edited part's faces or edges.
     pub(crate) fn part_edit_hover(&mut self, id: u64, position: Vec2, cx: &mut Context<Self>) {
         let hover = self.part_edit_pick(id, position).map(|(hover, _)| hover);
-        let state = self.edit_state_for(id);
-        if state.hover != hover {
-            state.hover = hover;
+        let revision = self.scene_revision;
+        if self.edit_state_for(id).set_hover(revision, hover) {
             cx.notify();
         }
     }
@@ -639,8 +656,10 @@ impl Studio {
             return;
         };
         let mut indices = self.selected_edit_edges(id);
+        // The hover refers to the current tessellation only (undo or a
+        // regeneration renumbers edges).
         if indices.is_empty()
-            && let Some(EditHover::Edge(index)) = self.cad_tool.edit.hover
+            && let Some(EditHover::Edge(index)) = self.cad_tool.edit.hover(self.scene_revision)
         {
             indices.push(index);
         }
@@ -657,12 +676,12 @@ impl Studio {
         let matrix = instance.world_transform;
         let mut edges = Vec::new();
         for index in indices {
-            match chamfer_edge(
-                instance.mesh,
-                &topology.canon,
-                &topology.edges[index],
-                matrix,
-            ) {
+            let Some(edge) = topology.edges.get(index) else {
+                self.status = "Chamfer · Select straight edges first (2 for Edge mode)".into();
+                cx.notify();
+                return;
+            };
+            match chamfer_edge(instance.mesh, &topology.canon, edge, matrix) {
                 Ok(edge) => edges.push(edge),
                 Err(message) => {
                     self.status = format!("Chamfer · {message}");
@@ -980,6 +999,19 @@ mod tests {
                 .iter()
                 .any(|e| !e.straight && e.points.len() > 8)
         );
+    }
+
+    /// Regression: Ctrl+B after Undo used an edge index hovered on the
+    /// pre-undo tessellation (15 edges) against the new one (12) and panicked.
+    #[test]
+    fn hovers_expire_with_the_tessellation_they_index() {
+        let mut state = EditState::default();
+        assert!(state.set_hover(7, Some(EditHover::Edge(14))));
+        assert_eq!(state.hover(7), Some(EditHover::Edge(14)));
+        assert_eq!(state.hover(8), None, "a new scene revision drops the index");
+        assert!(!state.set_hover(7, Some(EditHover::Edge(14))));
+        assert!(state.set_hover(8, None));
+        assert_eq!(state.hover(8), None);
     }
 
     #[test]

@@ -41,6 +41,8 @@ pub(crate) struct FacePick {
     pub planar: bool,
     /// World length of one object-space unit along the normal.
     pub scale: f32,
+    /// Scene revision the polygon or group index refers to.
+    pub revision: u64,
 }
 
 impl FacePick {
@@ -156,6 +158,7 @@ impl Studio {
             hit.face as u32
         };
         if let Some(previous) = previous
+            && previous.revision == self.scene_revision
             && previous.object == hit.object_id
             && match previous.kind {
                 FaceKind::Part { group: g, .. } => is_part && g == group,
@@ -199,6 +202,7 @@ impl Studio {
             prism: Rc::new(prism),
             planar: plane.is_some(),
             scale,
+            revision: self.scene_revision,
         })
     }
 
@@ -289,6 +293,7 @@ impl Studio {
             prism: Rc::new(face_prism(mesh, &faces, matrix, world_normal)),
             planar: plane.is_some(),
             scale: matrix.transform_vector3(local_normal).length().max(1.0e-9),
+            revision: self.scene_revision,
         })
     }
 

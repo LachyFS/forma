@@ -129,6 +129,8 @@ pub(crate) struct PendingGhost {
 pub(crate) struct RegionHover {
     pub object: u64,
     pub profile: usize,
+    /// Scene revision of the region sets `profile` indexes.
+    pub revision: u64,
 }
 
 type Cached<K, T> = RefCell<Option<(K, Rc<T>)>>;
@@ -578,6 +580,7 @@ impl Studio {
                     RegionHover {
                         object: regions.object,
                         profile,
+                        revision: self.scene_revision,
                     },
                     world,
                 ));

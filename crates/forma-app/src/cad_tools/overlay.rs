@@ -225,7 +225,10 @@ impl Studio {
             None => {
                 if let Some(id) = self.part_editing() {
                     self.part_edit_overlay(id, &mut overlay);
-                } else if let Some(hover) = self.cad_tool.region_hover
+                } else if let Some(hover) = self
+                    .cad_tool
+                    .region_hover
+                    .filter(|hover| hover.revision == self.scene_revision)
                     && let Some(regions) =
                         self.region_sets().iter().find(|r| r.object == hover.object)
                     && let Some(polygons) = regions.world.get(hover.profile)
@@ -561,7 +564,7 @@ impl Studio {
                 });
             }
         }
-        match self.cad_tool.edit.hover {
+        match self.cad_tool.edit.hover(self.scene_revision) {
             Some(EditHover::Face(group)) if !selected_faces.iter().any(|(g, _)| *g == group) => {
                 paint_face(group, 0.16, 1.6, 0.85, overlay);
             }
