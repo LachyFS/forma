@@ -172,23 +172,44 @@ pub enum SketchCurve {
 impl SketchCurve {
     /// An arc through three points, or `None` when they are (nearly) collinear.
     pub fn arc_through(start: Vec2, through: Vec2, end: Vec2) -> Option<Self> {
-        let center = circumcenter(start, through, end)?;
-        let radius = start.distance(center);
-        let angle = |p: Vec2| (p - center).to_angle();
+        // Work in double precision relative to `start`: absolute coordinates
+        // far from the origin cancel catastrophically in f32.
+        let a = start.as_dvec2();
+        let (b, c) = (through.as_dvec2() - a, end.as_dvec2() - a);
+        let d = 2.0 * b.perp_dot(c);
+        let scale = b.length().max(c.length()).max(1.0e-12);
+        if d.abs() < 1.0e-9 * scale * scale {
+            return None;
+        }
+        let (b2, c2) = (b.length_squared(), c.length_squared());
+        let relative = glam::DVec2::new(c.y * b2 - b.y * c2, b.x * c2 - c.x * b2) / d;
+        let center = (a + relative).as_vec2();
+        if !center.is_finite() {
+            return None;
+        }
+        // Measure from the stored (rounded) centre so the arc reproduces its
+        // start exactly and its end within the centre's rounding.
+        let origin = center.as_dvec2();
+        let offset = |p: Vec2| p.as_dvec2() - origin;
+        let radius = offset(start).length();
+        let angle = |p: Vec2| {
+            let v = offset(p);
+            v.y.atan2(v.x)
+        };
         let start_angle = angle(start);
-        let ccw = |a: f32| (a - start_angle).rem_euclid(TAU);
+        let ccw = |angle: f64| (angle - start_angle).rem_euclid(std::f64::consts::TAU);
         let to_end = ccw(angle(end));
         let to_through = ccw(angle(through));
         let sweep = if to_through <= to_end {
             to_end
         } else {
-            to_end - TAU
+            to_end - std::f64::consts::TAU
         };
         let curve = Self::Arc {
             center,
-            radius,
-            start_angle,
-            sweep,
+            radius: radius as f32,
+            start_angle: start_angle as f32,
+            sweep: sweep as f32,
         };
         curve.is_valid().then_some(curve)
     }
@@ -477,20 +498,6 @@ fn arc_segments(radius: f32, sweep: f32, tolerance: f32) -> usize {
     segments.clamp(if sweep >= TAU - 1.0e-4 { 8 } else { 1 }, 1024)
 }
 
-fn circumcenter(a: Vec2, b: Vec2, c: Vec2) -> Option<Vec2> {
-    let d = 2.0 * (a.x * (b.y - c.y) + b.x * (c.y - a.y) + c.x * (a.y - b.y));
-    let scale = (b - a).length().max((c - a).length()).max(1.0e-12);
-    if d.abs() < 1.0e-9 * scale * scale {
-        return None;
-    }
-    let (a2, b2, c2) = (a.length_squared(), b.length_squared(), c.length_squared());
-    let center = Vec2::new(
-        (a2 * (b.y - c.y) + b2 * (c.y - a.y) + c2 * (a.y - b.y)) / d,
-        (a2 * (c.x - b.x) + b2 * (a.x - c.x) + c2 * (b.x - a.x)) / d,
-    );
-    center.is_finite().then_some(center)
-}
-
 /// A sketch curve with drawing attributes.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct SketchEntity {
@@ -619,7 +626,9 @@ impl Sketch {
     /// of their planar arrangement.
     ///
     /// Curves are split wherever they cross, touch or overlap, and endpoints
-    /// closer than `tolerance` are joined, so overlapping rectangles yield one
+    /// closer than `tolerance` are joined (or closer than single precision
+    /// can resolve at the sketch's coordinates, when that is coarser, so
+    /// arcs far from the origin still close), so overlapping rectangles yield one
     /// profile per region and lines overshooting a corner still close it.
     /// Dangling curves never bound a region. Each profile's outer loop runs
     /// counter clockwise; connected groups of curves lying wholly inside it
@@ -1473,5 +1482,77 @@ mod tests {
         );
         let profiles = sketch_of(entities).profiles(SKETCH_TOLERANCE);
         assert_close(&sorted_areas(&profiles), &[disc, 16.0 - disc], 1.0e-3);
+    }
+
+    #[test]
+    fn arcs_stay_precise_and_close_loops_far_from_the_origin() {
+        // Review case "arcprec": three point arcs away from the origin.
+        for offset in [0.0_f32, 10.0, 100.0, 1000.0] {
+            for chord in [10.0_f32, 1.0, 0.1] {
+                let a = Vec2::splat(offset);
+                let c = Vec2::new(offset + chord, offset);
+                let b = Vec2::new(offset + chord * 0.5, offset + chord * 0.25);
+                let arc = SketchCurve::arc_through(a, b, c).unwrap();
+                let limit = 2.0e-6 + offset * 4.0e-7;
+                assert!(arc.start().distance(a) < limit, "start {offset} {chord}");
+                assert!(arc.end().distance(c) < limit, "end {offset} {chord}");
+                assert!(arc.closest(b).1 < limit, "through {offset} {chord}");
+            }
+        }
+        // Review case "dshape": a line closed by a three point arc, and a U
+        // closed by a tangent arc, at every offset and size.
+        let tangent_arc = |start: Vec2, tangent: Vec2, end: Vec2| {
+            let normal = tangent.perp();
+            let chord = end - start;
+            let k = chord.length_squared() / (2.0 * normal.dot(chord));
+            let center = start + normal * k;
+            let from = (start - center).to_angle();
+            let to = (end - center).to_angle();
+            let sweep = if k > 0.0 {
+                (to - from).rem_euclid(TAU)
+            } else {
+                -(from - to).rem_euclid(TAU)
+            };
+            SketchCurve::Arc {
+                center,
+                radius: k.abs(),
+                start_angle: from,
+                sweep,
+            }
+        };
+        for offset in [0.0_f32, 0.5, 1.0, 2.0, 10.0, 50.0, 100.0, 300.0, 1000.0] {
+            for width in [2.0_f32, 0.2, 0.02, 0.005] {
+                let a = Vec2::splat(offset);
+                let b = a + Vec2::new(width, 0.0);
+                let top = a + Vec2::new(width * 0.5, width * 0.2);
+                let arc = SketchCurve::arc_through(b, top, a).unwrap();
+                let d = sketch_of(vec![
+                    SketchCurve::Line { start: a, end: b }.into(),
+                    arc.into(),
+                ]);
+                assert_eq!(
+                    d.profiles(SKETCH_TOLERANCE).len(),
+                    1,
+                    "D at {offset} width {width}"
+                );
+                let c = b + Vec2::new(0.0, width);
+                let cap = tangent_arc(c, Vec2::Y, a + Vec2::new(0.0, width));
+                let u = sketch_of(vec![
+                    SketchCurve::Line { start: a, end: b }.into(),
+                    SketchCurve::Line { start: b, end: c }.into(),
+                    cap.into(),
+                    SketchCurve::Line {
+                        start: cap.end(),
+                        end: a,
+                    }
+                    .into(),
+                ]);
+                assert_eq!(
+                    u.profiles(SKETCH_TOLERANCE).len(),
+                    1,
+                    "U at {offset} width {width}"
+                );
+            }
+        }
     }
 }

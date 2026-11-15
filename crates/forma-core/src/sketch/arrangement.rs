@@ -453,6 +453,25 @@ struct Graph {
     pieces: Vec<Piece>,
 }
 
+/// The join tolerance for a set of curves: at least `tol`, and never finer
+/// than single precision can resolve at the sketch's coordinates. Points
+/// computed from an arc's centre, radius and angles carry rounding error
+/// proportional to their magnitude, which a fixed absolute tolerance cannot
+/// absorb a few hundred units from the origin.
+pub(super) fn effective_tolerance(entities: &[SketchEntity], tol: f64) -> f64 {
+    let magnitude = entities
+        .iter()
+        .filter(|entity| entity.curve.is_valid())
+        .map(|entity| match entity.curve {
+            SketchCurve::Line { start, end } => start.abs().max(end.abs()).max_element() as f64,
+            SketchCurve::Arc { center, radius, .. } | SketchCurve::Circle { center, radius } => {
+                (center.abs().max_element() + radius) as f64
+            }
+        })
+        .fold(0.0, f64::max);
+    tol.max(magnitude * 3.0 * f32::EPSILON as f64)
+}
+
 /// Profile-forming curves, with circles that coincide with an earlier
 /// circle (same centre and radius within `tol`) dropped. Coincident open
 /// curves are split at each other's ends and deduplicated piece by piece,
@@ -647,7 +666,9 @@ fn dedupe(pieces: &mut Vec<Piece>, tol: f64) {
         let key = (piece.u.min(piece.v), piece.u.max(piece.v));
         let middle = piece.geo.point(0.5);
         let entry = seen.entry(key).or_default();
-        if entry.iter().any(|m| m.distance(middle) <= tol * 4.0) {
+        // Retraced pieces differ only by vertex merging, at most `tol`; a real
+        // arc beside its chord differs by its sagitta.
+        if entry.iter().any(|m| m.distance(middle) <= tol * 1.5) {
             false
         } else {
             entry.push(middle);
@@ -763,7 +784,7 @@ fn trace_faces(graph: &Graph, live: &[bool]) -> Faces {
 
 /// Minimal bounded faces of the arrangement, as profiles with holes.
 pub(super) fn profiles(entities: &[SketchEntity], tolerance: f32) -> Vec<Profile> {
-    let tol = tolerance as f64;
+    let tol = effective_tolerance(entities, tolerance as f64);
     let graph = build_graph(entities, tol);
     if graph.pieces.is_empty() {
         return Vec::new();
@@ -1026,6 +1047,7 @@ pub(super) fn split_parameters(
     if !entity.curve.is_valid() {
         return None;
     }
+    let tol = effective_tolerance(entities, tol);
     let geo = Geo::new(&entity.curve);
     let (lo, hi) = geo.bounds();
     let length = geo.length().max(f64::MIN_POSITIVE);
@@ -1066,6 +1088,7 @@ pub(super) fn split_parameters(
 /// The intersection points between every pair of curves (crossings and
 /// tangencies, not shared endpoints), merged within `tol`.
 pub(super) fn crossing_points(entities: &[SketchEntity], tol: f64) -> Vec<Vec2> {
+    let tol = effective_tolerance(entities, tol);
     let curves: Vec<Geo> = entities
         .iter()
         .filter(|entity| entity.curve.is_valid())
