@@ -644,7 +644,7 @@ fn paint_grid(active: &ActiveOverlay, projector: &Projector, c: Colors, window: 
         .zip(projector.point(frame.to_world(focus + Vec2::X * minor)))
         .map(|(a, b)| to_vec(a).distance(to_vec(b)))
         .unwrap_or(20.0);
-    let minor_fade = 0.35 + 0.65 * smoothstep(14.0, 30.0, minor_pixels);
+    let minor_fade = 0.55 + 0.45 * smoothstep(14.0, 30.0, minor_pixels);
     const LEVELS: usize = 6;
     // Buckets of runs by (style, fade level).
     let mut buckets: Vec<Vec<Vec<Point<Pixels>>>> = vec![Vec::new(); 4 * LEVELS];
@@ -691,7 +691,7 @@ fn paint_grid(active: &ActiveOverlay, projector: &Projector, c: Colors, window: 
     // Every line is stroked twice, dark under light, so the grid reads over
     // both bright and dark surfaces of the rendered frame.
     let base = [
-        (c.text, c.shell, 0.10 * minor_fade, 1.0),
+        (c.text, c.shell, 0.14 * minor_fade, 1.0),
         (c.text, c.shell, 0.22, 1.0),
         // Index 0 lines are the sketch axes: x is horizontal, y vertical.
         (c.axis_ink[1], c.shell, 0.6, 1.3),
