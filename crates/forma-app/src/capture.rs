@@ -77,6 +77,17 @@ pub(crate) fn scenarios() -> Vec<Scenario> {
             leave: nothing,
         },
         Scenario {
+            name: "unsaved",
+            enter: |s, _, cx| {
+                s.dirty = true;
+                cx.notify();
+            },
+            leave: |s, _, cx| {
+                s.dirty = false;
+                cx.notify();
+            },
+        },
+        Scenario {
             name: "commands",
             enter: |s, w, cx| s.execute(Command::TogglePalette, w, cx),
             leave: |s, w, cx| s.execute(Command::TogglePalette, w, cx),

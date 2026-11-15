@@ -356,7 +356,6 @@ pub(super) fn outliner(t: Colors, s: &Studio, cx: &mut Context<Studio>) -> Div {
                         .font_weight(WEIGHT_SEMIBOLD)
                         .child("Scene"),
                 )
-                .child(badge(t, s.scene.objects.len().to_string(), BadgeTone::Neutral).tabular())
                 .child(spacer())
                 .child(
                     icon_button(t, "outliner-add", Icon::Plus, menu_open, H_SM)

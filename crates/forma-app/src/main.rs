@@ -244,7 +244,7 @@ fn main() -> Result<()> {
                     name: "Forma".into(),
                     items: vec![
                         MenuItem::action("Keyboard shortcuts", Help),
-                        MenuItem::action("Check for Updates…", CheckForUpdates),
+                        MenuItem::action("Check for updates…", CheckForUpdates),
                         MenuItem::separator(),
                         MenuItem::action("Quit Forma", Quit),
                     ],
@@ -296,7 +296,7 @@ fn main() -> Result<()> {
                         MenuItem::action("Selection measurements", Measurements),
                         MenuItem::separator(),
                         MenuItem::action("Commands", Commands),
-                        MenuItem::action("Color Theme…", ColorTheme),
+                        MenuItem::action("Color theme…", ColorTheme),
                         MenuItem::action("Keyboard shortcuts", Help),
                     ],
                 },

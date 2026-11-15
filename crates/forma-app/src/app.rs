@@ -399,7 +399,13 @@ impl Studio {
             denoise_error: None,
             render_ms: 0.,
             device_name: "Starting GPU renderer…".into(),
-            status: theme_error.unwrap_or_else(|| "Ready · Select an object to begin".into()),
+            status: theme_error.unwrap_or_else(|| {
+                if selected.is_some() {
+                    "Ready".into()
+                } else {
+                    "Ready · Select an object to begin".into()
+                }
+            }),
             project_name: "Studio study".into(),
             dirty: false,
             theme,
@@ -3107,11 +3113,11 @@ pub(crate) fn palette_commands(query: &str) -> Vec<(&'static str, &'static str, 
         // Workspace
         ("Keyboard shortcuts", "?", Command::ToggleHelp),
         (
-            "Preferences: Color Theme",
+            "Preferences: Color theme",
             platform_shortcut("⇧ ⌘ T", "Ctrl+Shift+T"),
             Command::ToggleTheme,
         ),
-        ("Check for Updates…", "", Command::CheckForUpdates),
+        ("Check for updates…", "", Command::CheckForUpdates),
         ("Update preferences…", "", Command::ToggleUpdates),
     ]
     .into_iter()

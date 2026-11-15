@@ -108,8 +108,8 @@ cargo run --locked --release -p forma
   units and a selected/visible scope for binary STL. Export the current render mode to PNG
   while continuing to edit.
 - Personalize the editor with five color themes: Forma Dark, Paper, Midnight,
-  Synthwave and Matcha. Open the palette button in the title bar, **View → Color Theme…**,
-  or search **Preferences: Color Theme** in the command panel. Type to filter,
+  Synthwave and Matcha. Open the palette button in the title bar, **View → Color theme…**,
+  or search **Preferences: Color theme** in the command panel. Type to filter,
   hover or use arrows to preview, then click or press Return to save your choice.
   Escape or clicking outside cancels. The theme is remembered across launches.
 - Search commands with `⌘K` or the search field in the title bar, type a name, then

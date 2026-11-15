@@ -126,20 +126,7 @@ fn header(t: Colors, s: &Studio, cx: &mut Context<Studio>) -> Div {
                 .px(px(SP_2))
                 .gap(px(SP_2))
                 .child(tab_button(t, InspectorTab::Object, "Object", tab, cx))
-                .child(tab_button(t, InspectorTab::Render, "Render", tab, cx))
-                .child(spacer())
-                .child(
-                    div()
-                        .pr(px(SP_1))
-                        .text_size(px(TEXT_SM))
-                        .text_color(rgb(t.text_faint))
-                        .child(match s.settings.mode {
-                            RenderMode::Wireframe => "Wireframe",
-                            RenderMode::Solid => "Solid",
-                            RenderMode::MaterialPreview => "Material preview",
-                            RenderMode::Rendered => "Rendered",
-                        }),
-                ),
+                .child(tab_button(t, InspectorTab::Render, "Render", tab, cx)),
         )
 }
 
