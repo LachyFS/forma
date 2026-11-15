@@ -14,8 +14,10 @@ use std::f32::consts::TAU;
 
 /// Largest coordinate accepted in sketch space, matching object translation limits.
 pub const MAX_SKETCH_COORDINATE: f32 = 1.0e8;
-/// Maximum number of curves in one sketch.
-pub const MAX_SKETCH_ENTITIES: usize = 100_000;
+/// Maximum number of curves in one sketch. Profiles and snapping are
+/// rebuilt after every edit, so the limit keeps that interactive (about
+/// 35 ms of arrangement work at the limit).
+pub const MAX_SKETCH_ENTITIES: usize = 25_000;
 /// Default distance under which sketch endpoints are considered coincident.
 pub const SKETCH_TOLERANCE: f32 = 1.0e-5;
 
@@ -1611,6 +1613,27 @@ mod tests {
         assert!(
             started.elapsed() < std::time::Duration::from_millis(600),
             "intersection points took {:?}",
+            started.elapsed()
+        );
+    }
+
+    #[test]
+    fn many_islands_find_their_parent_region_quickly() {
+        // 2500 squares inside one outline: every island is a hole of the
+        // outline, found without testing each island against every region.
+        let mut entities = rectangle((-1.0, -1.0), (151.0, 151.0));
+        for i in 0..2500 {
+            let (x, y) = ((i % 50) as f32 * 3.0, (i / 50) as f32 * 3.0);
+            entities.extend(rectangle((x, y), (x + 1.0, y + 1.0)));
+        }
+        let started = std::time::Instant::now();
+        let profiles = sketch_of(entities).profiles(SKETCH_TOLERANCE);
+        assert_eq!(profiles.len(), 2501);
+        assert_eq!(profiles[0].holes.len(), 2500);
+        assert!((profiles[0].area() - (152.0 * 152.0 - 2500.0)).abs() < 1.0);
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(2),
+            "profiles took {:?}",
             started.elapsed()
         );
     }

@@ -874,13 +874,13 @@ pub(super) fn profiles(entities: &[SketchEntity], tolerance: f32) -> Vec<Profile
     }
     let mut outers: Vec<usize> = outer_of_component.into_values().collect();
     outers.sort_unstable();
+    let index = FaceIndex::new(&bounded, &face_bounds);
     let mut holes: HashMap<usize, Vec<usize>> = HashMap::new();
     for outer in outers {
         let component = component_of_face[outer];
         let sample = graph.vertices[half_edge_origin(&graph, faces.loops[outer][0])];
-        let parent = bounded
-            .iter()
-            .copied()
+        let parent = index
+            .candidates(sample)
             .filter(|&face| component_of_face[face] != component)
             // A hole is always smaller than the region around it.
             .filter(|&face| areas[face] > -areas[outer])
@@ -1109,6 +1109,70 @@ pub(super) fn crossing_points(entities: &[SketchEntity], tol: f64) -> Vec<Vec2> 
         }
     }
     points.points.into_iter().map(|p| p.as_vec2()).collect()
+}
+
+/// A uniform grid over region bounds, so finding the regions around a point
+/// does not scan every region. Regions covering much of the grid are kept in
+/// a short list that every query checks.
+struct FaceIndex {
+    origin: DVec2,
+    cell: DVec2,
+    size: usize,
+    cells: Vec<Vec<usize>>,
+    large: Vec<usize>,
+}
+
+impl FaceIndex {
+    fn new(faces: &[usize], bounds: &[(DVec2, DVec2)]) -> Self {
+        let (lo, hi) = faces
+            .iter()
+            .fold((DVec2::INFINITY, DVec2::NEG_INFINITY), |(lo, hi), &face| {
+                (lo.min(bounds[face].0), hi.max(bounds[face].1))
+            });
+        let size = ((faces.len() as f64).sqrt().ceil() as usize).clamp(1, 256);
+        let span = (hi - lo).max(DVec2::splat(1.0e-9));
+        let mut index = Self {
+            origin: lo,
+            cell: span / size as f64,
+            size,
+            cells: vec![Vec::new(); size * size],
+            large: Vec::new(),
+        };
+        if !lo.is_finite() {
+            return index;
+        }
+        for &face in faces {
+            let (a, b) = (index.cell_of(bounds[face].0), index.cell_of(bounds[face].1));
+            let covered = (b.0 - a.0 + 1) * (b.1 - a.1 + 1);
+            if covered * 4 > size * size {
+                index.large.push(face);
+                continue;
+            }
+            for x in a.0..=b.0 {
+                for y in a.1..=b.1 {
+                    index.cells[y * size + x].push(face);
+                }
+            }
+        }
+        index
+    }
+
+    fn cell_of(&self, p: DVec2) -> (usize, usize) {
+        let local = ((p - self.origin) / self.cell).floor();
+        let clamp = |v: f64| (v.max(0.0) as usize).min(self.size - 1);
+        (clamp(local.x), clamp(local.y))
+    }
+
+    /// Regions whose bounds may contain `p`.
+    fn candidates(&self, p: DVec2) -> impl Iterator<Item = usize> + '_ {
+        let (x, y) = self.cell_of(p);
+        self.cells
+            .get(y * self.size + x)
+            .into_iter()
+            .flatten()
+            .chain(&self.large)
+            .copied()
+    }
 }
 
 /// Points kept at least `tol` apart, found through a spatial hash so
