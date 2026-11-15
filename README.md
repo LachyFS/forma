@@ -391,8 +391,9 @@ Current limitations, honestly:
   flat faces that end at convex corners.
 - Booleans with spheres, cones and tori usually fail in truck 0.4 (the feature
   is reported and skipped); boxes, cylinders, extrusions and converted meshes
-  combine reliably. Faces that touch exactly are retried automatically but can
-  still fail.
+  combine reliably. Sketches on a face cut and join exactly; other faces that
+  touch exactly are retried with the tool enlarged by a fraction of a
+  millimetre, and the feature is marked **Check** with the amount, or fail.
 - Push/pull works on flat faces of polyhedral parts, of parts that are
   extrusions along the face normal (such as drilled plates), and otherwise
   when the neighbouring faces are not coplanar with the move.

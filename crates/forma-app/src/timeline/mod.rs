@@ -404,7 +404,7 @@ impl Studio {
 
     /// Whether the worker is regenerating (or about to regenerate) `part`.
     pub(crate) fn part_regenerating(&self, part: &PartData) -> bool {
-        !part.is_evaluated()
+        part.is_pending()
     }
 
     /// Cached region-pick warnings for a part.
@@ -1170,7 +1170,7 @@ impl Studio {
         if exists {
             self.panels.timeline.select(back.selection);
             if let Some(selected) = self.selected_feature() {
-                let regenerating = !selected.part.is_evaluated();
+                let regenerating = selected.part.is_pending();
                 self.status = format!(
                     "{} updated{}",
                     selected.feature.name,
@@ -1419,12 +1419,14 @@ mod tests {
             feature: 3,
             message: "Bore: the cut removed nothing".into(),
             suggestion: String::new(),
+            warning: false,
         };
         assert_eq!(issue_text(&issue), "The cut removed nothing");
         let part_level = FeatureIssue {
             feature: 0,
             message: "2 faces could not be tessellated".into(),
             suggestion: String::new(),
+            warning: false,
         };
         assert_eq!(issue_text(&part_level), "2 faces could not be tessellated");
     }

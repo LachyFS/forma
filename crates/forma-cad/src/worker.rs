@@ -46,6 +46,47 @@ pub fn serve_stdio() -> ! {
     std::process::exit(0)
 }
 
+/// Test hook: features named "__hang__" or "__abort__" take the worker down
+/// when they are evaluated (only with [`TEST_HOOKS_ENV`] set).
+struct Traps {
+    hang: Option<u64>,
+    abort: Option<u64>,
+}
+
+impl Traps {
+    fn new<'a>(hooks: bool, parts: impl IntoIterator<Item = &'a forma_core::PartData>) -> Self {
+        let mut traps = Self {
+            hang: None,
+            abort: None,
+        };
+        if hooks {
+            for part in parts {
+                for feature in forma_core::all_features(&part.features) {
+                    match feature.name.as_str() {
+                        "__hang__" => traps.hang = Some(feature.id),
+                        "__abort__" => traps.abort = Some(feature.id),
+                        _ => {}
+                    }
+                }
+            }
+        }
+        traps
+    }
+
+    /// Report progress on `feature`, springing a trap if it has one.
+    fn report(&self, id: u64, feature: u64, emit: &mut dyn FnMut(Response)) {
+        emit(Response::Progress { id, feature });
+        if Some(feature) == self.hang {
+            loop {
+                std::thread::park();
+            }
+        }
+        if Some(feature) == self.abort {
+            std::process::exit(134);
+        }
+    }
+}
+
 /// Evaluate one request, emitting progress and exactly one final response.
 pub fn handle(
     request: Request,
@@ -56,41 +97,32 @@ pub fn handle(
     let id = request.id();
     let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| match request {
         Request::Regenerate { id, regen } => {
-            // Test hook: features named "__hang__" or "__abort__" take the
-            // worker down when they are evaluated.
-            let trap = |name: &str| {
-                hooks
-                    .then(|| {
-                        forma_core::all_features(&regen.part.features)
-                            .find(|feature| feature.name == name)
-                            .map(|feature| feature.id)
-                    })
-                    .flatten()
-            };
-            let (hang, abort) = (trap("__hang__"), trap("__abort__"));
+            let traps = Traps::new(hooks, [&regen.part]);
             let result = regenerate(&regen, cache, &mut |feature| {
-                emit(Response::Progress { id, feature });
-                if Some(feature) == hang {
-                    loop {
-                        std::thread::park();
-                    }
-                }
-                if Some(feature) == abort {
-                    std::process::exit(134);
-                }
+                traps.report(id, feature, emit)
             });
             Response::Regenerated { id, result }
         }
-        Request::PartToMesh { id, part } => Response::Mesh {
-            id,
-            result: crate::step::part_to_mesh_cached(&part, cache)
-                .map_err(|error| error.to_string()),
-        },
-        Request::ExportStep { id, parts } => Response::Step {
-            id,
-            result: crate::step::export_step_cached(&parts, cache)
-                .map_err(|error| error.to_string()),
-        },
+        Request::PartToMesh { id, part, skip } => {
+            let traps = Traps::new(hooks, [&part]);
+            let result = crate::step::part_to_mesh_cached(&part, &skip, cache, &mut |feature| {
+                traps.report(id, feature, emit)
+            });
+            Response::Mesh {
+                id,
+                result: result.map_err(|error| error.to_string()),
+            }
+        }
+        Request::ExportStep { id, parts, skips } => {
+            let traps = Traps::new(hooks, parts.iter().map(|placed| &placed.part));
+            let result = crate::step::export_step_cached(&parts, &skips, cache, &mut |feature| {
+                traps.report(id, feature, emit)
+            });
+            Response::Step {
+                id,
+                result: result.map_err(|error| error.to_string()),
+            }
+        }
         Request::ImportStep { id, name, text } => Response::Imported {
             id,
             result: crate::step::import_step(&name, &text).map_err(|error| error.to_string()),
@@ -116,12 +148,24 @@ pub fn handle(
                     std::process::exit(134);
                 }
                 DebugAction::Panic => panic!("injected worker panic"),
+                DebugAction::BadFrame => {
+                    // A well-framed reply whose JSON does not decode.
+                    let mut out = std::io::stdout().lock();
+                    let json = br#"{"response":"echo","id":null}"#;
+                    let _ = std::io::Write::write_all(&mut out, b"\x00FCAD\x01\xfe\xff");
+                    let _ = std::io::Write::write_all(&mut out, &(json.len() as u32).to_le_bytes());
+                    let _ = std::io::Write::write_all(&mut out, json);
+                    let _ = std::io::Write::flush(&mut out);
+                    loop {
+                        std::thread::park();
+                    }
+                }
                 DebugAction::Echo => Response::Echo { id },
             }
         }
         Request::Shutdown => Response::Echo { id },
     }));
-    emit(outcome.unwrap_or_else(|payload| {
+    let mut response = outcome.unwrap_or_else(|payload| {
         let detail = payload
             .downcast_ref::<&str>()
             .map(|s| (*s).to_owned())
@@ -133,5 +177,7 @@ pub fn handle(
             id,
             message: format!("The geometry kernel failed ({detail})"),
         }
-    }));
+    });
+    response.sanitize();
+    emit(response);
 }

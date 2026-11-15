@@ -545,7 +545,7 @@ fn feature_page(
         (ChipState::Error(_), _, _) => ("Failed", BadgeTone::Danger),
         (_, true, _) => ("Suppressed", BadgeTone::Neutral),
         (_, _, true) => ("Rolled back", BadgeTone::Neutral),
-        _ if !part.is_evaluated() => ("Regenerating", BadgeTone::Accent),
+        _ if part.is_pending() => ("Regenerating", BadgeTone::Accent),
         (ChipState::Warning(_), _, _) => ("Check", BadgeTone::Neutral),
         _ => ("Active", BadgeTone::Neutral),
     };
@@ -782,10 +782,18 @@ fn part_summary(
     cx: &mut Context<Studio>,
 ) -> Div {
     let issues = part.issues();
-    let (status, tone) = if !part.is_evaluated() {
+    let (status, tone) = if part.is_pending() {
         ("Regenerating…".to_owned(), BadgeTone::Accent)
+    } else if part.regeneration_failed() {
+        // Viewport, OBJ/STL and STEP/convert would otherwise disagree silently.
+        (
+            "Failed · showing the previous result".to_owned(),
+            BadgeTone::Danger,
+        )
     } else if issues.is_empty() {
         ("Up to date".to_owned(), BadgeTone::Neutral)
+    } else if issues.iter().all(|issue| issue.warning) {
+        (format!("{} approximated", issues.len()), BadgeTone::Neutral)
     } else {
         (
             format!(

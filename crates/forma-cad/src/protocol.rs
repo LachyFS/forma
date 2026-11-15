@@ -105,10 +105,16 @@ pub enum Request {
     PartToMesh {
         id: u64,
         part: PartData,
+        /// Features to treat as failed, as in [`RegenRequest::skip`].
+        #[serde(default)]
+        skip: Vec<FeatureIssue>,
     },
     ExportStep {
         id: u64,
         parts: Vec<StepPart>,
+        /// Features to treat as failed, per part.
+        #[serde(default)]
+        skips: Vec<Vec<FeatureIssue>>,
     },
     /// Check a STEP document and return it as a part history.
     ImportStep {
@@ -147,6 +153,8 @@ pub enum DebugAction {
     Abort { feature: u64 },
     /// Panic inside the request handler.
     Panic,
+    /// Write a frame the host cannot decode, then stay alive.
+    BadFrame,
     /// Answer immediately.
     Echo,
 }
@@ -186,6 +194,62 @@ pub enum Response {
 }
 
 impl Response {
+    /// Replace values JSON cannot carry. serde_json writes NaN and
+    /// infinities as `null`, which the reader then rejects, so a single
+    /// degenerate normal would otherwise lose the whole reply.
+    pub fn sanitize(&mut self) {
+        let clean = |v: &mut f32| {
+            if !v.is_finite() {
+                *v = 0.0;
+            }
+        };
+        let clean64 = |v: &mut f64| {
+            if !v.is_finite() {
+                *v = 0.0;
+            }
+        };
+        match self {
+            Self::Regenerated { result, .. } => {
+                for face in &mut result.faces {
+                    for v in [&mut face.point, &mut face.normal] {
+                        for c in [&mut v.x, &mut v.y, &mut v.z] {
+                            clean(c);
+                        }
+                    }
+                    clean(&mut face.area);
+                }
+                let stats = &mut result.stats;
+                for v in [
+                    &mut stats.total_ms,
+                    &mut stats.evaluate_ms,
+                    &mut stats.tessellate_ms,
+                ] {
+                    clean64(v);
+                }
+                let broken = |mesh: &Mesh| mesh.positions.iter().any(|p| !p.is_finite());
+                if result.mesh.as_ref().is_some_and(broken) {
+                    result.mesh = None;
+                    result.faces.clear();
+                    result.issues.push(FeatureIssue {
+                        feature: 0,
+                        message: "The tessellation contained invalid coordinates".into(),
+                        suggestion: "Try another tessellation quality".into(),
+                        warning: false,
+                    });
+                }
+            }
+            Self::Mesh {
+                result: Ok(mesh), ..
+            } if mesh.positions.iter().any(|p| !p.is_finite()) => {
+                *self = Self::Error {
+                    id: self.id(),
+                    message: "The baked mesh contained invalid coordinates".into(),
+                };
+            }
+            _ => {}
+        }
+    }
+
     pub fn id(&self) -> u64 {
         match self {
             Self::Progress { id, .. }
@@ -248,6 +312,37 @@ pub fn read_frame<T: for<'de> Deserialize<'de>>(reader: &mut impl Read) -> io::R
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn non_finite_values_are_sanitized_before_encoding() {
+        // Review case: a NaN normal serialized as null and the host could
+        // not decode the reply.
+        let mut response = Response::Regenerated {
+            id: 1,
+            result: RegenResult {
+                part_id: 1,
+                stamp: 1,
+                mesh: None,
+                faces: vec![FaceInfo {
+                    kind: SurfaceKind::Planar,
+                    brep_faces: vec![0],
+                    point: Vec3::ZERO,
+                    normal: Vec3::new(f32::NAN, 0.0, 0.0),
+                    area: f32::INFINITY,
+                }],
+                issues: Vec::new(),
+                stats: RegenStats::default(),
+            },
+        };
+        let mut raw = Vec::new();
+        write_frame(&mut raw, &response).unwrap();
+        assert!(read_frame::<Response>(&mut raw.as_slice()).is_err());
+        response.sanitize();
+        let mut buffer = Vec::new();
+        write_frame(&mut buffer, &response).unwrap();
+        let decoded: Response = read_frame(&mut buffer.as_slice()).unwrap().unwrap();
+        assert_eq!(decoded.id(), 1);
+    }
 
     #[test]
     fn frames_survive_stray_output_between_them() {

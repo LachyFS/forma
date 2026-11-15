@@ -13,7 +13,7 @@
 //!   are baked into B-splines on a deep copy before any transform.
 use crate::KernelError;
 use crate::body::{Body, Geometry, guard};
-use crate::geom::{TriMesh, matrix_d};
+use crate::geom::{Bounds, TriMesh, matrix_d};
 use glam::{DMat4, DVec3};
 use truck_modeling::{
     BSplineCurve, BoundedCurve, Curve, KnotVec, ParameterDivision1D, ParametricCurve, Solid,
@@ -178,7 +178,17 @@ fn boolean_single(a: &Body, b: &Body, op: BoolOp) -> Result<Body, KernelError> {
         };
         match run(solid_a, &tool, op, base * scale) {
             Ok(Some(result)) => match check(&result) {
-                Ok(()) => return Ok(Body::solid(result, min_radius)),
+                Ok(()) => {
+                    // Surfaces moved by up to half the growth of the diagonal.
+                    let moved = (factor - 1.0) * bounds_b.diagonal() * 0.5;
+                    note(format!(
+                        "result approximated: the {} tool was enlarged by {} so touching \
+                         faces would separate",
+                        op.verb().to_lowercase(),
+                        format_length(moved)
+                    ));
+                    return Ok(Body::solid(result, min_radius));
+                }
                 Err(error) => last_error = Some(error),
             },
             Ok(None) => {}
@@ -196,6 +206,32 @@ fn boolean_single(a: &Body, b: &Body, op: BoolOp) -> Result<Body, KernelError> {
         "Faces that touch exactly or meet tangentially are hard for the kernel · \
          Move one body slightly so faces clearly overlap or clearly separate",
     ))
+}
+
+thread_local! {
+    /// Approximations made while evaluating the current feature.
+    static NOTES: std::cell::RefCell<Vec<String>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Record that the current feature's result is approximate.
+pub(crate) fn note(message: String) {
+    NOTES.with(|notes| notes.borrow_mut().push(message));
+}
+
+/// Approximations recorded since the last call (feature evaluation runs on
+/// one thread).
+pub(crate) fn take_notes() -> Vec<String> {
+    NOTES.with(|notes| std::mem::take(&mut *notes.borrow_mut()))
+}
+
+fn format_length(metres: f64) -> String {
+    if metres >= 0.01 {
+        format!("{:.1} cm", metres * 100.0)
+    } else if metres >= 1.0e-4 {
+        format!("{:.2} mm", metres * 1.0e3)
+    } else {
+        format!("{:.1} µm", metres * 1.0e6)
+    }
 }
 
 fn run(a: &Solid, b: &Solid, op: BoolOp, tolerance: f64) -> Result<Option<Solid>, KernelError> {
@@ -226,6 +262,8 @@ struct Probes {
     inside: Vec<DVec3>,
     /// Points that must be outside the result.
     outside: Vec<DVec3>,
+    /// The tool's bounds, padded: where the boolean can create faces.
+    region: Bounds,
 }
 
 impl Probes {
@@ -246,9 +284,14 @@ impl Probes {
                 .collect()
         };
         let in_b: Vec<DVec3> = sample(b).into_iter().filter(|p| b.contains(*p)).collect();
+        let mut region = b.bounds();
+        let pad = DVec3::splat(inset * 4.0 + size * 2.0e-3);
+        region.min -= pad;
+        region.max += pad;
         let mut probes = Self {
             inside: Vec::new(),
             outside: Vec::new(),
+            region,
         };
         match op {
             BoolOp::Union => probes.inside = in_b,
@@ -274,9 +317,15 @@ impl Probes {
     }
 }
 
+/// Most faces [`hollow_face`] probes per result, keeping validation far
+/// cheaper than the boolean itself on dense converted meshes.
+const MAX_FACE_PROBES: usize = 256;
+
 /// A face whose largest triangle lacks material behind it or has material in
-/// front of it, if any.
-fn hollow_face(mesh: &TriMesh) -> Option<u32> {
+/// front of it, if any. Only faces inside `region` (the tool's bounds) can be
+/// lids left by the tool, so faces elsewhere are not probed; at most
+/// [`MAX_FACE_PROBES`] faces, spread evenly, are checked.
+fn hollow_face(mesh: &TriMesh, region: &Bounds) -> Option<u32> {
     let size = mesh.bounds().diagonal();
     let mut largest: std::collections::BTreeMap<u32, (f64, usize)> = Default::default();
     for (index, &face) in mesh.faces.iter().enumerate() {
@@ -287,19 +336,31 @@ fn hollow_face(mesh: &TriMesh) -> Option<u32> {
             *entry = (area, index);
         }
     }
-    largest.into_iter().find_map(|(face, (area, index))| {
-        let [p, q, r] = mesh.triangle(index);
-        let normal = (q - p).cross(r - p).normalize_or_zero();
-        // Stay well inside small triangles so the probe sees this face.
-        let inset = (size * 2.0e-4).min(area.sqrt() * 0.05);
-        if normal == DVec3::ZERO || inset <= 0.0 {
-            return None;
-        }
-        let center = (p + q + r) / 3.0;
-        let behind = mesh.contains(center - normal * inset);
-        let ahead = mesh.contains(center + normal * inset);
-        (!behind || ahead).then_some(face)
-    })
+    let inside = |p: DVec3| p.cmpge(region.min).all() && p.cmple(region.max).all();
+    let candidates: Vec<(u32, (f64, usize))> = largest
+        .into_iter()
+        .filter(|(_, (_, index))| {
+            let [p, q, r] = mesh.triangle(*index);
+            inside((p + q + r) / 3.0)
+        })
+        .collect();
+    let step = candidates.len().div_ceil(MAX_FACE_PROBES).max(1);
+    candidates
+        .into_iter()
+        .step_by(step)
+        .find_map(|(face, (area, index))| {
+            let [p, q, r] = mesh.triangle(index);
+            let normal = (q - p).cross(r - p).normalize_or_zero();
+            // Stay well inside small triangles so the probe sees this face.
+            let inset = (size * 2.0e-4).min(area.sqrt() * 0.05);
+            if normal == DVec3::ZERO || inset <= 0.0 {
+                return None;
+            }
+            let center = (p + q + r) / 3.0;
+            let behind = mesh.contains(center - normal * inset);
+            let ahead = mesh.contains(center + normal * inset);
+            (!behind || ahead).then_some(face)
+        })
 }
 
 fn sane(
@@ -326,7 +387,7 @@ fn sane(
     let volume = mesh.volume();
     // Every face must have material just behind it and none just in front:
     // truck sometimes keeps a zero-thickness lid where a tool's cap was flush.
-    if let Some(face) = hollow_face(&mesh) {
+    if let Some(face) = hollow_face(&mesh, &probes.region) {
         return Err(KernelError::new(
             format!("face {face} of the result does not bound material"),
             "",
@@ -687,6 +748,59 @@ mod tests {
             Ok(body) => assert!((volume(&body) - 9.0).abs() < 0.05, "{}", volume(&body)),
             Err(error) => assert!(error.message.contains("Join failed"), "{error}"),
         }
+    }
+
+    #[test]
+    fn validation_checks_are_cheap_on_dense_bodies() {
+        // A converted mesh with ~40k triangles: every check must stay far
+        // below truck's own boolean time (the review measured 22 s here).
+        let n = 140;
+        let mut mesh = forma_core::Mesh::default();
+        mesh.positions.push(glam::Vec3::Y);
+        for i in 1..n {
+            let t = std::f32::consts::PI * i as f32 / n as f32;
+            for j in 0..n {
+                let p = std::f32::consts::TAU * j as f32 / n as f32;
+                mesh.positions.push(glam::Vec3::new(
+                    t.sin() * p.cos(),
+                    t.cos(),
+                    t.sin() * p.sin(),
+                ));
+            }
+        }
+        mesh.positions.push(-glam::Vec3::Y);
+        let south = mesh.positions.len() as u32 - 1;
+        let ring = |i: u32, j: u32| 1 + (i - 1) * n + (j % n);
+        for j in 0..n {
+            mesh.faces.push(vec![0, ring(1, j + 1), ring(1, j)]);
+            mesh.faces
+                .push(vec![south, ring(n - 1, j), ring(n - 1, j + 1)]);
+        }
+        for i in 1..n - 1 {
+            for j in 0..n {
+                mesh.faces
+                    .push(vec![ring(i, j), ring(i, j + 1), ring(i + 1, j + 1)]);
+                mesh.faces
+                    .push(vec![ring(i, j), ring(i + 1, j + 1), ring(i + 1, j)]);
+            }
+        }
+        let body =
+            crate::polyhedron::build_solid(&crate::polyhedron::from_mesh(&mesh).unwrap()).unwrap();
+        let dense = body.trimesh(body.tolerance(3.0e-3, 0.35)).unwrap();
+        assert!(dense.triangles.len() > 35_000);
+        let tool = cube(1.0).trimesh(0.01).unwrap();
+        let started = std::time::Instant::now();
+        let probes = Probes::new(&dense, &tool, BoolOp::Subtract, 3.0);
+        let everywhere = dense.bounds();
+        assert!(hollow_face(&dense, &everywhere).is_none());
+        let _ = probes.errors(&dense);
+        let _ = dense.edges_cross(&tool);
+        let elapsed = started.elapsed().as_secs_f64();
+        println!(
+            "validation over {} triangles: {elapsed:.3} s",
+            dense.triangles.len()
+        );
+        assert!(elapsed < 1.0, "validation took {elapsed:.2} s");
     }
 
     #[test]

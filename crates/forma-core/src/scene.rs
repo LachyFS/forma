@@ -873,10 +873,12 @@ impl Scene {
         Ok(id)
     }
 
-    /// Record issues for the current content of `part_id` without changing
-    /// its cached tessellation, for regenerations that produced nothing.
-    /// Returns false for stale stamps.
-    pub fn mark_part_evaluated(
+    /// Record that regenerating content `stamp` of `part_id` produced no
+    /// usable result. The cached tessellation and its evaluation are kept;
+    /// the failure is session state (`PartData::failed`), so it stops
+    /// resubmission now and is retried after reopening. Returns false for
+    /// stale stamps.
+    pub fn mark_part_failed(
         &mut self,
         part_id: u64,
         stamp: u64,
@@ -884,7 +886,7 @@ impl Scene {
     ) -> bool {
         match self.part_mut(part_id) {
             Some(part) if part.stamp == stamp => {
-                part.evaluated = Some(PartEvaluation { stamp, issues });
+                part.failed = Some(PartEvaluation { stamp, issues });
                 true
             }
             _ => false,
@@ -969,7 +971,9 @@ impl Scene {
                 }
             }
         }
-        self.part_mut(part_id).unwrap().evaluated = Some(PartEvaluation { stamp, issues });
+        let part = self.part_mut(part_id).unwrap();
+        part.evaluated = Some(PartEvaluation { stamp, issues });
+        part.failed = None;
         Ok(true)
     }
 
@@ -1802,6 +1806,32 @@ impl Scene {
         }
         for object in &self.objects {
             self.validate_object_chain(object.id)?;
+        }
+        // A part's mesh block is a regenerated cache: editing it as a mesh,
+        // or sharing it with another part, would corrupt one or the other.
+        let mut cache_owner: BTreeMap<u64, u64> = BTreeMap::new();
+        for object in &self.objects {
+            if let ObjectData::Part {
+                part,
+                mesh: Some(mesh),
+                ..
+            } = &object.data
+            {
+                let owner = *cache_owner.entry(*mesh).or_insert(*part);
+                ensure!(
+                    owner == *part,
+                    "Mesh data {mesh} is the cache of two different parts"
+                );
+            }
+        }
+        for object in &self.objects {
+            if let ObjectData::Mesh { mesh, .. } = &object.data {
+                ensure!(
+                    !cache_owner.contains_key(mesh),
+                    "Object {} edits mesh data that is a part's cached tessellation",
+                    object.name
+                );
+            }
         }
         ensure!(
             self.next_id > ids.last().copied().unwrap_or(0) && self.next_id < u64::MAX,

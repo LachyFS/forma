@@ -116,7 +116,8 @@ fn features_that_take_the_worker_down_are_skipped_and_reported() {
         let mut part = PartData::new(8, "Bracket");
         part.push_feature("Base", box_feature(2.0, 0.0, FeatureOperation::Join));
         let bad = part.push_feature(trap, box_feature(1.0, 1.0, FeatureOperation::Cut));
-        part.push_feature("Boss", box_feature(1.0, -1.5, FeatureOperation::Join));
+        // Overlapping the base (not flush), so the join is exact.
+        part.push_feature("Boss", box_feature(1.0, -1.45, FeatureOperation::Join));
         host.regenerate(8, part.clone());
         let result = regenerated(&events);
         assert_eq!(result.stamp, part.stamp);
@@ -194,4 +195,117 @@ fn in_process_mode_runs_without_a_worker() {
         }
         _ => unreachable!(),
     }
+}
+
+#[test]
+fn an_unreadable_reply_restarts_the_worker_and_never_wedges_shutdown() {
+    // Review case: the reader thread used to stop on a decode error while
+    // the worker lived on, and the host then waited on it forever while
+    // holding the lock shutdown needs.
+    let (host, events) = host(Duration::from_secs(30));
+    let started = Instant::now();
+    host.submit(Job::Debug {
+        ticket: 1,
+        action: DebugAction::BadFrame,
+    });
+    match next(&events, |e| matches!(e, HostEvent::WorkerRestarted { .. })) {
+        HostEvent::WorkerRestarted { reason } => {
+            assert!(reason.contains("could not be read"), "{reason}")
+        }
+        _ => unreachable!(),
+    }
+    assert!(
+        started.elapsed() < Duration::from_secs(10),
+        "the failure waited for a timeout"
+    );
+    // The next request gets a fresh worker.
+    host.submit(Job::Debug {
+        ticket: 2,
+        action: DebugAction::Echo,
+    });
+    next(&events, |e| matches!(e, HostEvent::Echo { ticket: 2 }));
+    // Shutdown is prompt even with another unreadable worker alive.
+    host.submit(Job::Debug {
+        ticket: 3,
+        action: DebugAction::BadFrame,
+    });
+    std::thread::sleep(Duration::from_millis(200));
+    let stopping = Instant::now();
+    host.shutdown();
+    assert!(stopping.elapsed() < Duration::from_secs(3));
+}
+
+#[test]
+fn invalid_part_data_is_refused_before_it_reaches_the_worker() {
+    let (host, events) = host(Duration::from_secs(30));
+    let mut part = PartData::new(4, "Bad");
+    part.push_feature("Base", box_feature(1.0, 0.0, FeatureOperation::Join));
+    if let FeatureKind::Primitive(primitive) = &mut part.features[0].kind {
+        primitive.placement.origin.x = f32::NAN;
+    }
+    host.regenerate(4, part);
+    match next(&events, |e| {
+        matches!(e, HostEvent::RegenFailed { .. } | HostEvent::Regenerated(_))
+    }) {
+        HostEvent::RegenFailed { issue, .. } => {
+            assert!(issue.message.contains("invalid"), "{issue:?}")
+        }
+        other => panic!("{other:?}"),
+    }
+}
+
+#[test]
+fn baking_and_exporting_skip_what_regeneration_skipped() {
+    // Review case: Convert to mesh and STEP export re-ran a feature that had
+    // already hung the worker, and reported no per-feature progress.
+    let (host, events) = host(Duration::from_millis(1500));
+    let mut part = PartData::new(11, "Bracket");
+    part.push_feature("Base", box_feature(2.0, 0.0, FeatureOperation::Join));
+    let bad = part.push_feature("__hang__", box_feature(1.0, 1.0, FeatureOperation::Cut));
+    host.regenerate(11, part.clone());
+    let result = regenerated(&events);
+    assert_eq!(result.issues[0].feature, bad);
+    let started = Instant::now();
+    host.submit(Job::PartToMesh {
+        ticket: 5,
+        part: part.clone(),
+    });
+    match next(&events, |e| matches!(e, HostEvent::Mesh { .. })) {
+        HostEvent::Mesh { ticket, result } => {
+            assert_eq!(ticket, 5);
+            assert_eq!(
+                result.expect("baked without the hung feature").faces.len(),
+                6
+            );
+        }
+        _ => unreachable!(),
+    }
+    host.submit(Job::ExportStep {
+        ticket: 6,
+        parts: vec![forma_cad::StepPart {
+            name: "Bracket".into(),
+            part: part.clone(),
+            transform: glam::Mat4::IDENTITY,
+        }],
+    });
+    match next(&events, |e| matches!(e, HostEvent::Step { .. })) {
+        HostEvent::Step { result, .. } => assert!(result.unwrap().starts_with("ISO-10303-21;")),
+        _ => unreachable!(),
+    }
+    assert!(
+        started.elapsed() < Duration::from_secs(5),
+        "a skipped feature ran again"
+    );
+    // A different version of the part gets no stale skips: the hang is
+    // caught per feature instead of by the 120 s request limit.
+    part.edit_feature(1, |feature| {
+        feature.kind = box_feature(2.5, 0.0, FeatureOperation::Join)
+    });
+    let started = Instant::now();
+    host.submit(Job::PartToMesh { ticket: 7, part });
+    match next(&events, |e| matches!(e, HostEvent::Mesh { ticket: 7, .. })) {
+        HostEvent::Mesh { result, .. } => assert!(result.is_err()),
+        _ => unreachable!(),
+    }
+    assert!(started.elapsed() < Duration::from_secs(10));
 }

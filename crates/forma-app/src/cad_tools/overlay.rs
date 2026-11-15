@@ -161,7 +161,7 @@ impl Studio {
             if !self
                 .scene
                 .part(ghost.part)
-                .is_some_and(|p| p.stamp == ghost.stamp && !p.is_evaluated())
+                .is_some_and(|p| p.stamp == ghost.stamp && p.is_pending())
             {
                 continue;
             }

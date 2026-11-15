@@ -19,57 +19,220 @@ use truck_modeling::{Solid, Transformed, builder};
 /// Header timestamp for every export, so output is reproducible.
 const STEP_TIMESTAMP: &str = "2000-01-01T00:00:00";
 
-/// Metres per STEP length unit, from the file's unit declaration.
-/// Files without a recognizable declaration are assumed to be millimetres.
-fn metres_per_unit(text: &str) -> f64 {
-    let compact: String = text
-        .chars()
-        .filter(|c| !c.is_whitespace())
-        .flat_map(char::to_uppercase)
+use truck_stepio::r#in::ruststep::ast::{DataSection, EntityInstance, Name, Parameter, Record};
+
+/// Metres per STEP length unit, read from the parsed unit entities: the
+/// length unit assigned in a `GLOBAL_UNIT_ASSIGNED_CONTEXT` if there is one,
+/// otherwise the first length unit in the file. `SI_UNIT` prefixes and
+/// `CONVERSION_BASED_UNIT` factors are evaluated. Text elsewhere in the file
+/// (names, descriptions, the header) never affects the result. Files that
+/// declare no length unit are assumed to be millimetres.
+fn declared_metres_per_unit(data: &DataSection) -> f64 {
+    let by_id: std::collections::HashMap<u64, &EntityInstance> = data
+        .entities
+        .iter()
+        .map(|instance| match instance {
+            EntityInstance::Simple { id, .. } | EntityInstance::Complex { id, .. } => {
+                (*id, instance)
+            }
+        })
         .collect();
-    if compact.contains("'INCH'") {
-        0.0254
-    } else if compact.contains("'FOOT'") {
-        0.3048
-    } else if compact.contains("SI_UNIT(.MILLI.,.METRE.)") {
-        0.001
-    } else if compact.contains("SI_UNIT(.CENTI.,.METRE.)") {
-        0.01
-    } else if compact.contains("SI_UNIT(.KILO.,.METRE.)") {
-        1000.0
-    } else if compact.contains("SI_UNIT($,.METRE.)") {
-        1.0
+    let lookup = |parameter: &Parameter| match parameter {
+        Parameter::Ref(Name::Entity(id)) => by_id.get(id).copied(),
+        _ => None,
+    };
+    // Units the representation context assigns, in order.
+    let assigned: Vec<&EntityInstance> = data
+        .entities
+        .iter()
+        .flat_map(records)
+        .filter(|record| {
+            record
+                .name
+                .eq_ignore_ascii_case("GLOBAL_UNIT_ASSIGNED_CONTEXT")
+        })
+        .flat_map(|record| parameters(&record.parameter))
+        .flat_map(|parameter| match parameter {
+            Parameter::List(units) => units.iter().filter_map(&lookup).collect::<Vec<_>>(),
+            other => lookup(other).into_iter().collect(),
+        })
+        .collect();
+    let candidates: Vec<&EntityInstance> = if assigned.is_empty() {
+        data.entities.iter().collect()
     } else {
-        0.001
+        assigned
+    };
+    candidates
+        .into_iter()
+        .filter(|instance| {
+            records(instance)
+                .iter()
+                .any(|record| record.name.eq_ignore_ascii_case("LENGTH_UNIT"))
+                || is_metre_si_unit(instance)
+        })
+        .find_map(|instance| unit_factor(instance, &by_id, 0))
+        .unwrap_or(0.001)
+}
+
+fn records(instance: &EntityInstance) -> Vec<&Record> {
+    match instance {
+        EntityInstance::Simple { record, .. } => vec![record],
+        EntityInstance::Complex { subsuper, .. } => subsuper.0.iter().collect(),
     }
 }
 
-fn parse_shells(text: &str) -> Result<Vec<StepShell>, KernelError> {
-    use truck_stepio::r#in::{Table, ruststep};
-    let invalid = |detail: String| {
-        KernelError::new(
-            format!("This STEP file could not be read ({detail})"),
-            "Export it again as STEP AP203 or AP214 with solid bodies",
-        )
-    };
-    let exchange = ruststep::parser::parse(text).map_err(|error| invalid(format!("{error:?}")))?;
-    let data = exchange
+fn parameters(parameter: &Parameter) -> Vec<&Parameter> {
+    match parameter {
+        Parameter::List(list) => list.iter().collect(),
+        other => vec![other],
+    }
+}
+
+fn enumeration(parameter: &Parameter) -> Option<String> {
+    match parameter {
+        Parameter::Enumeration(value) => Some(value.trim_matches('.').to_ascii_uppercase()),
+        _ => None,
+    }
+}
+
+/// A simple `SI_UNIT(*, prefix, .METRE.)` instance (no LENGTH_UNIT record).
+fn is_metre_si_unit(instance: &EntityInstance) -> bool {
+    match instance {
+        EntityInstance::Simple { record, .. } => {
+            record.name.eq_ignore_ascii_case("SI_UNIT")
+                && parameters(&record.parameter)
+                    .last()
+                    .and_then(|p| enumeration(p))
+                    .is_some_and(|name| name == "METRE")
+        }
+        EntityInstance::Complex { .. } => false,
+    }
+}
+
+/// Metres per unit for an SI or conversion-based length unit entity.
+fn unit_factor(
+    instance: &EntityInstance,
+    by_id: &std::collections::HashMap<u64, &EntityInstance>,
+    depth: usize,
+) -> Option<f64> {
+    if depth > 8 {
+        return None;
+    }
+    for record in records(instance) {
+        let params = parameters(&record.parameter);
+        if record.name.eq_ignore_ascii_case("SI_UNIT") {
+            // (prefix, name) in complex instances; (dimensions, prefix, name) simple.
+            let name = params.last().and_then(|p| enumeration(p))?;
+            if name != "METRE" {
+                return None;
+            }
+            let prefix = params
+                .len()
+                .checked_sub(2)
+                .and_then(|i| enumeration(params[i]));
+            return Some(match prefix.as_deref() {
+                None => 1.0,
+                Some("EXA") => 1.0e18,
+                Some("PETA") => 1.0e15,
+                Some("TERA") => 1.0e12,
+                Some("GIGA") => 1.0e9,
+                Some("MEGA") => 1.0e6,
+                Some("KILO") => 1.0e3,
+                Some("HECTO") => 1.0e2,
+                Some("DECA") => 1.0e1,
+                Some("DECI") => 1.0e-1,
+                Some("CENTI") => 1.0e-2,
+                Some("MILLI") => 1.0e-3,
+                Some("MICRO") => 1.0e-6,
+                Some("NANO") => 1.0e-9,
+                Some("PICO") => 1.0e-12,
+                Some(_) => return None,
+            });
+        }
+        if record.name.eq_ignore_ascii_case("CONVERSION_BASED_UNIT") {
+            // (name, conversion_factor -> LENGTH_MEASURE_WITH_UNIT(value, unit)).
+            let measured = params.get(1).and_then(|p| match p {
+                Parameter::Ref(Name::Entity(id)) => by_id.get(id).copied(),
+                _ => None,
+            });
+            let evaluated = measured.and_then(|measure| {
+                let EntityInstance::Simple { record, .. } = measure else {
+                    return None;
+                };
+                let inner = parameters(&record.parameter);
+                let value = match inner.first()? {
+                    Parameter::Typed { parameter, .. } => match parameter.as_ref() {
+                        Parameter::Real(value) => *value,
+                        Parameter::Integer(value) => *value as f64,
+                        _ => return None,
+                    },
+                    Parameter::Real(value) => *value,
+                    Parameter::Integer(value) => *value as f64,
+                    _ => return None,
+                };
+                let base = match inner.get(1)? {
+                    Parameter::Ref(Name::Entity(id)) => {
+                        unit_factor(by_id.get(id)?, by_id, depth + 1)?
+                    }
+                    _ => return None,
+                };
+                let factor = value * base;
+                (factor.is_finite() && factor > 0.0).then_some(factor)
+            });
+            if evaluated.is_some() {
+                return evaluated;
+            }
+            // Fall back to well-known unit names.
+            let name = match params.first() {
+                Some(Parameter::String(name)) => name.to_ascii_uppercase(),
+                _ => return None,
+            };
+            return match name.trim() {
+                "INCH" | "INCHES" => Some(0.0254),
+                "FOOT" | "FEET" => Some(0.3048),
+                "YARD" => Some(0.9144),
+                "MILE" => Some(1609.344),
+                "MIL" | "THOU" => Some(0.0000254),
+                _ => None,
+            };
+        }
+    }
+    None
+}
+
+fn parse_data(text: &str) -> Result<DataSection, KernelError> {
+    use truck_stepio::r#in::ruststep;
+    let exchange =
+        ruststep::parser::parse(text).map_err(|error| step_error(format!("{error:?}")))?;
+    exchange
         .data
-        .first()
-        .ok_or_else(|| invalid("no DATA section".into()))?;
+        .into_iter()
+        .next()
+        .ok_or_else(|| step_error("no DATA section".into()))
+}
+
+fn step_error(detail: String) -> KernelError {
+    KernelError::new(
+        format!("This STEP file could not be read ({detail})"),
+        "Export it again as STEP AP203 or AP214 with solid bodies",
+    )
+}
+
+fn parse_shells(data: &DataSection) -> Result<Vec<StepShell>, KernelError> {
+    use truck_stepio::r#in::Table;
     let table = Table::from_data_section(data);
     let mut ids: Vec<_> = table.shell.keys().copied().collect();
     ids.sort_unstable();
     if ids.is_empty() {
-        return Err(invalid("it contains no shells".into()));
+        return Err(step_error("it contains no shells".into()));
     }
     ids.into_iter()
         .map(|id| {
             let compressed = table
                 .to_compressed_shell(&table.shell[&id])
-                .map_err(|error| invalid(format!("shell #{id}: {error}")))?;
+                .map_err(|error| step_error(format!("shell #{id}: {error}")))?;
             truck_topology::Shell::extract(compressed)
-                .map_err(|error| invalid(format!("shell #{id}: {error:?}")))
+                .map_err(|error| step_error(format!("shell #{id}: {error:?}")))
         })
         .collect()
 }
@@ -77,8 +240,9 @@ fn parse_shells(text: &str) -> Result<Vec<StepShell>, KernelError> {
 /// The body of an embedded STEP document, scaled to metres.
 pub(crate) fn step_body(text: &str) -> Result<Body, KernelError> {
     guard(|| {
-        let scale = metres_per_unit(text);
-        let shells = parse_shells(text)?;
+        let data = parse_data(text)?;
+        let scale = declared_metres_per_unit(&data);
+        let shells = parse_shells(&data)?;
         let matrix = truck_modeling::Matrix4::from_scale(scale);
         let shells = shells
             .into_iter()
@@ -126,12 +290,17 @@ pub fn import_step(name: &str, text: &str) -> Result<PartData, KernelError> {
 
 #[cfg(test)]
 fn evaluated_body(part: &PartData) -> Result<Body, KernelError> {
-    evaluated_body_cached(part, &mut RegenCache::default())
+    evaluated_body_cached(part, &[], &mut RegenCache::default(), &mut |_| {})
 }
 
-fn evaluated_body_cached(part: &PartData, cache: &mut RegenCache) -> Result<Body, KernelError> {
+fn evaluated_body_cached(
+    part: &PartData,
+    skip: &[forma_core::FeatureIssue],
+    cache: &mut RegenCache,
+    progress: &mut dyn FnMut(u64),
+) -> Result<Body, KernelError> {
     let mut stats = RegenStats::default();
-    let (body, issues) = evaluate_part(part.id, part, &[], cache, &mut |_| {}, &mut stats);
+    let (body, issues) = evaluate_part(part.id, part, skip, cache, progress, &mut stats);
     match body {
         Some(body) => Ok(body),
         None => Err(issues
@@ -146,20 +315,24 @@ fn evaluated_body_cached(part: &PartData, cache: &mut RegenCache) -> Result<Body
 
 /// Export placed parts as one STEP document (millimetres).
 pub fn export_step(parts: &[StepPart]) -> Result<String, KernelError> {
-    export_step_cached(parts, &mut RegenCache::default())
+    export_step_cached(parts, &[], &mut RegenCache::default(), &mut |_| {})
 }
 
-/// [`export_step`] reusing evaluated feature prefixes from `cache`.
+/// [`export_step`] reusing evaluated feature prefixes from `cache`, skipping
+/// `skips[i]` in part `i` and reporting each feature it evaluates.
 pub(crate) fn export_step_cached(
     parts: &[StepPart],
+    skips: &[Vec<forma_core::FeatureIssue>],
     cache: &mut RegenCache,
+    progress: &mut dyn FnMut(u64),
 ) -> Result<String, KernelError> {
     if parts.is_empty() {
         return Err(KernelError::new("Select a part to export", ""));
     }
     let mut solids: Vec<Solid> = Vec::new();
-    for placed in parts {
-        let body = evaluated_body_cached(&placed.part, cache)?;
+    for (index, placed) in parts.iter().enumerate() {
+        let skip = skips.get(index).map(Vec::as_slice).unwrap_or_default();
+        let body = evaluated_body_cached(&placed.part, skip, cache, progress)?;
         let Geometry::Solid(solid) = &body.geometry else {
             return Err(KernelError::new(
                 format!("{} is an imported STEP body", placed.name),
@@ -211,14 +384,16 @@ pub(crate) fn export_step_cached(
 
 /// Bake a part into an editable polygon mesh in part space.
 pub fn part_to_mesh(part: &PartData) -> Result<Mesh, KernelError> {
-    part_to_mesh_cached(part, &mut RegenCache::default())
+    part_to_mesh_cached(part, &[], &mut RegenCache::default(), &mut |_| {})
 }
 
 pub(crate) fn part_to_mesh_cached(
     part: &PartData,
+    skip: &[forma_core::FeatureIssue],
     cache: &mut RegenCache,
+    progress: &mut dyn FnMut(u64),
 ) -> Result<Mesh, KernelError> {
-    let body = evaluated_body_cached(part, cache)?;
+    let body = evaluated_body_cached(part, skip, cache, progress)?;
     editable_mesh(&body, part.quality)
 }
 
@@ -268,14 +443,75 @@ mod tests {
     }
 
     #[test]
-    fn units_are_detected_from_the_header() {
-        assert_eq!(
-            metres_per_unit("( LENGTH_UNIT() NAMED_UNIT(*) SI_UNIT(.MILLI.,.METRE.) )"),
-            0.001
-        );
-        assert_eq!(metres_per_unit("SI_UNIT ( $ , .METRE. )"), 1.0);
-        assert_eq!(metres_per_unit("CONVERSION_BASED_UNIT('INCH',#5)"), 0.0254);
+    fn units_come_from_unit_entities_not_from_names() {
+        // Review case: Forma writes the object name into FILE_NAME, so names
+        // like "Foot" or "inch" must not change the import scale.
+        for name in ["Bracket", "Foot", "inch", "MILLI METRE"] {
+            let mut part = cylinder_part();
+            part.name = name.into();
+            let text = export_step(&[StepPart {
+                name: name.into(),
+                part,
+                transform: Mat4::IDENTITY,
+            }])
+            .unwrap();
+            assert!(text.contains(&format!("FILE_NAME('{name}'")));
+            let back = import_step(name, &text).unwrap();
+            let bounds = evaluated_body(&back)
+                .unwrap()
+                .trimesh(0.01)
+                .unwrap()
+                .bounds();
+            let height = bounds.max.y - bounds.min.y;
+            assert!((height - 2.0).abs() < 1.0e-3, "{name}: height {height}");
+        }
         assert!(import_step("Bad", "not a step file").is_err());
+    }
+
+    #[test]
+    fn declared_units_scale_imports() {
+        let exported = export_step(&[StepPart {
+            name: "Pin".into(),
+            part: cylinder_part(),
+            transform: Mat4::IDENTITY,
+        }])
+        .unwrap();
+        let millimetres = "( LENGTH_UNIT() NAMED_UNIT(*) SI_UNIT(.MILLI.,.METRE.) )";
+        assert!(exported.contains(millimetres));
+        let height = |text: &str| {
+            let body = step_body(text).unwrap();
+            let bounds = body.trimesh(0.05).unwrap().bounds();
+            bounds.max.y - bounds.min.y
+        };
+        // Conversion-based inches: 2000 file units of 25.4 mm each.
+        let inches = exported
+            .replace(
+                millimetres,
+                "( CONVERSION_BASED_UNIT('INCH',#9001) LENGTH_UNIT() NAMED_UNIT(#9002) )",
+            )
+            .replace(
+                "ENDSEC;\nEND-ISO",
+                "#9001 = LENGTH_MEASURE_WITH_UNIT(LENGTH_MEASURE(25.4),#9003);\n\
+                 #9002 = DIMENSIONAL_EXPONENTS(1.,0.,0.,0.,0.,0.,0.);\n\
+                 #9003 = ( LENGTH_UNIT() NAMED_UNIT(*) SI_UNIT(.MILLI.,.METRE.) );\n\
+                 ENDSEC;\nEND-ISO",
+            );
+        assert!(
+            (height(&inches) - 2000.0 * 0.0254).abs() < 1.0e-2,
+            "{}",
+            height(&inches)
+        );
+        // Plain metres and centimetres.
+        let metres = exported.replace(
+            millimetres,
+            "( LENGTH_UNIT() NAMED_UNIT(*) SI_UNIT($,.METRE.) )",
+        );
+        assert!((height(&metres) - 2000.0).abs() < 1.0e-3);
+        let centimetres = exported.replace(
+            millimetres,
+            "( LENGTH_UNIT() NAMED_UNIT(*) SI_UNIT(.CENTI.,.METRE.) )",
+        );
+        assert!((height(&centimetres) - 20.0).abs() < 1.0e-3);
     }
 
     #[test]

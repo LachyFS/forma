@@ -108,7 +108,12 @@ pub(crate) fn chip_state(s: &Studio, part: &PartData, feature: &Feature) -> Chip
         if !issue.suggestion.is_empty() {
             text = format!("{text} · {}", issue.suggestion);
         }
-        return ChipState::Error(text);
+        // An approximated feature still applied; it is not a failure.
+        return if issue.warning {
+            ChipState::Warning(text)
+        } else {
+            ChipState::Error(text)
+        };
     }
     if let Some((_, warning)) = s
         .feature_warnings(part)
@@ -473,7 +478,7 @@ pub(crate) fn timeline(s: &Studio, t: Colors, cx: &mut Context<Studio>) -> Optio
         let key = (
             selected.unwrap_or(0),
             part.stamp,
-            part.is_evaluated(),
+            part.is_pending(),
             compact,
         );
         if state.reveal.take() || state.revealed.get() != Some(key) {

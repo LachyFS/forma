@@ -55,6 +55,7 @@ fn parts_render_only_after_a_current_tessellation_arrives() {
         feature: 1,
         message: "test".into(),
         suggestion: String::new(),
+        warning: false,
     };
     assert!(
         scene
@@ -227,4 +228,89 @@ fn display_edges_hide_edges_inside_groups() {
     let mut plain = mesh;
     plain.groups.clear();
     assert_eq!(plain.display_edges(), plain.edges());
+}
+
+#[test]
+fn failed_regenerations_keep_the_cache_and_are_retried_after_reload() {
+    // Review case: a failed regeneration was saved as "evaluated" over the
+    // old mesh, so it was never retried and exports disagreed with it.
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("failed.forma");
+    let mut scene = Scene::empty();
+    let id = scene.add_part("Bracket", box_part()).unwrap();
+    let part_id = scene.object(id).unwrap().part_id().unwrap();
+    let stamp = scene.part(part_id).unwrap().stamp;
+    scene
+        .set_part_tessellation(part_id, stamp, Some(grouped_quad()), Vec::new())
+        .unwrap();
+    // An edit, then a regeneration that produced nothing.
+    scene
+        .part_mut(part_id)
+        .unwrap()
+        .edit_feature(1, |feature| feature.suppressed = true);
+    let edited = scene.part(part_id).unwrap().stamp;
+    assert!(scene.part(part_id).unwrap().is_pending());
+    let issue = FeatureIssue {
+        feature: 0,
+        message: "worker crashed".into(),
+        suggestion: String::new(),
+        warning: false,
+    };
+    assert!(
+        !scene.mark_part_failed(part_id, stamp, vec![issue.clone()]),
+        "stale stamp"
+    );
+    assert!(scene.mark_part_failed(part_id, edited, vec![issue.clone()]));
+    let part = scene.part(part_id).unwrap();
+    assert!(part.regeneration_failed() && !part.is_pending() && !part.is_evaluated());
+    assert_eq!(part.issues(), &[issue]);
+    assert_eq!(
+        part.evaluated.as_ref().unwrap().stamp,
+        stamp,
+        "older evaluation kept"
+    );
+    assert_eq!(
+        scene.object_mesh(id).unwrap().groups,
+        vec![0, 0],
+        "cache kept"
+    );
+    // The failure is not saved: reopening retries the regeneration.
+    scene.save(&path).unwrap();
+    let loaded = Scene::load(&path).unwrap();
+    let part = loaded.part(part_id).unwrap();
+    assert!(part.is_pending() && !part.regeneration_failed());
+    // A later success clears it.
+    assert!(
+        scene
+            .set_part_tessellation(part_id, edited, None, Vec::new())
+            .unwrap()
+    );
+    assert!(scene.part(part_id).unwrap().failed.is_none());
+}
+
+#[test]
+fn part_caches_cannot_be_shared_with_editable_meshes_or_other_parts() {
+    let mut scene = Scene::empty();
+    let id = scene.add_part("Bracket", box_part()).unwrap();
+    let part_id = scene.object(id).unwrap().part_id().unwrap();
+    let stamp = scene.part(part_id).unwrap().stamp;
+    scene
+        .set_part_tessellation(part_id, stamp, Some(grouped_quad()), Vec::new())
+        .unwrap();
+    let cache = scene.object(id).unwrap().mesh_id().unwrap();
+    scene.validate().unwrap();
+    // A hand-crafted file pointing an editable mesh object at the cache.
+    let mesh_object = scene.add(Primitive::Cube);
+    let mut shared = scene.clone();
+    if let ObjectData::Mesh { mesh, .. } = &mut shared.object_mut(mesh_object).unwrap().data {
+        *mesh = cache;
+    }
+    let error = shared.validate().unwrap_err().to_string();
+    assert!(error.contains("cached tessellation"), "{error}");
+    // Or a second part pointing at it.
+    let other = scene.add_part("Other", box_part()).unwrap();
+    if let ObjectData::Part { mesh, .. } = &mut scene.object_mut(other).unwrap().data {
+        *mesh = Some(cache);
+    }
+    assert!(scene.validate().is_err());
 }

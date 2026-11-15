@@ -26,12 +26,32 @@ use truck_modeling::{Solid, Wire, builder};
 
 /// Most parts whose evaluated histories one worker keeps.
 const CACHED_PARTS: usize = 24;
+/// B-rep faces the cache may hold across parts before evicting the least
+/// recently used ones (roughly 1 KiB each); the part being regenerated is
+/// always kept whole.
+const CACHED_FACES: usize = 250_000;
+
+/// An issue from evaluating the active feature at `index`, labelled with the
+/// current feature id and name only when served, so a cached history never
+/// reports a deleted or renamed feature.
+#[derive(Clone)]
+struct CachedIssue {
+    index: usize,
+    message: String,
+    suggestion: String,
+    /// Prefix the message with the feature name (kernel failures do; issues
+    /// supplied by the host already name their feature).
+    named: bool,
+    /// Applied approximately rather than failed.
+    warning: bool,
+}
 
 #[derive(Clone)]
 struct State {
     hash: u64,
     body: Option<Body>,
-    issues: Vec<FeatureIssue>,
+    faces: usize,
+    issues: Vec<CachedIssue>,
 }
 
 /// Memoized feature-prefix states per part.
@@ -55,6 +75,33 @@ impl RegenCache {
         self.parts.entry(part).or_default()
     }
 
+    /// Evict least recently used parts other than `keep` until the cached
+    /// faces fit the budget.
+    fn trim(&mut self, keep: u64) {
+        let faces = |cache: &Self| -> usize {
+            cache
+                .parts
+                .values()
+                .flat_map(|states| states.iter().map(|state| state.faces))
+                .sum()
+        };
+        while faces(self) > CACHED_FACES {
+            let Some(position) = self.order.iter().position(|id| *id != keep) else {
+                break;
+            };
+            let evicted = self.order.remove(position).unwrap();
+            self.parts.remove(&evicted);
+        }
+    }
+
+    /// Cached B-rep faces across all parts.
+    pub fn cached_faces(&self) -> usize {
+        self.parts
+            .values()
+            .flat_map(|states| states.iter().map(|state| state.faces))
+            .sum()
+    }
+
     pub fn clear(&mut self) {
         self.parts.clear();
         self.order.clear();
@@ -65,12 +112,12 @@ fn hash_step(previous: u64, feature: &Feature, skipped: bool) -> u64 {
     #[derive(serde::Serialize)]
     struct Key<'a> {
         previous: u64,
-        kind: &'a FeatureKind,
+        feature: forma_core::FeatureGeometry<'a>,
         skipped: bool,
     }
     let json = serde_json::to_vec(&Key {
         previous,
-        kind: &feature.kind,
+        feature: forma_core::FeatureGeometry(feature),
         skipped,
     })
     .unwrap_or_default();
@@ -95,7 +142,7 @@ pub(crate) fn evaluate_part(
     let states = cache.states(part_id);
     let mut hash = 0x5eed_u64;
     let mut body: Option<Body> = None;
-    let mut issues: Vec<FeatureIssue> = Vec::new();
+    let mut issues: Vec<CachedIssue> = Vec::new();
     for (index, feature) in active.iter().enumerate() {
         let skipped = skip.iter().find(|issue| issue.feature == feature.id);
         hash = hash_step(hash, feature, skipped.is_some());
@@ -109,25 +156,68 @@ pub(crate) fn evaluate_part(
         }
         states.truncate(index);
         if let Some(issue) = skipped {
-            issues.push(issue.clone());
+            issues.push(CachedIssue {
+                index,
+                message: issue.message.clone(),
+                suggestion: issue.suggestion.clone(),
+                named: false,
+                warning: false,
+            });
         } else {
             progress(feature.id);
             stats.evaluated_features += 1;
-            match guard(|| evaluate(feature, body.as_ref())) {
-                Ok(next) => body = Some(next),
-                Err(error) => issues.push(FeatureIssue {
-                    feature: feature.id,
-                    message: format!("{}: {}", feature.name, error.message),
+            crate::boolean::take_notes();
+            let evaluated = guard(|| evaluate(feature, body.as_ref()));
+            let notes = crate::boolean::take_notes();
+            match evaluated {
+                Ok(next) => {
+                    body = Some(next);
+                    issues.extend(notes.into_iter().map(|message| {
+                        CachedIssue {
+                            index,
+                            message,
+                            suggestion:
+                                "Move the sketch or tool slightly so faces clearly overlap \
+                                     or clearly separate"
+                                    .into(),
+                            named: true,
+                            warning: true,
+                        }
+                    }));
+                }
+                Err(error) => issues.push(CachedIssue {
+                    index,
+                    message: error.message,
                     suggestion: error.suggestion,
+                    named: true,
+                    warning: false,
                 }),
             }
         }
         states.push(State {
             hash,
+            faces: body.as_ref().map_or(0, Body::face_count),
             body: body.clone(),
             issues: issues.clone(),
         });
     }
+    cache.trim(part_id);
+    let issues = issues
+        .into_iter()
+        .map(|issue| {
+            let feature = active[issue.index];
+            FeatureIssue {
+                feature: feature.id,
+                message: if issue.named {
+                    format!("{}: {}", feature.name, issue.message)
+                } else {
+                    issue.message
+                },
+                suggestion: issue.suggestion,
+                warning: issue.warning,
+            }
+        })
+        .collect();
     (body, issues)
 }
 
@@ -163,6 +253,7 @@ pub fn regenerate(
                             result.missing_faces
                         ),
                         suggestion: "Try another tessellation quality".into(),
+                        warning: false,
                     });
                 }
                 stats.triangles = result.mesh.faces.len();
@@ -173,6 +264,7 @@ pub fn regenerate(
                 feature: 0,
                 message: error.message,
                 suggestion: error.suggestion,
+                warning: false,
             }),
         }
     }
@@ -225,7 +317,16 @@ fn evaluate(feature: &Feature, body: Option<&Body>) -> Result<Body, KernelError>
                     (-back * sign, distance)
                 }
             };
-            let (start, end) = (start.min(end), start.max(end));
+            let (mut start, mut end) = (start.min(end), start.max(end));
+            if let Some(body) = body {
+                (start, end) = extend_flush_caps(
+                    body,
+                    &extrude.sketch.plane,
+                    &profiles,
+                    (start, end),
+                    extrude.operation,
+                );
+            }
             let tool = extrude_profiles(&extrude.sketch.plane, &profiles, start, end)?;
             apply(body, tool, extrude.operation)
         }
@@ -268,6 +369,84 @@ fn evaluate(feature: &Feature, body: Option<&Body>) -> Result<Body, KernelError>
             apply(body, tool, base.operation)
         }
     }
+}
+
+/// Extend extrusion caps that lie flush on a face of `body` by a sliver, but
+/// only where that provably changes nothing: beyond a cut's cap there must
+/// be empty space, beyond a join's cap there must be material. Sketching on a
+/// face and cutting or joining from it is the most common CAD operation, and
+/// a cap coplanar with a body face is exactly what truck's booleans fail on;
+/// extending just that cap avoids the approximate tool-inflation fallback.
+fn extend_flush_caps(
+    body: &Body,
+    plane: &forma_core::SketchPlane,
+    profiles: &[forma_core::Profile],
+    (start, end): (f64, f64),
+    operation: FeatureOperation,
+) -> (f64, f64) {
+    let want_inside = match operation {
+        FeatureOperation::Cut => false,
+        FeatureOperation::Join => true,
+        FeatureOperation::Intersect | FeatureOperation::NewBody => return (start, end),
+    };
+    let Ok(mesh) = body.trimesh(body.tolerance(3.0e-3, 0.35)) else {
+        return (start, end);
+    };
+    let size = body.size().max((end - start).abs());
+    let sliver = size * 1.0e-4;
+    let normal = plane.normal().as_dvec3().normalize();
+    let origin = plane.origin.as_dvec3();
+    let (x, y) = (plane.x_axis.as_dvec3(), plane.y_axis.as_dvec3());
+    // Points spread over the profiles (in sketch coordinates).
+    let mut samples: Vec<glam::Vec2> = Vec::new();
+    for profile in profiles {
+        samples.extend(crate::regions::interior_point(profile));
+        let (min, max) = profile.outer.bounds();
+        for i in 0..5 {
+            for j in 0..5 {
+                let p = min + (max - min) * glam::Vec2::new(i as f32 + 0.5, j as f32 + 0.5) / 5.0;
+                if profile.contains(p) {
+                    samples.push(p);
+                }
+            }
+        }
+    }
+    if samples.is_empty() {
+        return (start, end);
+    }
+    // Sketch planes picked from a face carry single-precision noise (the
+    // editor derives them from the f32 tessellation): a cap 1e-6 off a face
+    // is as hard for truck as an exactly flush one. The tolerance can be
+    // generous because the extension is only made where probes show it
+    // changes nothing.
+    let flush_tolerance = sliver * 0.25;
+    let flush = |offset: f64| {
+        // Some body triangle lies (nearly) in the cap's plane.
+        let level = normal.dot(origin) + offset;
+        (0..mesh.triangles.len()).any(|i| {
+            let [a, b, c] = mesh.triangle(i);
+            [a, b, c]
+                .iter()
+                .all(|p| (normal.dot(*p) - level).abs() <= flush_tolerance)
+        })
+    };
+    let beyond_is = |offset: f64, outward: f64| {
+        samples.iter().all(|p| {
+            let point = origin
+                + x * f64::from(p.x)
+                + y * f64::from(p.y)
+                + normal * (offset + outward * sliver * 0.6);
+            mesh.contains(point) == want_inside
+        })
+    };
+    let mut extended = (start, end);
+    if flush(start) && beyond_is(start, -1.0) {
+        extended.0 -= sliver;
+    }
+    if flush(end) && beyond_is(end, 1.0) {
+        extended.1 += sliver;
+    }
+    extended
 }
 
 fn nothing_to_edit() -> KernelError {
@@ -825,6 +1004,245 @@ mod tests {
         assert_eq!(second.stats.evaluated_features, 1);
         assert!(second.mesh.as_ref().unwrap().has_groups());
         let _ = cut;
+    }
+
+    #[test]
+    fn cached_issues_follow_renamed_features() {
+        // Review case: cache keys ignored names, but cached issues carried
+        // them, so a renamed (or replaced) feature kept the old label.
+        let mut part = PartData::new(5, "Part");
+        part.push_feature(
+            "Base",
+            box_kind(Vec3::splat(2.0), Vec3::ZERO, FeatureOperation::Join),
+        );
+        let lost = part.push_feature(
+            "Lost face",
+            FeatureKind::PushPull(PushPullFeature {
+                face: FaceRef {
+                    point: Vec3::new(50.0, 50.0, 50.0),
+                    normal: Vec3::Y,
+                },
+                distance: 0.1,
+            }),
+        );
+        let mut cache = RegenCache::default();
+        let first = regen(&part, &mut cache);
+        assert!(first.issues[0].message.starts_with("Lost face:"));
+        part.edit_feature(lost, |feature| feature.name = "Renamed".into());
+        let second = regen(&part, &mut cache);
+        assert_eq!(second.stats.reused_features, 2, "a rename reuses the cache");
+        assert_eq!(second.issues[0].feature, lost);
+        assert!(
+            second.issues[0].message.starts_with("Renamed:"),
+            "{}",
+            second.issues[0].message
+        );
+    }
+
+    #[test]
+    fn the_cache_evicts_other_parts_beyond_its_face_budget() {
+        let mut cache = RegenCache::default();
+        let mut part = PartData::new(1, "Box");
+        part.push_feature(
+            "Base",
+            box_kind(Vec3::ONE, Vec3::ZERO, FeatureOperation::Join),
+        );
+        for id in 1..=3 {
+            part.id = id;
+            regen(&part, &mut cache);
+        }
+        assert_eq!(cache.cached_faces(), 18);
+        // Pretend part 1 is huge: the next regeneration evicts it first.
+        for state in cache.parts.get_mut(&1).unwrap() {
+            state.faces = CACHED_FACES;
+        }
+        part.id = 4;
+        regen(&part, &mut cache);
+        assert!(!cache.parts.contains_key(&1));
+        assert!(cache.parts.contains_key(&4) && cache.parts.contains_key(&2));
+    }
+
+    fn top_face_sketch(height: f32, radius: f32) -> Sketch {
+        let mut sketch = Sketch::new(SketchPlane::ground());
+        sketch.plane.origin = Vec3::new(0.0, height, 0.0);
+        sketch.entities.push(
+            SketchCurve::Circle {
+                center: Vec2::new(0.3, 0.2),
+                radius,
+            }
+            .into(),
+        );
+        sketch
+    }
+
+    #[test]
+    fn flush_sketch_features_are_exact_not_approximated() {
+        // Review case: flush caps fell back to enlarging the tool about its
+        // centre (up to ~0.75 mm on a 1 m part) and reported success.
+        let mut part = PartData::new(6, "Plate");
+        part.push_feature(
+            "Plate",
+            box_kind(
+                Vec3::new(2.2, 0.3, 1.5),
+                Vec3::new(0.0, 0.15, 0.0),
+                FeatureOperation::Join,
+            ),
+        );
+        part.push_feature(
+            "Pocket",
+            FeatureKind::Extrude(ExtrudeFeature {
+                sketch: top_face_sketch(0.3, 0.2),
+                profiles: Vec::new(),
+                distance: 0.15,
+                extent: ExtrudeExtent::OneSide,
+                flip: true,
+                operation: FeatureOperation::Cut,
+            }),
+        );
+        part.push_feature(
+            "Through",
+            FeatureKind::Extrude(ExtrudeFeature {
+                sketch: {
+                    let mut sketch = top_face_sketch(0.3, 0.1);
+                    sketch.entities[0] = SketchCurve::Circle {
+                        center: Vec2::new(-0.6, -0.3),
+                        radius: 0.1,
+                    }
+                    .into();
+                    sketch
+                },
+                profiles: Vec::new(),
+                distance: 0.3,
+                extent: ExtrudeExtent::OneSide,
+                flip: true,
+                operation: FeatureOperation::Cut,
+            }),
+        );
+        part.push_feature(
+            "Boss",
+            FeatureKind::Extrude(ExtrudeFeature {
+                sketch: {
+                    let mut sketch = top_face_sketch(0.3, 0.15);
+                    sketch.entities[0] = SketchCurve::Circle {
+                        center: Vec2::new(0.6, -0.3),
+                        radius: 0.15,
+                    }
+                    .into();
+                    sketch
+                },
+                profiles: Vec::new(),
+                distance: 0.25,
+                extent: ExtrudeExtent::OneSide,
+                flip: false,
+                operation: FeatureOperation::Join,
+            }),
+        );
+        let result = regen(&part, &mut RegenCache::default());
+        assert!(result.issues.is_empty(), "{:?}", result.issues);
+        let volume = volume_of(&part);
+        let expected = 2.2 * 0.3 * 1.5 - PI * 0.04 * 0.15 - PI * 0.01 * 0.3 + PI * 0.0225 * 0.25;
+        assert!((volume - expected).abs() < 2.0e-3, "{volume} vs {expected}");
+    }
+
+    #[test]
+    fn face_sketches_with_single_precision_noise_cut_exactly() {
+        // Captured from the modelling tools' smoke run: a rectangle sketched
+        // on a pulled top face (y = 0.6) whose plane, derived from the f32
+        // tessellation, sits 6.3e-7 below the face and is slightly tilted.
+        let mut ground = Sketch::new(SketchPlane::ground());
+        let line = |a: (f32, f32), b: (f32, f32)| {
+            forma_core::SketchEntity::from(SketchCurve::Line {
+                start: Vec2::new(a.0, a.1),
+                end: Vec2::new(b.0, b.1),
+            })
+        };
+        let rectangle = |x0: f32, y0: f32, x1: f32, y1: f32| {
+            vec![
+                line((x0, y0), (x1, y0)),
+                line((x1, y0), (x1, y1)),
+                line((x1, y1), (x0, y1)),
+                line((x0, y1), (x0, y0)),
+            ]
+        };
+        ground.entities = rectangle(-0.99999994, -0.59999996, 0.99999994, 0.59999996);
+        ground.entities.push(
+            SketchCurve::Circle {
+                center: Vec2::new(-0.39999998, 0.0),
+                radius: 0.29999998,
+            }
+            .into(),
+        );
+        let mut part = PartData::new(3, "Sketch extrusion");
+        part.push_feature(
+            "Extrude",
+            FeatureKind::Extrude(ExtrudeFeature {
+                sketch: ground,
+                profiles: vec![Vec2::new(0.0, -0.53356)],
+                distance: 0.5,
+                extent: ExtrudeExtent::OneSide,
+                flip: false,
+                operation: FeatureOperation::Join,
+            }),
+        );
+        part.push_feature(
+            "Push/pull",
+            FeatureKind::PushPull(PushPullFeature {
+                face: FaceRef {
+                    point: Vec3::new(0.5500002, 0.5, 0.20000029),
+                    normal: Vec3::Y,
+                },
+                distance: 0.1,
+            }),
+        );
+        let mut face = Sketch::new(SketchPlane {
+            origin: Vec3::new(-0.99999994, 0.59999937, 0.59999996),
+            x_axis: Vec3::X,
+            y_axis: Vec3::new(0.0, -3.2083044e-08, -1.0),
+        });
+        face.entities = rectangle(1.3, 0.29999998, 1.8, 0.9);
+        part.push_feature(
+            "Cut",
+            FeatureKind::Extrude(ExtrudeFeature {
+                sketch: face,
+                profiles: vec![Vec2::new(1.55, 0.33321998)],
+                distance: -0.8,
+                extent: ExtrudeExtent::OneSide,
+                flip: false,
+                operation: FeatureOperation::Cut,
+            }),
+        );
+        let result = regen(&part, &mut RegenCache::default());
+        assert!(result.issues.is_empty(), "{:?}", result.issues);
+        let ring = 2.0 * 1.2 - PI * 0.09;
+        let expected = ring * 0.6 - 0.5 * 0.6 * 0.6;
+        let volume = volume_of(&part);
+        assert!((volume - expected).abs() < 2.0e-3, "{volume} vs {expected}");
+    }
+
+    #[test]
+    fn approximated_booleans_are_reported_as_warnings() {
+        // A boss resting exactly on a face only joins through the inflated
+        // tool fallback: the result is kept, but the feature says so.
+        let mut part = PartData::new(7, "Part");
+        part.push_feature(
+            "Base",
+            box_kind(Vec3::splat(2.0), Vec3::ZERO, FeatureOperation::Join),
+        );
+        let boss = part.push_feature(
+            "Boss",
+            box_kind(Vec3::ONE, Vec3::new(0.0, 1.5, 0.0), FeatureOperation::Join),
+        );
+        let result = regen(&part, &mut RegenCache::default());
+        assert!(result.mesh.is_some());
+        let [issue] = result.issues.as_slice() else {
+            panic!("{:?}", result.issues);
+        };
+        assert!(issue.warning && issue.feature == boss, "{issue:?}");
+        assert!(issue.message.contains("enlarged by") && issue.message.contains("mm"));
+        assert!(
+            crate::boolean::take_notes().is_empty(),
+            "notes are consumed"
+        );
     }
 
     #[test]

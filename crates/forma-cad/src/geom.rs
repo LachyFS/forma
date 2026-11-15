@@ -87,11 +87,151 @@ impl Bounds {
 }
 
 /// An oriented triangle mesh with the source B-rep face of each triangle.
+/// Ray queries build a bounding volume hierarchy on first use, so fill the
+/// mesh completely before querying it.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct TriMesh {
     pub positions: Vec<DVec3>,
     pub triangles: Vec<[u32; 3]>,
     pub faces: Vec<u32>,
+    bvh: std::sync::OnceLock<Bvh>,
+}
+
+/// Binary bounding volume hierarchy over triangle indices.
+#[derive(Clone, Debug, Default)]
+struct Bvh {
+    nodes: Vec<BvhNode>,
+    order: Vec<u32>,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct BvhNode {
+    bounds: Bounds,
+    /// Leaf: range in `order`. Interior: `start` is the right child and
+    /// the left child follows this node.
+    start: u32,
+    count: u32,
+}
+
+const LEAF_SIZE: usize = 6;
+
+impl Bvh {
+    fn build(mesh: &TriMesh) -> Self {
+        let mut order: Vec<u32> = (0..mesh.triangles.len() as u32).collect();
+        let centers: Vec<DVec3> = (0..mesh.triangles.len())
+            .map(|i| {
+                let [a, b, c] = mesh.triangle(i);
+                (a + b + c) / 3.0
+            })
+            .collect();
+        let mut nodes = Vec::with_capacity(order.len() / 2 + 1);
+        if !order.is_empty() {
+            Self::split(mesh, &centers, &mut order, 0, &mut nodes, 0);
+        }
+        Self { nodes, order }
+    }
+
+    fn split(
+        mesh: &TriMesh,
+        centers: &[DVec3],
+        order: &mut [u32],
+        offset: usize,
+        nodes: &mut Vec<BvhNode>,
+        depth: usize,
+    ) {
+        let mut bounds = Bounds::empty();
+        let mut spread = Bounds::empty();
+        for &t in order.iter() {
+            for p in mesh.triangle(t as usize) {
+                bounds.add(p);
+            }
+            spread.add(centers[t as usize]);
+        }
+        let index = nodes.len();
+        nodes.push(BvhNode {
+            bounds,
+            start: offset as u32,
+            count: order.len() as u32,
+        });
+        if order.len() <= LEAF_SIZE || depth > 40 {
+            return;
+        }
+        let extent = spread.max - spread.min;
+        let axis = if extent.x >= extent.y && extent.x >= extent.z {
+            0
+        } else if extent.y >= extent.z {
+            1
+        } else {
+            2
+        };
+        let middle = order.len() / 2;
+        order.select_nth_unstable_by(middle, |a, b| {
+            centers[*a as usize][axis].total_cmp(&centers[*b as usize][axis])
+        });
+        let (left, right) = order.split_at_mut(middle);
+        Self::split(mesh, centers, left, offset, nodes, depth + 1);
+        let right_index = nodes.len() as u32;
+        Self::split(mesh, centers, right, offset + middle, nodes, depth + 1);
+        nodes[index].start = right_index;
+        nodes[index].count = 0;
+    }
+
+    /// Calls `visit` with each triangle the ray may hit within `max_t`
+    /// (by bounding boxes). Stops early when `visit` returns true.
+    fn visit(
+        &self,
+        origin: DVec3,
+        direction: DVec3,
+        max_t: f64,
+        mut visit: impl FnMut(usize) -> bool,
+    ) {
+        if self.nodes.is_empty() {
+            return;
+        }
+        let inverse = direction.recip();
+        let mut stack = vec![0usize];
+        while let Some(index) = stack.pop() {
+            let node = self.nodes[index];
+            if !ray_box(origin, inverse, &node.bounds, max_t) {
+                continue;
+            }
+            if node.count > 0 {
+                let range = node.start as usize..(node.start + node.count) as usize;
+                for &triangle in &self.order[range] {
+                    if visit(triangle as usize) {
+                        return;
+                    }
+                }
+            } else {
+                stack.push(node.start as usize);
+                stack.push(index + 1);
+            }
+        }
+    }
+}
+
+/// Slab test; padded so rays grazing a box face are not missed.
+fn ray_box(origin: DVec3, inverse: DVec3, bounds: &Bounds, max_t: f64) -> bool {
+    let pad = (bounds.max - bounds.min).max_element() * 1.0e-9 + 1.0e-12;
+    let (mut near, mut far) = (0.0_f64, max_t);
+    for axis in 0..3 {
+        let low = bounds.min[axis] - pad;
+        let high = bounds.max[axis] + pad;
+        if inverse[axis].is_infinite() {
+            if origin[axis] < low || origin[axis] > high {
+                return false;
+            }
+            continue;
+        }
+        let a = (low - origin[axis]) * inverse[axis];
+        let b = (high - origin[axis]) * inverse[axis];
+        near = near.max(a.min(b));
+        far = far.min(a.max(b));
+        if near > far {
+            return false;
+        }
+    }
+    true
 }
 
 impl TriMesh {
@@ -129,26 +269,35 @@ impl TriMesh {
             DVec3::new(-0.267_261_2, 0.534_522_5, 0.801_783_7),
             DVec3::new(0.801_783_7, -0.267_261_2, 0.534_522_5),
         ];
+        let bvh = self.bvh();
         let inside = DIRECTIONS
             .iter()
             .filter(|direction| {
-                let mut crossings = 0;
-                for i in 0..self.triangles.len() {
+                let mut hits = Vec::new();
+                bvh.visit(point, **direction, f64::INFINITY, |i| {
                     let [a, b, c] = self.triangle(i);
-                    if ray_triangle(point, **direction, a, b, c).is_some() {
-                        crossings += 1;
-                    }
-                }
-                crossings % 2 == 1
+                    hits.extend(ray_triangle(point, **direction, a, b, c));
+                    false
+                });
+                // A ray through an edge shared by two triangles hits both at
+                // the same distance; count that crossing once.
+                hits.sort_by(f64::total_cmp);
+                hits.dedup_by(|a, b| (*a - *b).abs() <= 1.0e-9 * (1.0 + b.abs()));
+                hits.len() % 2 == 1
             })
             .count();
         inside >= 2
+    }
+
+    fn bvh(&self) -> &Bvh {
+        self.bvh.get_or_init(|| Bvh::build(self))
     }
 
     /// Whether any edge of `self` crosses a triangle of `other`.
     pub fn edges_cross(&self, other: &TriMesh) -> bool {
         let bounds = other.bounds();
         let pad = bounds.diagonal() * 1.0e-9;
+        let bvh = other.bvh();
         for t in &self.triangles {
             for k in 0..3 {
                 let a = self.positions[t[k] as usize];
@@ -164,13 +313,15 @@ impl TriMesh {
                 if length <= 0.0 {
                     continue;
                 }
-                for i in 0..other.triangles.len() {
+                let direction = direction / length;
+                let mut crossed = false;
+                bvh.visit(a, direction, length, |i| {
                     let [p, q, r] = other.triangle(i);
-                    if let Some(t) = ray_triangle(a, direction / length, p, q, r)
-                        && t <= length
-                    {
-                        return true;
-                    }
+                    crossed = ray_triangle(a, direction, p, q, r).is_some_and(|t| t <= length);
+                    crossed
+                });
+                if crossed {
+                    return true;
                 }
             }
         }
@@ -311,6 +462,57 @@ pub(crate) fn project_onto_planes(x0: DVec3, planes: &[(DVec3, f64)]) -> Option<
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A closed, outward unit cube made of 12 triangles.
+    pub(super) fn cube(offset: DVec3) -> TriMesh {
+        let mut mesh = TriMesh::default();
+        for z in [0.0, 1.0] {
+            for y in [0.0, 1.0] {
+                for x in [0.0, 1.0] {
+                    mesh.positions.push(DVec3::new(x, y, z) + offset);
+                }
+            }
+        }
+        let quads = [
+            [0, 2, 3, 1],
+            [4, 5, 7, 6],
+            [0, 1, 5, 4],
+            [2, 6, 7, 3],
+            [0, 4, 6, 2],
+            [1, 3, 7, 5],
+        ];
+        for (face, [a, b, c, d]) in quads.into_iter().enumerate() {
+            mesh.triangles.push([a, b, c]);
+            mesh.triangles.push([a, c, d]);
+            mesh.faces.extend([face as u32, face as u32]);
+        }
+        mesh
+    }
+
+    #[test]
+    fn hierarchy_queries_match_brute_force() {
+        let mesh = cube(DVec3::ZERO);
+        assert!(mesh.volume() > 0.99);
+        // Grid of points straddling the cube, including points on faces.
+        for i in 0..=12 {
+            for j in 0..=12 {
+                for k in 0..=12 {
+                    let p = DVec3::new(i as f64, j as f64, k as f64) / 8.0 - DVec3::splat(0.25);
+                    let expected = p.cmpgt(DVec3::splat(1.0e-9)).all()
+                        && p.cmplt(DVec3::splat(1.0 - 1.0e-9)).all();
+                    let on_face = p
+                        .to_array()
+                        .iter()
+                        .any(|v| v.abs() < 1.0e-9 || (v - 1.0).abs() < 1.0e-9);
+                    if !on_face {
+                        assert_eq!(mesh.contains(p), expected, "{p:?}");
+                    }
+                }
+            }
+        }
+        assert!(mesh.edges_cross(&cube(DVec3::splat(0.5))));
+        assert!(!mesh.edges_cross(&cube(DVec3::splat(2.0))));
+    }
 
     #[test]
     fn plane_projection_finds_plane_intersections() {

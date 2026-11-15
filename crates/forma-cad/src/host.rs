@@ -143,6 +143,14 @@ struct Shared {
     child: Mutex<Option<Child>>,
 }
 
+impl Shared {
+    /// The worker process, removed from the shared slot. The lock is held
+    /// only for the swap, so killing and reaping never block other threads.
+    fn take_child(&self) -> Option<Child> {
+        self.child.lock().unwrap_or_else(|e| e.into_inner()).take()
+    }
+}
+
 /// A handle to the CAD host thread. Dropping it shuts the worker down.
 pub struct CadHost {
     shared: Arc<Shared>,
@@ -209,9 +217,9 @@ impl CadHost {
         }
         self.shared.wake.notify_all();
         // Killing the worker unblocks a host thread waiting on a stuck call.
-        if let Ok(mut child) = self.shared.child.lock()
-            && let Some(child) = child.as_mut()
-        {
+        // Never kill or wait while holding the lock: the host thread may
+        // need it to finish.
+        if let Some(mut child) = self.shared.take_child() {
             let _ = child.kill();
             let _ = child.wait();
         }
@@ -237,7 +245,11 @@ impl Drop for CadHost {
 /// Why a request produced no response.
 enum Failure {
     Hung {
+        /// The feature being evaluated, if the worker reported one.
         feature: Option<u64>,
+        /// That feature ran past its own time limit (rather than the whole
+        /// request running past the request limit).
+        over_feature_limit: bool,
     },
     Crashed {
         feature: Option<u64>,
@@ -245,9 +257,16 @@ enum Failure {
     },
 }
 
+/// What the reader thread passes on from the worker's output.
+enum Incoming {
+    Response(Response),
+    /// A frame that could not be decoded: the worker is out of step.
+    Unreadable(String),
+}
+
 struct Worker {
     stdin: BufWriter<ChildStdin>,
-    responses: Receiver<Response>,
+    responses: Receiver<Incoming>,
 }
 
 struct Runner {
@@ -256,6 +275,9 @@ struct Runner {
     worker: Option<Worker>,
     cache: RegenCache,
     next_id: u64,
+    /// Features a part's latest regeneration had to skip, by part id with
+    /// its stamp: baking and exporting that version skip them too.
+    skips: std::collections::HashMap<u64, (u64, Vec<FeatureIssue>)>,
 }
 
 impl Runner {
@@ -285,8 +307,16 @@ impl Runner {
             .name("forma-cad-reader".into())
             .spawn(move || {
                 let mut reader = BufReader::new(stdout);
-                while let Ok(Some(response)) = read_frame::<Response>(&mut reader) {
-                    if sender.send(response).is_err() {
+                loop {
+                    let incoming = match read_frame::<Response>(&mut reader) {
+                        Ok(Some(response)) => Incoming::Response(response),
+                        Ok(None) => break,
+                        Err(error) => Incoming::Unreadable(error.to_string()),
+                    };
+                    let unreadable = matches!(incoming, Incoming::Unreadable(_));
+                    // After an unreadable frame the stream position is
+                    // unknown: report it and stop; the host kills the worker.
+                    if sender.send(incoming).is_err() || unreadable {
                         break;
                     }
                 }
@@ -300,12 +330,13 @@ impl Runner {
         Ok(())
     }
 
-    fn stop_worker(&mut self) {
+    /// Kill and reap the worker, returning how it ended.
+    fn stop_worker(&mut self) -> Option<std::process::ExitStatus> {
         self.worker = None;
-        if let Some(mut child) = self.shared.child.lock().ok().and_then(|mut c| c.take()) {
-            let _ = child.kill();
-            let _ = child.wait();
-        }
+        let mut child = self.shared.take_child()?;
+        // An already exited worker keeps its own status; kill is a no-op.
+        let _ = child.kill();
+        child.wait().ok()
     }
 
     fn stopping(&self) -> bool {
@@ -356,27 +387,31 @@ impl Runner {
             let wait = remaining_feature.min(remaining_request);
             let received = self.worker.as_ref().unwrap().responses.recv_timeout(wait);
             match received {
-                Ok(Response::Progress {
+                Ok(Incoming::Response(Response::Progress {
                     id: rid,
                     feature: f,
-                }) if rid == id => {
+                })) if rid == id => {
                     feature = Some(f);
                     feature_started = Instant::now();
                 }
-                Ok(response) if response.id() == id => return Ok(response),
-                Ok(_) => {} // a late answer to an abandoned request
+                Ok(Incoming::Response(response)) if response.id() == id => return Ok(response),
+                Ok(Incoming::Response(_)) => {} // a late answer to an abandoned request
+                Ok(Incoming::Unreadable(error)) => {
+                    self.stop_worker();
+                    return Err(Failure::Crashed {
+                        feature,
+                        detail: format!("its reply could not be read: {error}"),
+                    });
+                }
                 Err(RecvTimeoutError::Timeout) => {
                     self.stop_worker();
-                    return Err(Failure::Hung { feature });
+                    return Err(Failure::Hung {
+                        feature,
+                        over_feature_limit: remaining_feature <= remaining_request,
+                    });
                 }
                 Err(RecvTimeoutError::Disconnected) => {
-                    let status = self
-                        .shared
-                        .child
-                        .lock()
-                        .ok()
-                        .and_then(|mut c| c.as_mut().and_then(|c| c.wait().ok()));
-                    self.stop_worker();
+                    let status = self.stop_worker();
                     return Err(Failure::Crashed {
                         feature,
                         detail: status
@@ -385,6 +420,14 @@ impl Runner {
                     });
                 }
             }
+        }
+    }
+
+    /// Features to skip when baking or exporting this version of `part`.
+    fn known_skips(&self, part: &PartData) -> Vec<FeatureIssue> {
+        match self.skips.get(&part.id) {
+            Some((stamp, skip)) if *stamp == part.stamp => skip.clone(),
+            _ => Vec::new(),
         }
     }
 
@@ -398,6 +441,21 @@ impl Runner {
             part_id: request.part_id,
             stamp: request.part.stamp,
         });
+        // Invalid data (for example a non-finite value, which JSON cannot
+        // carry) would make the worker fail to read the request.
+        if let Err(error) = request.part.validate() {
+            sink(HostEvent::RegenFailed {
+                part_id: request.part_id,
+                stamp: request.part.stamp,
+                issue: FeatureIssue {
+                    feature: 0,
+                    message: format!("The part data is invalid: {error:#}"),
+                    suggestion: "Undo the last change".into(),
+                    warning: false,
+                },
+            });
+            return;
+        }
         for _ in 0..=self.config.max_skips {
             let id = self.id();
             let outcome = self.call(Request::Regenerate {
@@ -406,6 +464,12 @@ impl Runner {
             });
             let failure = match outcome {
                 Ok(Response::Regenerated { result, .. }) => {
+                    if request.skip.is_empty() {
+                        self.skips.remove(&request.part_id);
+                    } else {
+                        self.skips
+                            .insert(request.part_id, (request.part.stamp, request.skip.clone()));
+                    }
                     sink(HostEvent::Regenerated(result));
                     return;
                 }
@@ -417,6 +481,7 @@ impl Runner {
                             feature: 0,
                             message,
                             suggestion: "Undo the last change or adjust it slightly".into(),
+                            warning: false,
                         },
                     });
                     return;
@@ -428,11 +493,26 @@ impl Runner {
                 return;
             }
             let (feature, what) = match &failure {
-                Failure::Hung { feature } => (
+                Failure::Hung {
+                    feature,
+                    over_feature_limit: true,
+                } => (
                     *feature,
                     format!(
-                        "did not finish within {} s",
+                        "did not finish a feature within {} s",
                         self.config.feature_timeout.as_secs_f32().round()
+                    ),
+                ),
+                // The whole request ran out of time: no single feature is to
+                // blame, so nothing is skipped.
+                Failure::Hung {
+                    over_feature_limit: false,
+                    ..
+                } => (
+                    None,
+                    format!(
+                        "did not finish within {} s",
+                        self.config.request_timeout.as_secs_f32().round()
                     ),
                 ),
                 Failure::Crashed { feature, detail } => (*feature, format!("crashed ({detail})")),
@@ -449,6 +529,7 @@ impl Runner {
                         feature: feature.unwrap_or(0),
                         message: format!("Regeneration failed: the geometry kernel {what}"),
                         suggestion: "Undo the last change or simplify the part".into(),
+                        warning: false,
                     },
                 });
                 return;
@@ -461,6 +542,7 @@ impl Runner {
                 feature: culprit,
                 message: format!("{name}: the geometry kernel {what}, so this feature was skipped"),
                 suggestion: "Change its dimensions slightly, or suppress it".into(),
+                warning: false,
             });
         }
         sink(HostEvent::RegenFailed {
@@ -470,6 +552,7 @@ impl Runner {
                 feature: 0,
                 message: "Regeneration failed repeatedly".into(),
                 suggestion: "Undo the last change".into(),
+                warning: false,
             },
         });
     }
@@ -529,6 +612,7 @@ fn run(config: HostConfig, shared: Arc<Shared>, sink: Sink) {
         worker: None,
         cache: RegenCache::default(),
         next_id: 0,
+        skips: Default::default(),
     };
     loop {
         let job = {
@@ -545,11 +629,16 @@ fn run(config: HostConfig, shared: Arc<Shared>, sink: Sink) {
             Job::Regenerate(request) => runner.regenerate(request, &sink),
             Job::PartToMesh { ticket, part } => {
                 let id = runner.id();
-                runner.simple(Request::PartToMesh { id, part }, ticket, &sink)
+                let skip = runner.known_skips(&part);
+                runner.simple(Request::PartToMesh { id, part, skip }, ticket, &sink)
             }
             Job::ExportStep { ticket, parts } => {
                 let id = runner.id();
-                runner.simple(Request::ExportStep { id, parts }, ticket, &sink)
+                let skips = parts
+                    .iter()
+                    .map(|placed| runner.known_skips(&placed.part))
+                    .collect();
+                runner.simple(Request::ExportStep { id, parts, skips }, ticket, &sink)
             }
             Job::ImportStep { ticket, name, text } => {
                 let id = runner.id();
