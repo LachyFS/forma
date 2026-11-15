@@ -4,11 +4,11 @@
 //! the same undo step, and regenerate. The panel goes away on the next
 //! unrelated action: a command, a selection click, another tool, or any
 //! change to the object it refers to.
+use super::PendingGhost;
 use super::edit::ChamferEdge;
 use super::geometry::Prism;
 use super::push_pull::{ActiveFaces, FacePick};
 use super::sketch_tool::{Applied, Operation, SketchTool, SketchToolKind};
-use super::PendingGhost;
 use crate::app::{EditMode, Studio};
 use forma_core::{ExtrudeExtent, FeatureKind, Mesh, Scene, Transform, Vec3};
 use gpui::Context;
@@ -84,8 +84,15 @@ pub(crate) struct LastOperation {
 }
 
 impl LastOperation {
-    fn base(scene: &Scene, object: u64, edit_mode: EditMode) -> (Transform, Option<(usize, usize)>) {
-        let transform = scene.object(object).map(|o| o.transform).unwrap_or_default();
+    fn base(
+        scene: &Scene,
+        object: u64,
+        edit_mode: EditMode,
+    ) -> (Transform, Option<(usize, usize)>) {
+        let transform = scene
+            .object(object)
+            .map(|o| o.transform)
+            .unwrap_or_default();
         let marker = scene
             .object(object)
             .filter(|o| !o.is_part())
@@ -218,7 +225,9 @@ impl LastOperation {
     /// The boolean of a sketch feature on an existing part, if adjustable.
     pub(crate) fn operation(&self) -> Option<Operation> {
         match &self.kind {
-            LastKind::Extrude { operation, .. } | LastKind::Revolve { operation } => Some(*operation),
+            LastKind::Extrude { operation, .. } | LastKind::Revolve { operation } => {
+                Some(*operation)
+            }
             _ => None,
         }
     }

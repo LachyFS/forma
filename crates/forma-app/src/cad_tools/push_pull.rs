@@ -105,7 +105,8 @@ impl PushPullTool {
         let face = &active.faces[0];
         let base = active.anchor() + face.normal * active.distance;
         let screen = studio.world_to_screen(base)?;
-        let ahead = studio.world_to_screen(base + face.normal * studio.world_per_pixel(base) * 10.0);
+        let ahead =
+            studio.world_to_screen(base + face.normal * studio.world_per_pixel(base) * 10.0);
         let sign = if active.distance < 0.0 { -1.0 } else { 1.0 };
         let direction = ahead
             .map(|p| (p - screen) * sign)
@@ -122,11 +123,14 @@ impl Studio {
             self.cancel_cad_tool(cx);
         }
         self.cad_tool.region_hover = None;
-        let mut tool = PushPullTool::default();
-        tool.hover = self.pick_face(self.last_mouse, None);
+        let tool = PushPullTool {
+            hover: self.pick_face(self.last_mouse, None),
+            ..Default::default()
+        };
         self.cad_tool.tool = Some(Tool::PushPull(Box::new(tool)));
         self.status =
-            "Push/Pull · Drag a flat face of a part or mesh · Click a face to type a distance".into();
+            "Push/Pull · Drag a flat face of a part or mesh · Click a face to type a distance"
+                .into();
         cx.notify();
     }
 
@@ -222,7 +226,13 @@ impl Studio {
             self.cancel_cad_tool(cx);
         }
         let face = &faces[0];
-        let mut drag = AxisDrag::new(self, face.prism.centroid(), face.normal, 0.0, self.last_mouse);
+        let mut drag = AxisDrag::new(
+            self,
+            face.prism.centroid(),
+            face.normal,
+            0.0,
+            self.last_mouse,
+        );
         drag.started = true;
         let heights = self.parallel_heights_for(face);
         let count = faces.len();
@@ -250,7 +260,12 @@ impl Studio {
     }
 
     /// A pick for a face group of a part, as if the pointer were on it.
-    pub(crate) fn face_pick_for_group(&self, object: u64, group: u32, reference: FaceRef) -> Option<FacePick> {
+    pub(crate) fn face_pick_for_group(
+        &self,
+        object: u64,
+        group: u32,
+        reference: FaceRef,
+    ) -> Option<FacePick> {
         let instance = self.scene.mesh_instance(object)?;
         let matrix = instance.world_transform;
         let mesh = instance.mesh;
@@ -454,7 +469,11 @@ impl Studio {
             return false;
         };
         let modal = tool.active.as_ref().is_some_and(|a| a.modal);
-        let dragging = tool.active.as_ref().and_then(|a| a.drag).filter(|_| held || modal);
+        let dragging = tool
+            .active
+            .as_ref()
+            .and_then(|a| a.drag)
+            .filter(|_| held || modal);
         if let Some(mut drag) = dragging {
             if !drag.started {
                 if drag.press.distance(position) <= DRAG_PIXELS {
@@ -478,7 +497,12 @@ impl Studio {
             let (value, face) = if free || !active.numeric.is_empty() {
                 (raw, None)
             } else {
-                geometry::snap_value(raw, geometry::snap_step(along), &active.heights, 8.0 / along)
+                geometry::snap_value(
+                    raw,
+                    geometry::snap_step(along),
+                    &active.heights,
+                    8.0 / along,
+                )
             };
             if let Some(Tool::PushPull(tool)) = self.cad_tool.tool.as_mut()
                 && let Some(active) = tool.active.as_mut()
@@ -492,7 +516,11 @@ impl Studio {
                 self.status = format!(
                     "Push/Pull {} · {} · Release to apply · Type an exact value",
                     crate::sketch::overlay::format_length(distance),
-                    if distance >= 0.0 { "Pull out" } else { "Push in" }
+                    if distance >= 0.0 {
+                        "Pull out"
+                    } else {
+                        "Push in"
+                    }
                 );
             }
             return true;
@@ -549,8 +577,7 @@ impl Studio {
         if dragged && active.distance.abs() >= MIN_DISTANCE {
             self.commit_push_pull(cx);
         } else if !dragged {
-            self.status =
-                "Push/Pull · Type a distance and press Return, or drag the arrow".into();
+            self.status = "Push/Pull · Type a distance and press Return, or drag the arrow".into();
         }
         cx.notify();
     }
@@ -585,7 +612,11 @@ impl Studio {
         let mut mesh_record = None;
         let color = {
             let t = self.theme_colors();
-            if active.distance >= 0.0 { t.accent } else { t.danger }
+            if active.distance >= 0.0 {
+                t.accent
+            } else {
+                t.danger
+            }
         };
         for face in &active.faces {
             match &face.kind {
@@ -653,7 +684,7 @@ impl Studio {
             &self.scene,
             self.edit_mode,
         );
-        if !self.part_editing().is_some_and(|id| id == first.object) {
+        if self.part_editing().is_none_or(|id| id != first.object) {
             self.select_objects([first.object].into_iter().collect(), Some(first.object));
         }
         self.cad_tool.edit.faces.clear();
@@ -778,7 +809,10 @@ pub(crate) fn face_prism(
         let n = mesh.face_normal(f);
         let u = n.any_orthonormal_vector();
         let v = n.cross(u);
-        let flat: Vec<Vec2> = points.iter().map(|p| Vec2::new(p.dot(u), p.dot(v))).collect();
+        let flat: Vec<Vec2> = points
+            .iter()
+            .map(|p| Vec2::new(p.dot(u), p.dot(v)))
+            .collect();
         let triangles = if face.len() == 3 {
             vec![[0, 1, 2]]
         } else {

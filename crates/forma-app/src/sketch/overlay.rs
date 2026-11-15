@@ -438,7 +438,12 @@ impl Projector {
 }
 
 /// Strokes many runs with as few paths as the vertex budget allows.
-pub(crate) fn stroke_runs(window: &mut Window, runs: &[Vec<Point<Pixels>>], width: f32, color: Rgba) {
+pub(crate) fn stroke_runs(
+    window: &mut Window,
+    runs: &[Vec<Point<Pixels>>],
+    width: f32,
+    color: Rgba,
+) {
     let mut path = PathBuilder::stroke(px(width));
     let mut points = 0;
     let flush = |path: PathBuilder, window: &mut Window| {
@@ -518,7 +523,13 @@ pub(crate) fn dot(window: &mut Window, center: Point<Pixels>, diameter: f32, col
     );
 }
 
-pub(crate) fn ring(window: &mut Window, center: Point<Pixels>, radius: f32, width: f32, color: Rgba) {
+pub(crate) fn ring(
+    window: &mut Window,
+    center: Point<Pixels>,
+    radius: f32,
+    width: f32,
+    color: Rgba,
+) {
     let points: Vec<_> = (0..=24)
         .map(|i| {
             let a = i as f32 / 24.0 * std::f32::consts::TAU;

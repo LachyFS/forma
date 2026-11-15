@@ -70,11 +70,12 @@ impl Topology {
         let tolerance = selection.start.distance(selection.end).max(1.0e-3) * 1.0e-3;
         (0..self.edges.len()).find(|&i| {
             self.edge_selection(mesh, i).is_some_and(|e| {
-                let forward =
-                    e.start.distance(selection.start) < tolerance && e.end.distance(selection.end) < tolerance;
-                let backward =
-                    e.start.distance(selection.end) < tolerance && e.end.distance(selection.start) < tolerance;
-                (forward || backward) && e.middle.distance(selection.middle) < tolerance.max(1.0e-4) * 10.0
+                let forward = e.start.distance(selection.start) < tolerance
+                    && e.end.distance(selection.end) < tolerance;
+                let backward = e.start.distance(selection.end) < tolerance
+                    && e.end.distance(selection.start) < tolerance;
+                (forward || backward)
+                    && e.middle.distance(selection.middle) < tolerance.max(1.0e-4) * 10.0
             })
         })
     }
@@ -138,7 +139,10 @@ impl Studio {
     pub(crate) fn part_topology(&self, object: u64) -> Option<Rc<Topology>> {
         let mesh = self.scene.object_mesh(object)?;
         let mut cache = self.cad_tool.topology.borrow_mut();
-        if cache.as_ref().is_none_or(|(revision, _)| *revision != self.scene_revision) {
+        if cache
+            .as_ref()
+            .is_none_or(|(revision, _)| *revision != self.scene_revision)
+        {
             *cache = Some((self.scene_revision, Vec::new()));
         }
         let (_, entries) = cache.as_mut().unwrap();
@@ -227,7 +231,12 @@ impl Studio {
     }
 
     /// Workspace commands while editing a part. Returns true when handled.
-    pub(crate) fn part_edit_command(&mut self, id: u64, command: Command, cx: &mut Context<Self>) -> bool {
+    pub(crate) fn part_edit_command(
+        &mut self,
+        id: u64,
+        command: Command,
+        cx: &mut Context<Self>,
+    ) -> bool {
         let mut hint = |s: &mut Self, text: &str| {
             s.status = text.into();
             cx.notify();
@@ -308,7 +317,10 @@ impl Studio {
             | Command::Triangulate
             | Command::FlipNormals
             | Command::RecalculateNormals => {
-                hint(self, "Polygon tools apply to meshes · Convert to mesh to edit polygons");
+                hint(
+                    self,
+                    "Polygon tools apply to meshes · Convert to mesh to edit polygons",
+                );
                 true
             }
             _ => false,
@@ -391,7 +403,10 @@ impl Studio {
                 true
             }
             "i" | "l" => {
-                hint(self, "Polygon tools apply to meshes · Convert to mesh to edit polygons");
+                hint(
+                    self,
+                    "Polygon tools apply to meshes · Convert to mesh to edit polygons",
+                );
                 true
             }
             "1" => {
@@ -438,7 +453,8 @@ impl Studio {
                     for pair in edge.points.windows(2) {
                         let a = matrix.transform_point3(instance.mesh.positions[pair[0] as usize]);
                         let b = matrix.transform_point3(instance.mesh.positions[pair[1] as usize]);
-                        let (Some(sa), Some(sb)) = (self.world_to_screen(a), self.world_to_screen(b))
+                        let (Some(sa), Some(sb)) =
+                            (self.world_to_screen(a), self.world_to_screen(b))
                         else {
                             continue;
                         };
@@ -484,7 +500,10 @@ impl Studio {
         match pick {
             Some((EditHover::Face(_), Some(reference))) => {
                 let state = self.edit_state_for(id);
-                let existing = state.faces.iter().position(|f| same_face_ref(f, &reference));
+                let existing = state
+                    .faces
+                    .iter()
+                    .position(|f| same_face_ref(f, &reference));
                 match (shift, existing) {
                     (true, Some(index)) => {
                         state.faces.remove(index);
@@ -561,14 +580,24 @@ impl Studio {
         let id = self.part_editing()?;
         let faces = self.selected_edit_faces(id).len();
         let edges = self.selected_edit_edges(id).len();
-        let plural = |n: usize, one: &str, many: &str| {
-            format!("{n} {}", if n == 1 { one } else { many })
-        };
+        let plural =
+            |n: usize, one: &str, many: &str| format!("{n} {}", if n == 1 { one } else { many });
         Some(match (faces, edges) {
-            (0, 0) => format!("No {} selected", if self.edit_mode == EditMode::Edge { "edge" } else { "face" }),
+            (0, 0) => format!(
+                "No {} selected",
+                if self.edit_mode == EditMode::Edge {
+                    "edge"
+                } else {
+                    "face"
+                }
+            ),
             (f, 0) => format!("{} selected", plural(f, "face", "faces")),
             (0, e) => format!("{} selected", plural(e, "edge", "edges")),
-            (f, e) => format!("{} · {} selected", plural(f, "face", "faces"), plural(e, "edge", "edges")),
+            (f, e) => format!(
+                "{} · {} selected",
+                plural(f, "face", "faces"),
+                plural(e, "edge", "edges")
+            ),
         })
     }
 
@@ -585,7 +614,13 @@ impl Studio {
             .part_editing()
             .and_then(|id| Some((id, *self.selected_edit_faces(id).first()?)));
         let choice = selected.and_then(|(id, (group, _))| {
-            crate::sketch::plane::group_plane_choice(&self.scene, self.scene.camera, id, group, None)
+            crate::sketch::plane::group_plane_choice(
+                &self.scene,
+                self.scene.camera,
+                id,
+                group,
+                None,
+            )
         });
         match choice {
             Some(choice) => self.enter_draw(DrawTarget::Choice(choice), cx),
@@ -614,14 +649,20 @@ impl Studio {
             cx.notify();
             return;
         }
-        let (Some(instance), Some(topology)) = (self.scene.mesh_instance(id), self.part_topology(id))
+        let (Some(instance), Some(topology)) =
+            (self.scene.mesh_instance(id), self.part_topology(id))
         else {
             return;
         };
         let matrix = instance.world_transform;
         let mut edges = Vec::new();
         for index in indices {
-            match chamfer_edge(instance.mesh, &topology.canon, &topology.edges[index], matrix) {
+            match chamfer_edge(
+                instance.mesh,
+                &topology.canon,
+                &topology.edges[index],
+                matrix,
+            ) {
                 Ok(edge) => edges.push(edge),
                 Err(message) => {
                     self.status = format!("Chamfer · {message}");
@@ -673,7 +714,8 @@ impl Studio {
         let per_pixel = self.world_per_pixel(middle);
         let mut distance = (raw / rate).max(0.0);
         if !free {
-            distance = geometry::snap_value(distance, geometry::snap_step(1.0 / per_pixel), &[], 0.0).0;
+            distance =
+                geometry::snap_value(distance, geometry::snap_step(1.0 / per_pixel), &[], 0.0).0;
         }
         if let Some(Tool::Chamfer(tool)) = self.cad_tool.tool.as_mut() {
             tool.distance = distance;
@@ -774,7 +816,15 @@ impl Studio {
         self.cad_tool.edit.edges.clear();
         self.reveal_feature(object, feature);
         self.cad_tool.last = Some(super::LastOperation::chamfer(
-            object, part_id, feature, stamp, distance, scale, edges, &self.scene, self.edit_mode,
+            object,
+            part_id,
+            feature,
+            stamp,
+            distance,
+            scale,
+            edges,
+            &self.scene,
+            self.edit_mode,
         ));
         self.status = format!(
             "Chamfered {} edge{} by {} · Regenerating…",
@@ -791,7 +841,9 @@ impl Studio {
 }
 
 fn same_face_ref(a: &FaceRef, b: &FaceRef) -> bool {
-    a.normal.dot(b.normal) > 0.9999 && (a.point - b.point).dot(a.normal).abs() < 1.0e-5 && a.point.distance(b.point) < 1.0e-5
+    a.normal.dot(b.normal) > 0.9999
+        && (a.point - b.point).dot(a.normal).abs() < 1.0e-5
+        && a.point.distance(b.point) < 1.0e-5
 }
 
 /// The chamfer geometry of a straight B-rep edge between two flat faces.
@@ -873,7 +925,10 @@ mod tests {
         let edge = &edges[0];
         let canon = geometry::weld(&mesh);
         let chamfer = chamfer_edge(&mesh, &canon, edge, Mat4::IDENTITY).unwrap();
-        assert!(chamfer.into_a.dot(chamfer.into_b).abs() < 1.0e-5, "perpendicular faces");
+        assert!(
+            chamfer.into_a.dot(chamfer.into_b).abs() < 1.0e-5,
+            "perpendicular faces"
+        );
         // Both directions point back toward the cube's centre.
         let middle = (chamfer.start + chamfer.end) * 0.5;
         assert!((chamfer.into_a + chamfer.into_b).dot(-middle) > 0.0);
@@ -911,10 +966,7 @@ mod tests {
             .iter()
             .position(|e| {
                 let (a, b) = (p(e.points[0]), p(*e.points.last().unwrap()));
-                (a.y - 0.3).abs() < 1.0e-3
-                    && (b.y - 0.3).abs() < 1.0e-3
-                    && a.z > 0.74
-                    && b.z > 0.74
+                (a.y - 0.3).abs() < 1.0e-3 && (b.y - 0.3).abs() < 1.0e-3 && a.z > 0.74 && b.z > 0.74
             })
             .expect("top front edge");
         let edge = &topology.edges[index];
@@ -922,7 +974,12 @@ mod tests {
         let chamfer = chamfer_edge(&mesh, &topology.canon, edge, Mat4::IDENTITY).unwrap();
         assert!(chamfer.into_a.dot(chamfer.into_b).abs() < 1.0e-3);
         // Hole rims are single curved edges.
-        assert!(topology.edges.iter().any(|e| !e.straight && e.points.len() > 8));
+        assert!(
+            topology
+                .edges
+                .iter()
+                .any(|e| !e.straight && e.points.len() > 8)
+        );
     }
 
     #[test]
@@ -944,4 +1001,3 @@ mod tests {
         assert_eq!(topology.resolve(&mesh, &moved), None);
     }
 }
-

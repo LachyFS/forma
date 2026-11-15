@@ -187,9 +187,17 @@ impl Studio {
             bar = bar.child(vrule(t, 18.)).child(if compact {
                 command_icon(t, "draw-extrude", Icon::Extrude, extrude, false, H_MD, cx)
             } else {
-                command_button(t, "draw-extrude", "Extrude", Some(Icon::Extrude), extrude, Tone::Ghost, cx)
-                    .h(px(H_MD))
-                    .px(px(SP_2))
+                command_button(
+                    t,
+                    "draw-extrude",
+                    "Extrude",
+                    Some(Icon::Extrude),
+                    extrude,
+                    Tone::Ghost,
+                    cx,
+                )
+                .h(px(H_MD))
+                .px(px(SP_2))
             });
         }
         bar = bar.child(vrule(t, 18.)).child(finish);

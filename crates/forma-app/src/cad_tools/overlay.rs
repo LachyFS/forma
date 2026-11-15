@@ -211,8 +211,9 @@ impl Studio {
                     }
                 }
                 if let Some(edge) = tool.edges.first()
-                    && let Some(at) =
-                        self.world_to_screen((edge.start + edge.end) * 0.5 + (edge.into_a + edge.into_b) * value * 0.5)
+                    && let Some(at) = self.world_to_screen(
+                        (edge.start + edge.end) * 0.5 + (edge.into_a + edge.into_b) * value * 0.5,
+                    )
                 {
                     overlay.labels.push(LabelPaint {
                         at: at + Vec2::new(0.0, -26.0),
@@ -225,7 +226,8 @@ impl Studio {
                 if let Some(id) = self.part_editing() {
                     self.part_edit_overlay(id, &mut overlay);
                 } else if let Some(hover) = self.cad_tool.region_hover
-                    && let Some(regions) = self.region_sets().iter().find(|r| r.object == hover.object)
+                    && let Some(regions) =
+                        self.region_sets().iter().find(|r| r.object == hover.object)
                     && let Some(polygons) = regions.world.get(hover.profile)
                 {
                     overlay.areas.push(AreaPaint {
@@ -323,7 +325,9 @@ impl Studio {
                     .iter()
                     .map(|p| (*p - origin).dot(direction))
                     .collect();
-                let (low, high) = along.iter().fold((0.0_f32, 0.0_f32), |(lo, hi), t| (lo.min(*t), hi.max(*t)));
+                let (low, high) = along
+                    .iter()
+                    .fold((0.0_f32, 0.0_f32), |(lo, hi), t| (lo.min(*t), hi.max(*t)));
                 let margin = (high - low).max(self.world_per_pixel(origin) * 40.0) * 0.3;
                 overlay.lines.push(LinePaint {
                     points: vec![
@@ -352,7 +356,12 @@ impl Studio {
                 let steps = 48;
                 let arc: Vec<Vec3> = (0..=steps)
                     .map(|i| {
-                        rotate_about(anchor, origin, direction, tool.angle * i as f32 / steps as f32)
+                        rotate_about(
+                            anchor,
+                            origin,
+                            direction,
+                            tool.angle * i as f32 / steps as f32,
+                        )
                     })
                     .collect();
                 overlay.lines.push(LinePaint {
@@ -370,7 +379,9 @@ impl Studio {
                     dashed: true,
                 });
                 if let Some(handle) = tool.angle_handle_screen(self) {
-                    overlay.knobs.push((handle, color, tool.handle_hot || dragging));
+                    overlay
+                        .knobs
+                        .push((handle, color, tool.handle_hot || dragging));
                     let half = rotate_about(anchor, origin, direction, tool.angle * 0.5);
                     if let Some(at) = self.world_to_screen(half) {
                         let away = self
@@ -496,33 +507,34 @@ impl Studio {
             return;
         };
         let matrix = instance.world_transform;
-        let paint_face = |group: u32, fill: f32, width: f32, alpha: f32, overlay: &mut ToolOverlay| {
-            let face = self.face_highlight(id, group);
-            overlay.areas.push(AreaPaint {
-                polygons: face.fill.clone(),
-                color: t.accent,
-                fill,
-                outline: 0.0,
-            });
-            for segment in &face.visible {
-                overlay.lines.push(LinePaint {
-                    points: segment.clone(),
+        let paint_face =
+            |group: u32, fill: f32, width: f32, alpha: f32, overlay: &mut ToolOverlay| {
+                let face = self.face_highlight(id, group);
+                overlay.areas.push(AreaPaint {
+                    polygons: face.fill.clone(),
                     color: t.accent,
-                    alpha,
-                    width,
-                    dashed: false,
+                    fill,
+                    outline: 0.0,
                 });
-            }
-            for segment in &face.hidden {
-                overlay.lines.push(LinePaint {
-                    points: segment.clone(),
-                    color: t.accent,
-                    alpha: alpha * 0.45,
-                    width: 1.0,
-                    dashed: true,
-                });
-            }
-        };
+                for segment in &face.visible {
+                    overlay.lines.push(LinePaint {
+                        points: segment.clone(),
+                        color: t.accent,
+                        alpha,
+                        width,
+                        dashed: false,
+                    });
+                }
+                for segment in &face.hidden {
+                    overlay.lines.push(LinePaint {
+                        points: segment.clone(),
+                        color: t.accent,
+                        alpha: alpha * 0.45,
+                        width: 1.0,
+                        dashed: true,
+                    });
+                }
+            };
         let selected_faces = self.selected_edit_faces(id);
         for (group, _) in &selected_faces {
             paint_face(*group, 0.36, 2.2, 1.0, overlay);
@@ -630,7 +642,11 @@ impl Studio {
 fn numeric_text(numeric: &str, value: f32, snapped: bool) -> String {
     if numeric.is_empty() {
         let text = crate::sketch::overlay::format_length(value);
-        if snapped { format!("{text} · face") } else { text }
+        if snapped {
+            format!("{text} · face")
+        } else {
+            text
+        }
     } else {
         format!("{numeric}▏")
     }
@@ -651,8 +667,9 @@ fn label_style(numeric: &str, invalid: bool, snapped: bool) -> LabelStyle {
 /// Fills polygons as one non-zero path: front faces of a closed ghost share
 /// one orientation on screen, so overlaps tint once, never twice.
 fn fill_union(window: &mut Window, polygons: &[Vec<Point<Pixels>>], color: gpui::Rgba) {
-    let mut path = PathBuilder::fill()
-        .with_style(PathStyle::Fill(FillOptions::default().with_fill_rule(FillRule::NonZero)));
+    let mut path = PathBuilder::fill().with_style(PathStyle::Fill(
+        FillOptions::default().with_fill_rule(FillRule::NonZero),
+    ));
     let mut any = false;
     for polygon in polygons.iter().filter(|p| p.len() > 2) {
         path.move_to(polygon[0]);
@@ -709,11 +726,20 @@ pub(crate) fn paint(
             paint_lathe(overlay, lathe, &projector, window);
         }
         for (quad, color) in &overlay.quads {
-            if let Some(points) = quad.iter().map(|p| projector.point(*p)).collect::<Option<Vec<_>>>() {
+            if let Some(points) = quad
+                .iter()
+                .map(|p| projector.point(*p))
+                .collect::<Option<Vec<_>>>()
+            {
                 fill_polygons(window, std::slice::from_ref(&points), ink(*color, 0.32));
                 let mut closed = points.clone();
                 closed.push(points[0]);
-                stroke_runs(window, std::slice::from_ref(&closed), 3.0, ink(c.canvas, 0.4));
+                stroke_runs(
+                    window,
+                    std::slice::from_ref(&closed),
+                    3.0,
+                    ink(c.canvas, 0.4),
+                );
                 stroke_runs(window, &[closed], 1.4, ink(*color, 1.0));
             }
         }
@@ -721,7 +747,13 @@ pub(crate) fn paint(
             let runs = projector.polyline(&line.points);
             if line.dashed {
                 for run in &runs {
-                    stroke_dashed(window, run, line.width, ink(line.color, line.alpha), [5.0, 4.0]);
+                    stroke_dashed(
+                        window,
+                        run,
+                        line.width,
+                        ink(line.color, line.alpha),
+                        [5.0, 4.0],
+                    );
                 }
             } else {
                 stroke_runs(window, &runs, line.width + 2.2, ink(c.canvas, 0.4));
@@ -739,13 +771,28 @@ pub(crate) fn paint(
         }
         for (at, color, hot) in &overlay.knobs {
             let p = to_point(*at);
-            dot(window, p, if *hot { 17.0 } else { 15.0 }, ink(c.canvas, 0.5));
+            dot(
+                window,
+                p,
+                if *hot { 17.0 } else { 15.0 },
+                ink(c.canvas, 0.5),
+            );
             dot(window, p, if *hot { 13.0 } else { 11.0 }, ink(*color, 1.0));
-            ring(window, p, if *hot { 6.5 } else { 5.5 }, 1.4, ink(c.overlay, 0.95));
+            ring(
+                window,
+                p,
+                if *hot { 6.5 } else { 5.5 },
+                1.4,
+                ink(c.overlay, 0.95),
+            );
         }
         for paint_label in &overlay.labels {
             let (text, background, border) = match paint_label.style {
-                LabelStyle::Invalid => (ink(c.danger, 1.0), ink(c.overlay, 0.97), Some(ink(c.danger, 1.0))),
+                LabelStyle::Invalid => (
+                    ink(c.danger, 1.0),
+                    ink(c.overlay, 0.97),
+                    Some(ink(c.danger, 1.0)),
+                ),
                 LabelStyle::Typed => (
                     ink(c.accent_text, 1.0),
                     ink(c.accent_soft, 0.97),
@@ -756,14 +803,32 @@ pub(crate) fn paint(
                     ink(c.overlay, 0.97),
                     Some(ink(c.accent_border, 1.0)),
                 ),
-                LabelStyle::Measured => (ink(c.text, 1.0), ink(c.overlay, 0.97), Some(gpui::rgba(c.hud_border))),
+                LabelStyle::Measured => (
+                    ink(c.text, 1.0),
+                    ink(c.overlay, 0.97),
+                    Some(gpui::rgba(c.hud_border)),
+                ),
             };
-            label(window, cx, &paint_label.text, to_point(paint_label.at), text, background, border, 11.5);
+            label(
+                window,
+                cx,
+                &paint_label.text,
+                to_point(paint_label.at),
+                text,
+                background,
+                border,
+                11.5,
+            );
         }
     });
 }
 
-fn paint_prism(overlay: &ToolOverlay, paint: &PrismPaint, projector: &Projector, window: &mut Window) {
+fn paint_prism(
+    overlay: &ToolOverlay,
+    paint: &PrismPaint,
+    projector: &Projector,
+    window: &mut Window,
+) {
     let prism = &*paint.prism;
     let n = prism.normal;
     let (lo, hi) = (paint.start.min(paint.end), paint.start.max(paint.end));
@@ -783,7 +848,11 @@ fn paint_prism(overlay: &ToolOverlay, paint: &PrismPaint, projector: &Projector,
             if !overlay.facing(normal, centroid) {
                 continue;
             }
-            if let Some(projected) = points.iter().map(|p| screen(*p)).collect::<Option<Vec<_>>>() {
+            if let Some(projected) = points
+                .iter()
+                .map(|p| screen(*p))
+                .collect::<Option<Vec<_>>>()
+            {
                 if emphasised {
                     moving.push(projected.clone());
                 }
@@ -850,7 +919,13 @@ fn paint_prism(overlay: &ToolOverlay, paint: &PrismPaint, projector: &Projector,
     let strength = 0.45 + 0.55 * paint.fill;
     for segment in &hidden {
         for run in projector.polyline(segment) {
-            stroke_dashed(window, &run, 1.0, ink(paint.color, 0.4 * strength), [3.0, 3.0]);
+            stroke_dashed(
+                window,
+                &run,
+                1.0,
+                ink(paint.color, 0.4 * strength),
+                [3.0, 3.0],
+            );
         }
     }
     let runs: Vec<Vec<Point<Pixels>>> = edges.iter().flat_map(|e| projector.polyline(e)).collect();
@@ -858,12 +933,18 @@ fn paint_prism(overlay: &ToolOverlay, paint: &PrismPaint, projector: &Projector,
     stroke_runs(window, &runs, 1.5, ink(paint.color, 0.95 * strength));
 }
 
-fn paint_lathe(overlay: &ToolOverlay, paint: &LathePaint, projector: &Projector, window: &mut Window) {
+fn paint_lathe(
+    overlay: &ToolOverlay,
+    paint: &LathePaint,
+    projector: &Projector,
+    window: &mut Window,
+) {
     let lathe = &*paint.lathe;
     let (origin, axis) = (lathe.axis_origin, lathe.axis_direction);
     let angle = paint.angle;
     let steps = ((angle.abs() / 7.5f32.to_radians()).ceil() as usize).clamp(4, 48);
-    let rotate = |p: Vec3, step: usize| rotate_about(p, origin, axis, angle * step as f32 / steps as f32);
+    let rotate =
+        |p: Vec3, step: usize| rotate_about(p, origin, axis, angle * step as f32 / steps as f32);
     let mut front: Vec<Vec<Point<Pixels>>> = Vec::new();
     let mut rings: Vec<Vec<Vec3>> = Vec::new();
     // Sparse loops keep the fill light on dense curves.
@@ -874,11 +955,20 @@ fn paint_lathe(overlay: &ToolOverlay, paint: &LathePaint, projector: &Projector,
         for k in 0..count {
             let (a, b) = (sampled[k], sampled[(k + 1) % count]);
             for step in 0..steps {
-                let quad = [rotate(a, step), rotate(b, step), rotate(b, step + 1), rotate(a, step + 1)];
+                let quad = [
+                    rotate(a, step),
+                    rotate(b, step),
+                    rotate(b, step + 1),
+                    rotate(a, step + 1),
+                ];
                 let normal = (quad[1] - quad[0]).cross(quad[3] - quad[0]);
                 let center = (quad[0] + quad[2]) * 0.5;
                 // Either side may face the viewer: the surface is thin.
-                if let Some(projected) = quad.iter().map(|p| projector.point(*p)).collect::<Option<Vec<_>>>() {
+                if let Some(projected) = quad
+                    .iter()
+                    .map(|p| projector.point(*p))
+                    .collect::<Option<Vec<_>>>()
+                {
                     let facing = overlay.facing(normal, center);
                     let mut projected = projected;
                     if !facing {
@@ -893,7 +983,8 @@ fn paint_lathe(overlay: &ToolOverlay, paint: &LathePaint, projector: &Projector,
             .filter(|&k| {
                 let n = lp.len();
                 let (a, b, c) = (lp[(k + n - 1) % n], lp[k], lp[(k + 1) % n]);
-                (b - a).normalize_or_zero().dot((c - b).normalize_or_zero()) < 25f32.to_radians().cos()
+                (b - a).normalize_or_zero().dot((c - b).normalize_or_zero())
+                    < 25f32.to_radians().cos()
             })
             .map(|k| lp[k])
             .collect();
@@ -941,11 +1032,30 @@ fn paint_arrow(arrow: &ArrowPaint, c: Colors, window: &mut Window) {
         to_point(neck - side * 7.0),
         to_point(arrow.tip),
     ];
-    stroke_runs(window, std::slice::from_ref(&triangle), 3.0, ink(c.canvas, 0.45));
-    fill_polygons(window, std::slice::from_ref(&triangle), ink(arrow.color, 1.0));
+    stroke_runs(
+        window,
+        std::slice::from_ref(&triangle),
+        3.0,
+        ink(c.canvas, 0.45),
+    );
+    fill_polygons(
+        window,
+        std::slice::from_ref(&triangle),
+        ink(arrow.color, 1.0),
+    );
     // The grip where the arrow meets the face.
     let grip = to_point(arrow.base);
-    dot(window, grip, if arrow.hot { 13.0 } else { 11.0 }, ink(c.canvas, 0.45));
-    dot(window, grip, if arrow.hot { 9.0 } else { 7.0 }, ink(arrow.color, 1.0));
+    dot(
+        window,
+        grip,
+        if arrow.hot { 13.0 } else { 11.0 },
+        ink(c.canvas, 0.45),
+    );
+    dot(
+        window,
+        grip,
+        if arrow.hot { 9.0 } else { 7.0 },
+        ink(arrow.color, 1.0),
+    );
     dot(window, grip, 3.0, ink(c.overlay, 1.0));
 }

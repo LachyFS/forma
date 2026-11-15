@@ -57,7 +57,6 @@ impl Operation {
         }
     }
 
-
     /// The feature operation: a new part starts its body with a join.
     pub(crate) fn feature(self) -> FeatureOperation {
         match self {
@@ -183,7 +182,8 @@ impl Regions {
     }
 
     pub(crate) fn to_world(&self, point: Vec2) -> Vec3 {
-        self.matrix.transform_point3(self.sketch.plane.to_world(point))
+        self.matrix
+            .transform_point3(self.sketch.plane.to_world(point))
     }
 
     /// Unit sketch normal in world space.
@@ -251,7 +251,6 @@ pub(crate) enum AxisSource {
     SketchX,
     SketchY,
 }
-
 
 /// An angle drag around the revolve axis.
 #[derive(Clone, Copy, Debug)]
@@ -365,7 +364,6 @@ impl SketchTool {
         self.manual_operation.is_none() && self.target.as_ref().is_some_and(|t| t.outward.is_some())
     }
 
-
     /// The typed value, if the entry parses: `Err` marks invalid text.
     pub(crate) fn typed(&self) -> Result<Option<f32>, ()> {
         let text = self.numeric.trim();
@@ -408,8 +406,8 @@ impl SketchTool {
     pub(crate) fn world_axis(&self) -> Option<(Vec3, Vec3)> {
         let axis = self.axis?;
         let origin = self.regions.to_world(axis.origin);
-        let direction = (self.regions.to_world(axis.origin + axis.direction) - origin)
-            .try_normalize()?;
+        let direction =
+            (self.regions.to_world(axis.origin + axis.direction) - origin).try_normalize()?;
         Some((origin, direction))
     }
 
@@ -619,7 +617,9 @@ impl SketchTool {
                         profiles: picks,
                         axis_origin: axis.origin * axis_scale,
                         axis_direction: axis.direction,
-                        angle: self.angle.clamp(-std::f32::consts::TAU, std::f32::consts::TAU),
+                        angle: self
+                            .angle
+                            .clamp(-std::f32::consts::TAU, std::f32::consts::TAU),
                         operation: op,
                     })
                 }
@@ -852,9 +852,8 @@ impl Studio {
             let target = self.infer_target(tool);
             if let Some(Tool::Sketch(tool)) = self.cad_tool.tool.as_mut() {
                 if target.is_none() {
-                    tool.manual_operation = tool
-                        .manual_operation
-                        .filter(|o| *o == Operation::NewPart);
+                    tool.manual_operation =
+                        tool.manual_operation.filter(|o| *o == Operation::NewPart);
                 }
                 tool.target = target;
             }
@@ -869,10 +868,7 @@ impl Studio {
             return;
         };
         let regions = tool.selected.len();
-        let picked = format!(
-            "{regions} region{}",
-            if regions == 1 { "" } else { "s" }
-        );
+        let picked = format!("{regions} region{}", if regions == 1 { "" } else { "s" });
         self.status = match tool.kind {
             SketchToolKind::Extrude if tool.distance == 0.0 => format!(
                 "Extrude · {picked} · Drag the arrow or a region, or type a distance · Return to apply"
@@ -948,7 +944,9 @@ impl Studio {
                     tool.manual_operation = Some(next);
                     self.sketch_tool_changed(false, cx);
                 } else {
-                    self.status = "Only a new part is possible here · Sketch on a part's face to join or cut".into();
+                    self.status =
+                        "Only a new part is possible here · Sketch on a part's face to join or cut"
+                            .into();
                 }
                 true
             }
@@ -1011,9 +1009,7 @@ impl Studio {
         };
         if let Ok(Some(value)) = tool.typed() {
             match tool.kind {
-                SketchToolKind::Extrude => {
-                    tool.distance = value * tool.side
-                }
+                SketchToolKind::Extrude => tool.distance = value * tool.side,
                 SketchToolKind::Revolve => tool.angle = value * tool.side,
             }
             tool.snapped_face = false;
@@ -1444,7 +1440,10 @@ impl Studio {
             });
         }
         self.cad_tool.last = Some(super::LastOperation::sketch(
-            &tool, applied, stamp, &self.scene,
+            &tool,
+            applied,
+            stamp,
+            &self.scene,
         ));
         self.status = match tool.kind {
             SketchToolKind::Extrude => format!(
@@ -1619,7 +1618,11 @@ mod tests {
         assert_eq!(regions.region_at(Vec2::new(3.0, 0.0)), None);
         // The ghost of the ring is the rectangle minus the disc.
         let area = 2.0 * 1.2 - std::f32::consts::PI * 0.09;
-        assert!((tool.prism.area() - area).abs() < 2.0e-3, "{}", tool.prism.area());
+        assert!(
+            (tool.prism.area() - area).abs() < 2.0e-3,
+            "{}",
+            tool.prism.area()
+        );
         assert!(tool.prism.normal.distance(Vec3::Y) < 1.0e-6);
     }
 
@@ -1702,7 +1705,12 @@ mod tests {
             }
         };
         // The bottom face is 2 below the sketch: a "through" snap target.
-        assert!(studio_target.heights.iter().any(|h| (h + 2.0).abs() < 1.0e-4));
+        assert!(
+            studio_target
+                .heights
+                .iter()
+                .any(|h| (h + 2.0).abs() < 1.0e-4)
+        );
         tool.target = Some(studio_target);
         tool.distance = 0.3;
         assert_eq!(tool.operation(), Operation::Join);
@@ -1777,14 +1785,27 @@ mod tests {
     fn sketches_move_into_uniformly_scaled_part_space() {
         let sketch = ring_sketch(SketchPlane::ground());
         let scale = Mat4::from_scale(Vec3::splat(2.0));
-        let (moved, picks, factor) = sketch_in_space(&sketch, &[Vec2::new(0.5, 0.0)], scale).unwrap();
+        let (moved, picks, factor) =
+            sketch_in_space(&sketch, &[Vec2::new(0.5, 0.0)], scale).unwrap();
         assert_eq!(factor, 2.0);
         assert_eq!(picks[0], Vec2::new(1.0, 0.0));
-        assert!(matches!(moved.entities[4].curve, SketchCurve::Circle { radius, .. } if (radius - 0.6).abs() < 1.0e-6));
+        assert!(
+            matches!(moved.entities[4].curve, SketchCurve::Circle { radius, .. } if (radius - 0.6).abs() < 1.0e-6)
+        );
         // Squashing the plane would make circles elliptical.
         let uneven = Mat4::from_scale(Vec3::new(2.0, 1.0, 1.0));
         assert!(sketch_in_space(&sketch, &[], uneven).is_err());
-        assert!(line_hits_box(Vec3::ZERO, Vec3::Y, Vec3::new(-1.0, 3.0, -1.0), Vec3::ONE * 5.0));
-        assert!(!line_hits_box(Vec3::new(9.0, 0.0, 0.0), Vec3::Y, Vec3::splat(-1.0), Vec3::ONE));
+        assert!(line_hits_box(
+            Vec3::ZERO,
+            Vec3::Y,
+            Vec3::new(-1.0, 3.0, -1.0),
+            Vec3::ONE * 5.0
+        ));
+        assert!(!line_hits_box(
+            Vec3::new(9.0, 0.0, 0.0),
+            Vec3::Y,
+            Vec3::splat(-1.0),
+            Vec3::ONE
+        ));
     }
 }

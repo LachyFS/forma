@@ -28,8 +28,8 @@ mod sketch_tool;
 pub(crate) mod smoke;
 
 pub(crate) use adjust::{AdjustParam, LastOperation};
-pub(crate) use hud::operation_icon as hud_operation_icon;
 pub(crate) use edit::{ChamferTool, EditState};
+pub(crate) use hud::operation_icon as hud_operation_icon;
 pub(crate) use push_pull::PushPullTool;
 pub(crate) use sketch_tool::{Operation, Regions, SketchTool, SketchToolKind};
 
@@ -37,7 +37,9 @@ use crate::app::{Command, EditMode, Studio};
 use forma_core::{Ray, Scene};
 use geometry::Prism;
 use glam::{Vec2, Vec3};
-use gpui::{Context, KeyDownEvent, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Window};
+use gpui::{
+    Context, KeyDownEvent, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Window,
+};
 use std::{cell::RefCell, rc::Rc};
 
 /// Pointer travel that turns a press into a drag.
@@ -130,6 +132,8 @@ pub(crate) struct RegionHover {
 }
 
 type Cached<K, T> = RefCell<Option<(K, Rc<T>)>>;
+/// Per-part topology for one scene revision.
+type TopologyCache = RefCell<Option<(u64, Vec<(u64, Rc<edit::Topology>)>)>>;
 
 #[derive(Default)]
 pub(crate) struct CadToolState {
@@ -144,11 +148,14 @@ pub(crate) struct CadToolState {
     /// Regions of every visible sketch, per scene and sketch revision.
     regions: Cached<(u64, u64), Vec<Rc<Regions>>>,
     /// B-rep edges and face data of part tessellations, per scene revision.
-    pub(crate) topology: RefCell<Option<(u64, Vec<(u64, Rc<edit::Topology>)>)>>,
+    pub(crate) topology: TopologyCache,
     /// Visible triangles and outline of highlighted part faces.
     #[allow(clippy::type_complexity)]
     pub(crate) faces: RefCell<
-        std::collections::HashMap<(u64, u32), (u64, forma_core::Camera, Rc<overlay::FaceHighlight>)>,
+        std::collections::HashMap<
+            (u64, u32),
+            (u64, forma_core::Camera, Rc<overlay::FaceHighlight>),
+        >,
     >,
     /// Pointer position of the last hover update, to skip redundant picks.
     last_hover: Option<Vec2>,
@@ -372,6 +379,26 @@ impl Studio {
         {
             return true;
         }
+        // Mesh tools on a part point at the B-rep equivalents.
+        if self.edit_mode == EditMode::Object
+            && self
+                .selected
+                .is_some_and(|id| self.scene.object(id).is_some_and(|o| o.is_part()))
+        {
+            let hint = match command {
+                Command::Extrude | Command::Inset => {
+                    Some("Parts push and pull faces · P, or Tab to select faces")
+                }
+                Command::Bevel => Some(
+                    "Parts chamfer edges · Tab, 2 for edges, select straight edges, then Ctrl+B",
+                ),
+                _ => None,
+            };
+            if let Some(hint) = hint {
+                self.status = hint.into();
+                return true;
+            }
+        }
         if matches!(command, Command::ToggleEdit | Command::SetEditMode(_))
             && self.edit_mode == EditMode::Object
             && let Some(id) = self.selected
@@ -443,7 +470,12 @@ impl Studio {
         }
     }
 
-    fn tool_key(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) -> bool {
+    fn tool_key(
+        &mut self,
+        event: &KeyDownEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
         let key = event.keystroke.key.as_str();
         let mods = event.keystroke.modifiers;
         // Undo, save and the palette go through `execute`, which cancels or
@@ -775,7 +807,13 @@ pub(crate) struct AxisDrag {
 
 impl AxisDrag {
     /// Starts a drag of `value` along the axis from a press at `screen`.
-    pub(crate) fn new(studio: &Studio, origin: Vec3, direction: Vec3, value: f32, screen: Vec2) -> Self {
+    pub(crate) fn new(
+        studio: &Studio,
+        origin: Vec3,
+        direction: Vec3,
+        value: f32,
+        screen: Vec2,
+    ) -> Self {
         let direction = direction.normalize_or_zero();
         let at_press = studio
             .tool_ray(screen)
@@ -925,10 +963,14 @@ mod tests {
 
     #[test]
     fn features_insert_at_the_rollback_marker() {
-        use forma_core::{FeatureKind, FeatureOperation, PartData, Placement, PrimitiveFeature, PrimitiveShape};
+        use forma_core::{
+            FeatureKind, FeatureOperation, PartData, Placement, PrimitiveFeature, PrimitiveShape,
+        };
         let box_kind = || {
             FeatureKind::Primitive(PrimitiveFeature {
-                shape: PrimitiveShape::Box { size: glam::Vec3::ONE },
+                shape: PrimitiveShape::Box {
+                    size: glam::Vec3::ONE,
+                },
                 placement: Placement::default(),
                 operation: FeatureOperation::Join,
             })

@@ -229,7 +229,13 @@ fn hover(s: &mut Studio, w: &mut Window, cx: &mut Context<Studio>, at: gpui::Poi
     );
 }
 
-fn press(s: &mut Studio, w: &mut Window, cx: &mut Context<Studio>, at: gpui::Point<gpui::Pixels>, shift: bool) {
+fn press(
+    s: &mut Studio,
+    w: &mut Window,
+    cx: &mut Context<Studio>,
+    at: gpui::Point<gpui::Pixels>,
+    shift: bool,
+) {
     hover(s, w, cx, at);
     s.mouse_down(
         &MouseDownEvent {
@@ -394,7 +400,12 @@ pub(crate) fn part_edit_faces(s: &mut Studio, w: &mut Window, cx: &mut Context<S
     );
     let front = Vec3::new(-2.0 + 0.3, 0.15, 0.25 + 0.75);
     press(s, w, cx, screen(s, front), true);
-    hover(s, w, cx, screen(s, Vec3::new(-2.0 + 0.27, 0.55, 0.25 + 0.27)));
+    hover(
+        s,
+        w,
+        cx,
+        screen(s, Vec3::new(-2.0 + 0.27, 0.55, 0.25 + 0.27)),
+    );
 }
 
 pub(crate) fn part_edit_edges(s: &mut Studio, w: &mut Window, cx: &mut Context<Studio>) {
@@ -403,7 +414,12 @@ pub(crate) fn part_edit_edges(s: &mut Studio, w: &mut Window, cx: &mut Context<S
     let side_top = Vec3::new(-2.0 + 1.1, 0.3, 0.25 + 0.1);
     press(s, w, cx, screen(s, front_top), false);
     press(s, w, cx, screen(s, side_top), true);
-    hover(s, w, cx, screen(s, Vec3::new(-2.0 + 0.96, 0.15, 0.25 + 0.75)));
+    hover(
+        s,
+        w,
+        cx,
+        screen(s, Vec3::new(-2.0 + 0.96, 0.15, 0.25 + 0.75)),
+    );
 }
 
 pub(crate) fn chamfer(s: &mut Studio, w: &mut Window, cx: &mut Context<Studio>) {

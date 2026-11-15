@@ -56,7 +56,13 @@ fn tool_palette(t: Colors, s: &Studio, cx: &mut Context<Studio>) -> Div {
         // B-rep component editing: faces push and pull, edges chamfer.
         palette
             .child(command_icon(
-                t, "rail-push-pull", Icon::PushPull, push_pull, pushing, TOOL, cx,
+                t,
+                "rail-push-pull",
+                Icon::PushPull,
+                push_pull,
+                pushing,
+                TOOL,
+                cx,
             ))
             .child(command_icon(
                 t,
@@ -90,7 +96,13 @@ fn tool_palette(t: Colors, s: &Studio, cx: &mut Context<Studio>) -> Div {
     } else {
         palette
             .child(command_icon(
-                t, "rail-push-pull", Icon::PushPull, push_pull, pushing, TOOL, cx,
+                t,
+                "rail-push-pull",
+                Icon::PushPull,
+                push_pull,
+                pushing,
+                TOOL,
+                cx,
             ))
             .child(command_icon(
                 t,

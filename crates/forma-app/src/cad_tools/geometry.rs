@@ -266,11 +266,13 @@ pub(crate) struct Prism {
 impl Prism {
     /// A prism over sketch regions: each region is an outer loop plus holes
     /// in plane coordinates.
-    pub(crate) fn from_regions(plane: &SketchPlane, matrix: Mat4, regions: &[Vec<Vec<Vec2>>]) -> Self {
+    pub(crate) fn from_regions(
+        plane: &SketchPlane,
+        matrix: Mat4,
+        regions: &[Vec<Vec<Vec2>>],
+    ) -> Self {
         let mut prism = Prism {
-            normal: matrix
-                .transform_vector3(plane.normal())
-                .normalize_or_zero(),
+            normal: matrix.transform_vector3(plane.normal()).normalize_or_zero(),
             ..Default::default()
         };
         for region in regions {
@@ -283,7 +285,9 @@ impl Prism {
             let base = prism.points.len() as u32;
             let mut offset = base;
             for polygon in std::iter::once(outer).chain(holes) {
-                prism.loops.push((offset..offset + polygon.len() as u32).collect());
+                prism
+                    .loops
+                    .push((offset..offset + polygon.len() as u32).collect());
                 prism.points.extend(
                     polygon
                         .iter()
@@ -612,14 +616,12 @@ pub(crate) fn weld(mesh: &Mesh) -> Vec<u32> {
         'search: for dx in -1..=1 {
             for dy in -1..=1 {
                 for dz in -1..=1 {
-                    if let Some(list) = grid.get(&(x + dx, y + dy, z + dz)) {
-                        if let Some(&j) = list
-                            .iter()
+                    if let Some(&j) = grid.get(&(x + dx, y + dy, z + dz)).and_then(|list| {
+                        list.iter()
                             .find(|&&j| mesh.positions[j as usize].distance(*p) <= tolerance)
-                        {
-                            found = Some(j);
-                            break 'search;
-                        }
+                    }) {
+                        found = Some(j);
+                        break 'search;
                     }
                 }
             }
@@ -673,9 +675,8 @@ pub(crate) fn brep_edges_welded(mesh: &Mesh, canon: &[u32]) -> Vec<BrepEdge> {
         at.entry(*b).or_default().push(i);
     }
     let continues = |vertex: u32, groups: (u32, u32)| -> bool {
-        at.get(&vertex).is_some_and(|edges| {
-            edges.len() == 2 && edges.iter().all(|&e| display[e].1 == groups)
-        })
+        at.get(&vertex)
+            .is_some_and(|edges| edges.len() == 2 && edges.iter().all(|&e| display[e].1 == groups))
     };
     let mut used = vec![false; display.len()];
     let mut result = Vec::new();
@@ -867,7 +868,10 @@ mod tests {
             .iter()
             .map(|t| {
                 let [a, b, c] = t.map(|i| points[i as usize]);
-                assert!(cross(a, b, c) > 0.0, "triangle {t:?} is not counter-clockwise");
+                assert!(
+                    cross(a, b, c) > 0.0,
+                    "triangle {t:?} is not counter-clockwise"
+                );
                 cross(a, b, c) * 0.5
             })
             .sum()
@@ -1024,7 +1028,10 @@ mod tests {
         let loops = chain_loops(&boundary);
         assert_eq!(loops.len(), 1);
         assert_eq!(loops[0].len(), 4);
-        let points: Vec<Vec3> = loops[0].iter().map(|&i| mesh.positions[i as usize]).collect();
+        let points: Vec<Vec3> = loops[0]
+            .iter()
+            .map(|&i| mesh.positions[i as usize])
+            .collect();
         assert_eq!(straight_edges(&points).len(), 4);
         // Two adjacent sides together are not planar, though each triangle is.
         let mut bent = faces.clone();
@@ -1035,12 +1042,19 @@ mod tests {
             resolve_group(&mesh, Vec3::new(0.3, 1.0, -0.2), Vec3::Y),
             Some(top)
         );
-        assert_eq!(resolve_group(&mesh, Vec3::new(0.3, 3.0, -0.2), Vec3::Y), None);
+        assert_eq!(
+            resolve_group(&mesh, Vec3::new(0.3, 3.0, -0.2), Vec3::Y),
+            None
+        );
     }
 
     #[test]
     fn collinear_runs_merge_into_straight_edges() {
-        let mut points = vec![Vec3::ZERO, Vec3::new(1.0, 0.0, 0.0), Vec3::new(2.0, 0.0, 0.0)];
+        let mut points = vec![
+            Vec3::ZERO,
+            Vec3::new(1.0, 0.0, 0.0),
+            Vec3::new(2.0, 0.0, 0.0),
+        ];
         points.extend([Vec3::new(2.0, 1.0, 0.0), Vec3::new(0.0, 1.0, 0.0)]);
         let edges = straight_edges(&points);
         assert_eq!(edges.len(), 4);
@@ -1116,11 +1130,15 @@ mod tests {
         // Outside the face's outline it does not count.
         assert!(find_coplanar_face(&on_top, &[Vec3::new(3.0, 2.0, 0.0)], &parts).is_none());
         assert!(
-            find_coplanar_face(&SketchPlane::ground(), &[Vec3::new(0.2, 0.0, 0.1)], &[(
-                7,
-                Mat4::from_translation(Vec3::new(0.0, 3.0, 0.0)),
-                &grouped
-            )])
+            find_coplanar_face(
+                &SketchPlane::ground(),
+                &[Vec3::new(0.2, 0.0, 0.1)],
+                &[(
+                    7,
+                    Mat4::from_translation(Vec3::new(0.0, 3.0, 0.0)),
+                    &grouped
+                )]
+            )
             .is_none()
         );
         // A sketch facing down on the bottom face still finds it (outward −Y).

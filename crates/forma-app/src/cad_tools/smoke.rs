@@ -231,9 +231,15 @@ pub(crate) async fn check_cad_tools_workflow(
     let part = window.update(cx, |s, _, _| -> Result<u64> {
         ensure!(!s.cad_tool_active(), "Return did not commit Extrude");
         let id = s.selected.context("the new part is not selected")?;
-        let part = s.scene.object_part(id).context("Extrude did not make a part")?;
+        let part = s
+            .scene
+            .object_part(id)
+            .context("Extrude did not make a part")?;
         let FeatureKind::Extrude(extrude) = &part.features[0].kind else {
-            anyhow::bail!("the part's first feature is {}", part.features[0].kind.label());
+            anyhow::bail!(
+                "the part's first feature is {}",
+                part.features[0].kind.label()
+            );
         };
         ensure!(
             part.features.len() == 1
@@ -292,7 +298,9 @@ pub(crate) async fn check_cad_tools_workflow(
     keys(window, &["d"], cx).await?;
     settle_camera(window, cx).await?;
     window.update(cx, |s, _, _| -> Result<()> {
-        let frame = s.sketch_frame().context("D did not start Draw on the face")?;
+        let frame = s
+            .sketch_frame()
+            .context("D did not start Draw on the face")?;
         let session = s.sketch.session.as_ref().unwrap();
         ensure!(
             frame.plane.normal().distance(Vec3::Y) < 1.0e-4
@@ -332,7 +340,9 @@ pub(crate) async fn check_cad_tools_workflow(
             anyhow::bail!("E did not start Extrude on the face sketch");
         };
         ensure!(
-            tool.target.as_ref().is_some_and(|t| t.object == part && t.outward.is_some()),
+            tool.target
+                .as_ref()
+                .is_some_and(|t| t.object == part && t.outward.is_some()),
             "the face sketch did not target the part"
         );
         ensure!(

@@ -156,7 +156,9 @@ impl Studio {
                     tool.numeric.clone()
                 } else {
                     match tool.kind {
-                        SketchToolKind::Extrude => crate::sketch::overlay::format_length(tool.distance),
+                        SketchToolKind::Extrude => {
+                            crate::sketch::overlay::format_length(tool.distance)
+                        }
                         SketchToolKind::Revolve => super::format_sweep(tool.angle),
                     }
                 };
@@ -203,19 +205,21 @@ impl Studio {
                         )),
                     SketchToolKind::Revolve => {
                         let axis = tool.axis.map(|a| a.source);
-                        let mut choice = |id: &'static str, label: &'static str, y: bool, active: bool| {
-                            on_command(
-                                segment(t, id, active, H_SM)
-                                    .child(label)
-                                    .tooltip(command_tip(
-                                        t,
-                                        Command::CadTool(ToolCommand::SketchAxis(y)),
-                                    )),
-                                Command::CadTool(ToolCommand::SketchAxis(y)),
-                                cx,
-                            )
-                        };
-                        let line_active = matches!(axis, Some(super::sketch_tool::AxisSource::Line(_)));
+                        let mut choice =
+                            |id: &'static str, label: &'static str, y: bool, active: bool| {
+                                on_command(
+                                    segment(t, id, active, H_SM)
+                                        .child(label)
+                                        .tooltip(command_tip(
+                                            t,
+                                            Command::CadTool(ToolCommand::SketchAxis(y)),
+                                        )),
+                                    Command::CadTool(ToolCommand::SketchAxis(y)),
+                                    cx,
+                                )
+                            };
+                        let line_active =
+                            matches!(axis, Some(super::sketch_tool::AxisSource::Line(_)));
                         bar.child(
                             row()
                                 .gap(px(SP_1_5))
@@ -277,7 +281,11 @@ impl Studio {
                 let (detail, value) = match &tool.active {
                     Some(active) => {
                         let face = &active.faces[0];
-                        let kind = if face.is_part() { "Part face" } else { "Mesh face" };
+                        let kind = if face.is_part() {
+                            "Part face"
+                        } else {
+                            "Mesh face"
+                        };
                         let detail = if active.faces.len() > 1 {
                             format!("{} faces", active.faces.len())
                         } else {
@@ -299,7 +307,11 @@ impl Studio {
                             Some(face) if !face.planar => "Curved faces can't be pushed".to_owned(),
                             Some(face) => format!(
                                 "{} · {}",
-                                if face.is_part() { "Part face" } else { "Mesh face" },
+                                if face.is_part() {
+                                    "Part face"
+                                } else {
+                                    "Mesh face"
+                                },
                                 face.name
                             ),
                             None => "Point at a flat face".to_owned(),
@@ -337,7 +349,11 @@ impl Studio {
                             .child(value_well(t, text, typing, invalid, 84.))
                             .child(vrule(t, 18.))
                             .when(!modal && !compact, |d| {
-                                d.child(div().px(px(SP_1)).child(hint(t, "Drag", "Apply on release")))
+                                d.child(div().px(px(SP_1)).child(hint(
+                                    t,
+                                    "Drag",
+                                    "Apply on release",
+                                )))
                             })
                             .child(done_cancel(t, compact, cx));
                     }
@@ -507,17 +523,15 @@ impl Studio {
             ));
         }
         if last.edge_count() == 0 {
-            panel = panel.child(
-                row().pt(px(SP_1)).child(spacer()).child(command_button(
-                    t,
-                    "adjust-flip",
-                    "Flip",
-                    Some(Icon::FlipDirection),
-                    Command::CadTool(ToolCommand::AdjustFlip),
-                    Tone::Ghost,
-                    cx,
-                )),
-            );
+            panel = panel.child(row().pt(px(SP_1)).child(spacer()).child(command_button(
+                t,
+                "adjust-flip",
+                "Flip",
+                Some(Icon::FlipDirection),
+                Command::CadTool(ToolCommand::AdjustFlip),
+                Tone::Ghost,
+                cx,
+            )));
         }
         Some(panel.into_any_element())
     }
@@ -578,6 +592,7 @@ impl Studio {
                 ("Esc", "Cancel"),
                 ("Ctrl", "Free"),
             ]),
+            None if self.active_field.is_some() => None,
             None if self.part_editing().is_some() => Some(vec![
                 ("2 3", "Edge · Face"),
                 ("Click", "Select"),
@@ -597,11 +612,21 @@ impl Studio {
         }
     }
 
-    /// Status bar selection readout for part editing.
+    /// Status bar selection readout for the tools and part editing.
     pub(crate) fn cad_tool_summary(&self) -> Option<String> {
-        if self.cad_tool.active() {
-            return None;
+        let plural =
+            |n: usize, one: &str, many: &str| format!("{n} {}", if n == 1 { one } else { many });
+        match self.cad_tool.tool.as_ref() {
+            Some(Tool::Sketch(tool)) => Some(format!(
+                "{} picked",
+                plural(tool.selected.len(), "region", "regions")
+            )),
+            Some(Tool::PushPull(tool)) => tool
+                .active
+                .as_ref()
+                .map(|a| plural(a.faces.len(), "face", "faces")),
+            Some(Tool::Chamfer(tool)) => Some(plural(tool.edges.len(), "edge", "edges")),
+            None => self.part_edit_summary(),
         }
-        self.part_edit_summary()
     }
 }

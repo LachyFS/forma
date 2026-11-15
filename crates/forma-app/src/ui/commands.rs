@@ -211,12 +211,20 @@ fn tool_info(command: ToolCommand) -> CommandInfo {
                 explained_keyed("Intersect", "Keep only where they overlap", "I")
             }
         },
-        ToolCommand::ToggleSymmetric => {
-            explained_keyed("Symmetric", "Extend equally to both sides of the sketch", "S")
+        ToolCommand::ToggleSymmetric => explained_keyed(
+            "Symmetric",
+            "Extend equally to both sides of the sketch",
+            "S",
+        ),
+        ToolCommand::Flip => {
+            explained_keyed("Flip direction", "Extrude or turn the other way", "F")
         }
-        ToolCommand::Flip => explained_keyed("Flip direction", "Extrude or turn the other way", "F"),
-        ToolCommand::SketchAxis(false) => explained_keyed("Sketch X axis", "Revolve around the sketch's x axis", "X"),
-        ToolCommand::SketchAxis(true) => explained_keyed("Sketch Y axis", "Revolve around the sketch's y axis", "Y"),
+        ToolCommand::SketchAxis(false) => {
+            explained_keyed("Sketch X axis", "Revolve around the sketch's x axis", "X")
+        }
+        ToolCommand::SketchAxis(true) => {
+            explained_keyed("Sketch Y axis", "Revolve around the sketch's y axis", "Y")
+        }
         ToolCommand::AdjustOperation(operation) => match operation {
             Operation::Cut => info("Cut instead"),
             Operation::Intersect => info("Intersect instead"),
