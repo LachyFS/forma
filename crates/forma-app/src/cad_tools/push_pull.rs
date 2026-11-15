@@ -41,6 +41,8 @@ pub(crate) struct FacePick {
     pub planar: bool,
     /// World length of one object-space unit along the normal.
     pub scale: f32,
+    /// Scene revision the polygon or group index refers to.
+    pub revision: u64,
 }
 
 impl FacePick {
@@ -138,9 +140,9 @@ impl Studio {
     /// same face (so hover does not rebuild outlines every move).
     pub(crate) fn pick_face(&self, screen: Vec2, previous: Option<&FacePick>) -> Option<FacePick> {
         let ray = self.tool_ray(screen)?;
-        let hit = self.scene.pick(ray)?;
-        let object = self.scene.object(hit.object_id)?;
-        let instance = self.scene.mesh_instance(hit.object_id)?;
+        let hit = self.pick_index(None).pick(ray)?;
+        let object = self.scene.object(hit.object)?;
+        let instance = self.scene.mesh_instance(hit.object)?;
         let matrix = instance.world_transform;
         if !matrix.is_finite() || matrix.determinant().abs() < 1.0e-12 {
             return None;
@@ -156,7 +158,8 @@ impl Studio {
             hit.face as u32
         };
         if let Some(previous) = previous
-            && previous.object == hit.object_id
+            && previous.revision == self.scene_revision
+            && previous.object == hit.object
             && match previous.kind {
                 FaceKind::Part { group: g, .. } => is_part && g == group,
                 FaceKind::Mesh { face } => !is_part && face == hit.face,
@@ -191,7 +194,7 @@ impl Studio {
         let scale = matrix.transform_vector3(local_normal).length().max(1.0e-9);
         let prism = face_prism(mesh, &faces, matrix, world_normal);
         Some(FacePick {
-            object: hit.object_id,
+            object: hit.object,
             name: object.name.clone(),
             kind,
             normal: world_normal,
@@ -199,6 +202,7 @@ impl Studio {
             prism: Rc::new(prism),
             planar: plane.is_some(),
             scale,
+            revision: self.scene_revision,
         })
     }
 
@@ -289,6 +293,7 @@ impl Studio {
             prism: Rc::new(face_prism(mesh, &faces, matrix, world_normal)),
             planar: plane.is_some(),
             scale: matrix.transform_vector3(local_normal).length().max(1.0e-9),
+            revision: self.scene_revision,
         })
     }
 
@@ -316,6 +321,20 @@ impl Studio {
         let Some(Tool::PushPull(tool)) = self.cad_tool.tool.as_mut() else {
             return false;
         };
+        // Numeric entry first: unit letters (2in, 5cm, 1ft, 30deg) must never
+        // reach the tool's own letter keys.
+        if let Some(active) = tool.active.as_mut()
+            && !matches!(key, "escape" | "enter" | "backspace" | "delete" | "tab")
+        {
+            let starting = active.numeric.is_empty();
+            if super::type_numeric(&mut active.numeric, character) {
+                if starting {
+                    active.side = super::side_of(active.distance);
+                }
+                apply_typed(active);
+                return true;
+            }
+        }
         match key {
             "escape" => {
                 if let Some(active) = tool.active.as_mut() {
@@ -357,25 +376,13 @@ impl Studio {
                 active.distance = -active.distance;
                 true
             }
-            "g" | "r" | "s" | "e" | "i" | "b" => {
-                // Other tools take over.
+            "g" | "r" | "s" | "e" | "i" | "b" if !event.is_held => {
+                // Another tool takes over: end this one and let the key
+                // through (see `tool_key`).
                 self.cancel_cad_tool(cx);
                 false
             }
-            _ => match tool.active.as_mut() {
-                Some(active) => {
-                    let starting = active.numeric.is_empty();
-                    let typed = super::type_numeric(&mut active.numeric, character);
-                    if typed && starting {
-                        active.side = super::side_of(active.distance);
-                    }
-                    if typed {
-                        apply_typed(active);
-                    }
-                    typed
-                }
-                None => false,
-            },
+            _ => false,
         }
     }
 
@@ -675,6 +682,16 @@ impl Studio {
         self.history.checkpoint_owned(before);
         self.dirty = true;
         self.cad.announce = true;
+        // Every face of one part shares the part's final content: each
+        // ghost waits for that stamp, not the one after its own feature.
+        let final_stamps = |scene: &forma_core::Scene, ghost: &mut PendingGhost| {
+            if let Some(part) = scene.part(ghost.part) {
+                ghost.stamp = part.stamp;
+            }
+        };
+        for ghost in &mut pending {
+            final_stamps(&self.scene, ghost);
+        }
         self.cad_tool.pending.extend(pending);
         self.cad_tool.last = super::LastOperation::push_pull(
             &active,
@@ -683,6 +700,7 @@ impl Studio {
             mesh_record,
             &self.scene,
             self.edit_mode,
+            self.history_version(),
         );
         if self.part_editing().is_none_or(|id| id != first.object) {
             self.select_objects([first.object].into_iter().collect(), Some(first.object));
@@ -747,9 +765,20 @@ pub(crate) fn push_mesh_face(
     let neighbours: Vec<usize> = (0..mesh.faces.len())
         .filter(|&f| f != face && mesh.faces[f].iter().any(|i| moving.contains(i)))
         .collect();
-    let slides = neighbours
-        .iter()
-        .all(|&f| mesh.face_normal(f).dot(normal).abs() < 1.0e-4);
+    // Sliding needs walls to stretch: at least one face sharing an edge. A
+    // lone polygon (a plane) is extruded instead.
+    let edge = |a: u32, b: u32| (a.min(b), a.max(b));
+    let edges: BTreeSet<(u32, u32)> = (0..polygon.len())
+        .map(|k| edge(polygon[k], polygon[(k + 1) % polygon.len()]))
+        .collect();
+    let walls = neighbours.iter().any(|&f| {
+        let other = &mesh.faces[f];
+        (0..other.len()).any(|k| edges.contains(&edge(other[k], other[(k + 1) % other.len()])))
+    });
+    let slides = walls
+        && neighbours
+            .iter()
+            .all(|&f| mesh.face_normal(f).dot(normal).abs() < 1.0e-4);
     if !slides {
         let faces: BTreeSet<usize> = [face].into_iter().collect();
         return mesh.extrude_region(&faces, offset);
@@ -878,6 +907,13 @@ mod tests {
         assert!((geometry::mesh_volume(&pushed) - 6.0).abs() < 1.0e-5);
         // Pushing through the bottom is refused.
         assert!(push_mesh_face(&mut cube.clone(), top, Vec3::Y * -2.5).is_err());
+        // A lone polygon has no walls to stretch: it is extruded, not slid
+        // (regression: the reviewer's plane slid off on its own).
+        let plane = Mesh::primitive(Primitive::Plane);
+        let mut pulled = plane.clone();
+        push_mesh_face(&mut pulled, 0, plane.face_normal(0) * 0.5).unwrap();
+        assert_eq!(pulled.faces.len(), plane.faces.len() + 4);
+        assert_eq!(&pulled.positions[..4], &plane.positions[..]);
         // A face whose neighbours are not along the move grows walls.
         let mut tilted = cube.clone();
         for p in &mut tilted.positions {

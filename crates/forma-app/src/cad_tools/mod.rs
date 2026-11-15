@@ -4,11 +4,11 @@
 //! last operation" panel.
 //!
 //! Every tool previews instantly with an in-app ghost (no kernel call while
-//! the pointer moves), then hands one feature to the kernel worker. Sessions
-//! that stay open after a drag (Extrude, Revolve) apply their candidate
-//! feature to a live copy of the scene on release, so the real regenerated
-//! result appears before committing; `Session::before` restores the scene
-//! on cancel and is the single undo checkpoint on commit.
+//! the pointer moves), then hands one feature to the kernel worker. Extrude
+//! and Revolve stay open after a drag; on release their candidate feature is
+//! regenerated under a reserved worker job and composed into the renderer's
+//! snapshot only (`render_scene`), so the real result appears before
+//! committing while the document, saves and undo history never see it.
 //!
 //! Hooks other code calls:
 //! - `Studio::cad_tool_key` / `cad_tool_mouse_down|move|up` from the viewport
@@ -19,10 +19,12 @@
 //! - `Studio::cad_tool_hints` / `cad_tool_summary` from the status bar.
 mod adjust;
 pub(crate) mod demo;
+mod earcut;
 mod edit;
 pub(crate) mod geometry;
 mod hud;
 pub(crate) mod overlay;
+mod pick;
 mod push_pull;
 mod sketch_tool;
 pub(crate) mod smoke;
@@ -34,7 +36,7 @@ pub(crate) use push_pull::PushPullTool;
 pub(crate) use sketch_tool::{Operation, Regions, SketchTool, SketchToolKind};
 
 use crate::app::{Command, EditMode, Studio};
-use forma_core::{Ray, Scene};
+use forma_core::Ray;
 use geometry::Prism;
 use glam::{Vec2, Vec3};
 use gpui::{
@@ -86,31 +88,40 @@ pub(crate) enum Tool {
     Chamfer(Box<ChamferTool>),
 }
 
-/// A scene edit in progress that previews through the kernel before it is
-/// committed: the scene before the tool started, and the candidate applied
-/// to the live scene (if any).
-pub(crate) struct Session {
-    pub before: Scene,
-    pub preview: Option<Preview>,
+/// Worker job ids at or above this are display-only previews, never parts
+/// of the document (whose part ids are small).
+const PREVIEW_JOBS: u64 = 1 << 62;
+
+/// The worker job id previewing a candidate for part `part`.
+pub(crate) fn preview_job(part: u64) -> u64 {
+    PREVIEW_JOBS | part
 }
 
-impl Session {
-    pub(crate) fn new(scene: &Scene) -> Self {
-        Self {
-            before: scene.clone(),
-            preview: None,
-        }
-    }
+/// Whether a regeneration result belongs to a preview.
+pub(crate) fn is_preview_job(id: u64) -> bool {
+    id >= PREVIEW_JOBS
 }
 
-/// The candidate feature currently applied to the live scene.
-#[derive(Clone, Debug, PartialEq)]
+/// A candidate feature the worker regenerates for display only. It lives in
+/// the tool, never in the document; `Studio::render_scene` composes it into
+/// what the renderer draws.
+#[derive(Clone, Debug)]
 pub(crate) struct Preview {
-    /// Parameters the preview was built from; unchanged parameters reuse it.
+    /// Parameters the candidate was built from.
     pub key: String,
-    pub object: u64,
-    pub part: u64,
+    pub job: u64,
     pub feature: u64,
+    pub stamp: u64,
+    pub outcome: Option<PreviewOutcome>,
+}
+
+/// What the worker returned for a preview.
+#[derive(Clone, Debug)]
+pub(crate) struct PreviewOutcome {
+    pub mesh: Option<forma_core::Mesh>,
+    pub issues: Vec<forma_core::FeatureIssue>,
+    /// The regeneration failed outright (`issues` says why).
+    pub failed: bool,
 }
 
 /// A committed operation whose kernel result has not arrived yet: its ghost
@@ -129,6 +140,8 @@ pub(crate) struct PendingGhost {
 pub(crate) struct RegionHover {
     pub object: u64,
     pub profile: usize,
+    /// Scene revision of the region sets `profile` indexes.
+    pub revision: u64,
 }
 
 type Cached<K, T> = RefCell<Option<(K, Rc<T>)>>;
@@ -136,6 +149,16 @@ type Cached<K, T> = RefCell<Option<(K, Rc<T>)>>;
 pub(crate) type FaceCacheEntry = (u64, forma_core::Camera, bool, Rc<overlay::FaceHighlight>);
 /// Per-part topology for one scene revision.
 type TopologyCache = RefCell<Option<(u64, Vec<(u64, Rc<edit::Topology>)>)>>;
+
+/// Scene revision, the one object covered (or all), and the index.
+type CachedPick = (u64, Option<u64>, Rc<pick::PickIndex>);
+/// (scene revision, part, face selection) → resolved face groups.
+type ResolvedFaces = (
+    (u64, u64, Vec<forma_core::FaceRef>),
+    Vec<(u32, forma_core::FaceRef)>,
+);
+/// (scene revision, part, edge selection) → topology edge indices.
+type ResolvedEdges = ((u64, u64, Vec<edit::EdgeSelection>), Vec<usize>);
 
 #[derive(Default)]
 pub(crate) struct CadToolState {
@@ -154,6 +177,11 @@ pub(crate) struct CadToolState {
     /// Visible triangles and outline of highlighted part faces, per scene
     /// revision and camera, and whether the mask is refined.
     pub(crate) faces: RefCell<std::collections::HashMap<(u64, u32), FaceCacheEntry>>,
+    /// Hover picking hierarchy for one scene revision.
+    pick: RefCell<Option<CachedPick>>,
+    /// Resolved part-edit selections, per scene revision and selection.
+    pub(crate) resolved_faces: RefCell<Option<ResolvedFaces>>,
+    pub(crate) resolved_edges: RefCell<Option<ResolvedEdges>>,
     /// Pointer position of the last hover update, to skip redundant picks.
     last_hover: Option<Vec2>,
 }
@@ -197,6 +225,28 @@ impl Studio {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // Commands of the running tool keep it; anything else (another tool,
+        // Sketch on face) ends it first.
+        let keeps = matches!(
+            (self.cad_tool.tool.as_ref(), command),
+            (None, _)
+                | (
+                    Some(Tool::Sketch(_)),
+                    ToolCommand::Extrude
+                        | ToolCommand::Revolve
+                        | ToolCommand::SetOperation(_)
+                        | ToolCommand::ToggleSymmetric
+                        | ToolCommand::SketchAxis(_),
+                )
+                | (Some(Tool::PushPull(_)), ToolCommand::PushPull)
+                | (
+                    _,
+                    ToolCommand::Done | ToolCommand::Cancel | ToolCommand::Flip
+                )
+        );
+        if !keeps {
+            self.cancel_cad_tool(cx);
+        }
         match command {
             ToolCommand::Extrude | ToolCommand::Revolve => {
                 let kind = if command == ToolCommand::Extrude {
@@ -298,12 +348,11 @@ impl Studio {
             return;
         };
         self.cad_tool.preview_token += 1;
-        // Push/Pull and Chamfer preview with ghosts only; Extrude and
-        // Revolve may have applied a kernel preview to the live scene.
+        // The document was never touched; only the renderer's snapshot
+        // carries a kernel preview.
         if let Tool::Sketch(tool) = tool
-            && tool.session.preview.is_some()
+            && tool.preview.is_some()
         {
-            self.replace_scene(tool.session.before);
             self.invalidate(true, cx);
         }
         self.status = "Cancelled".into();
@@ -485,6 +534,10 @@ impl Studio {
             cx.notify();
             return true;
         }
+        // The tool ended itself so another can take the key.
+        if !self.cad_tool.active() {
+            return false;
+        }
         // View and shading keys keep working while a tool runs.
         if matches!(
             key,
@@ -578,6 +631,7 @@ impl Studio {
                     RegionHover {
                         object: regions.object,
                         profile,
+                        revision: self.scene_revision,
                     },
                     world,
                 ));
@@ -747,11 +801,37 @@ impl Studio {
         }
     }
 
-    /// Swaps in a scene built from a session's starting point, keeping the
-    /// live view: the camera may have moved since the tool started.
-    pub(crate) fn replace_scene(&mut self, mut scene: Scene) {
-        scene.camera = self.scene.camera;
-        self.scene = scene;
+    /// Forgets every tool state tied to the current document. Called when a
+    /// new or opened project (or an import) replaces it: ids in the old
+    /// state would name other objects.
+    pub(crate) fn reset_cad_tools(&mut self) {
+        let state = &mut self.cad_tool;
+        state.tool = None;
+        state.last = None;
+        state.pending.clear();
+        state.edit = EditState::default();
+        state.region_hover = None;
+        state.preview_token += 1;
+    }
+
+    /// The hover picking hierarchy for this scene revision, covering
+    /// `object` only when given (built on first use, then reused per move).
+    pub(crate) fn pick_index(&self, object: Option<u64>) -> Rc<pick::PickIndex> {
+        let mut cache = self.cad_tool.pick.borrow_mut();
+        if let Some((revision, only, index)) = cache.as_ref()
+            && *revision == self.scene_revision
+            && *only == object
+        {
+            return index.clone();
+        }
+        let index = Rc::new(pick::PickIndex::new(&self.scene, object));
+        *cache = Some((self.scene_revision, object, index.clone()));
+        index
+    }
+
+    /// A counter that changes with every undo step (checkpoint, undo, redo).
+    pub(crate) fn history_version(&self) -> u64 {
+        self.history.version()
     }
 
     /// Removes pending ghosts whose part has been regenerated or changed.
@@ -802,6 +882,14 @@ pub(crate) struct AxisDrag {
     pub start_value: f32,
     /// Screen direction and world units per pixel, for axes seen end on.
     pub fallback: Option<(Vec2, f32)>,
+    /// Furthest the value may move from `start_value`: an axis seen nearly
+    /// end-on maps tiny pointer moves to huge distances.
+    pub reach: f32,
+}
+
+/// `value` kept within `reach` of `start`.
+pub(crate) fn bounded_drag(value: f32, start: f32, reach: f32) -> f32 {
+    value.clamp(start - reach, start + reach)
 }
 
 impl AxisDrag {
@@ -830,6 +918,8 @@ impl AxisDrag {
                 Some((toward, studio.world_per_pixel(origin)))
             }
         };
+        // Relative to what is on screen: a few view depths at most.
+        let reach = studio.scene.camera.distance.max(1.0e-3) * 4.0;
         Self {
             origin,
             direction,
@@ -838,16 +928,19 @@ impl AxisDrag {
             started: false,
             start_value: value,
             fallback,
+            reach,
         }
     }
 
     /// The dragged value at pointer position `screen`.
     pub(crate) fn value(&self, studio: &Studio, screen: Vec2) -> Option<f32> {
-        if let Some((toward, per_pixel)) = self.fallback {
-            return Some(self.start_value + (screen - self.press).dot(toward) * per_pixel);
-        }
-        let ray = studio.tool_ray(screen)?;
-        geometry::axis_parameter(self.origin, self.direction, ray).map(|t| t - self.grab)
+        let raw = if let Some((toward, per_pixel)) = self.fallback {
+            self.start_value + (screen - self.press).dot(toward) * per_pixel
+        } else {
+            let ray = studio.tool_ray(screen)?;
+            geometry::axis_parameter(self.origin, self.direction, ray)? - self.grab
+        };
+        Some(bounded_drag(raw, self.start_value, self.reach))
     }
 }
 
@@ -958,6 +1051,24 @@ mod tests {
         assert_eq!(0.2 * side_of(0.0), 0.2);
         assert_eq!(format_sweep(270f32.to_radians()), "270°");
         assert_eq!(format_sweep(-std::f32::consts::FRAC_PI_4), "-45°");
+    }
+
+    /// Regression (review): a pointer ray nearly parallel to the drag axis
+    /// produced distances around a kilometre.
+    #[test]
+    fn near_parallel_drags_stay_within_reach() {
+        // The pointer ray is 10 units off an axis that is 0.7° from it.
+        let ray = Ray {
+            origin: glam::Vec3::new(0.0, 10.0, 5.0),
+            direction: glam::Vec3::NEG_Z,
+        };
+        let raw =
+            geometry::axis_parameter(glam::Vec3::ZERO, glam::Vec3::new(0.0, -0.012, -1.0), ray)
+                .unwrap();
+        assert!(raw.abs() > 100.0, "the setup is ill-conditioned: {raw}");
+        let reach = 7.5 * 4.0;
+        assert_eq!(bounded_drag(raw, 0.2, reach), 0.2 + reach * raw.signum());
+        assert_eq!(bounded_drag(0.7, 0.2, reach), 0.7);
     }
 
     #[test]

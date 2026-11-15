@@ -68,6 +68,7 @@ pub(crate) fn snap_angle(angle: f32, step: f32) -> f32 {
 // Polygons and triangulation
 
 /// Twice the signed area: positive for counter-clockwise loops.
+#[cfg(test)]
 pub(crate) fn signed_area(points: &[Vec2]) -> f32 {
     let mut sum = 0.0;
     for (i, a) in points.iter().enumerate() {
@@ -77,173 +78,16 @@ pub(crate) fn signed_area(points: &[Vec2]) -> f32 {
     sum * 0.5
 }
 
+#[cfg(test)]
 fn cross(o: Vec2, a: Vec2, b: Vec2) -> f32 {
     (a - o).perp_dot(b - o)
 }
 
-fn inside_triangle(p: Vec2, a: Vec2, b: Vec2, c: Vec2) -> bool {
-    let (d0, d1, d2) = (cross(a, b, p), cross(b, c, p), cross(c, a, p));
-    let tolerance = -1.0e-12;
-    d0 >= tolerance && d1 >= tolerance && d2 >= tolerance
-}
-
-/// Triangulates a region: a counter-clockwise outer loop with clockwise holes
-/// (either winding is accepted and corrected). Holes are bridged into the
-/// outer loop (Eberly's method), then ears are clipped. Returns triangles as
-/// indices into the outer points followed by each hole's points, all wound
-/// counter-clockwise.
+/// Triangulates a region: an outer loop with holes, either winding (see
+/// [`super::earcut`]). Returns triangles as indices into the outer points
+/// followed by each hole's points, wound counter-clockwise.
 pub(crate) fn triangulate(outer: &[Vec2], holes: &[Vec<Vec2>]) -> Vec<[u32; 3]> {
-    let mut points: Vec<Vec2> = outer.to_vec();
-    let mut ring: Vec<u32> = (0..outer.len() as u32).collect();
-    if outer.len() < 3 {
-        return Vec::new();
-    }
-    if signed_area(outer) < 0.0 {
-        ring.reverse();
-    }
-    // Holes clockwise, merged right-most first so bridges never cross.
-    let mut hole_rings: Vec<Vec<u32>> = Vec::new();
-    for hole in holes.iter().filter(|h| h.len() >= 3) {
-        let start = points.len() as u32;
-        points.extend_from_slice(hole);
-        let mut indices: Vec<u32> = (start..start + hole.len() as u32).collect();
-        if signed_area(hole) > 0.0 {
-            indices.reverse();
-        }
-        hole_rings.push(indices);
-    }
-    hole_rings.sort_by(|a, b| {
-        let max = |r: &Vec<u32>| {
-            r.iter()
-                .map(|&i| points[i as usize].x)
-                .fold(f32::NEG_INFINITY, f32::max)
-        };
-        max(b).total_cmp(&max(a))
-    });
-    for hole in hole_rings {
-        bridge_hole(&points, &mut ring, &hole);
-    }
-    ear_clip(&points, ring)
-}
-
-/// Splices `hole` into `ring` through a mutually visible vertex pair.
-fn bridge_hole(points: &[Vec2], ring: &mut Vec<u32>, hole: &[u32]) {
-    let p = |i: u32| points[i as usize];
-    // The hole's right-most vertex.
-    let (m_index, &m) = hole
-        .iter()
-        .enumerate()
-        .max_by(|a, b| p(*a.1).x.total_cmp(&p(*b.1).x))
-        .unwrap();
-    let mp = p(m);
-    // Nearest ring edge hit by a ray from M toward +x.
-    let mut best: Option<(f32, usize)> = None;
-    for k in 0..ring.len() {
-        let (a, b) = (p(ring[k]), p(ring[(k + 1) % ring.len()]));
-        if (a.y > mp.y) == (b.y > mp.y) {
-            continue;
-        }
-        let x = a.x + (mp.y - a.y) * (b.x - a.x) / (b.y - a.y);
-        if x >= mp.x - 1.0e-9 && best.is_none_or(|(bx, _)| x < bx) {
-            best = Some((x, k));
-        }
-    }
-    let Some((hit_x, edge)) = best else {
-        // Degenerate input: bridge to the nearest ring vertex.
-        let nearest = (0..ring.len())
-            .min_by(|&a, &b| p(ring[a]).distance(mp).total_cmp(&p(ring[b]).distance(mp)))
-            .unwrap();
-        splice(ring, nearest, hole, m_index);
-        return;
-    };
-    let hit = Vec2::new(hit_x, mp.y);
-    let (a, b) = (edge, (edge + 1) % ring.len());
-    let mut candidate = if p(ring[a]).x > p(ring[b]).x { a } else { b };
-    // A reflex ring vertex inside triangle (M, hit, candidate) blocks the
-    // view; the one making the smallest angle with the ray is visible.
-    let c = p(ring[candidate]);
-    let (t0, t1, t2) = if cross(mp, hit, c) >= 0.0 {
-        (mp, hit, c)
-    } else {
-        (mp, c, hit)
-    };
-    let mut best_angle = f32::INFINITY;
-    for k in 0..ring.len() {
-        if k == candidate {
-            continue;
-        }
-        let v = p(ring[k]);
-        let previous = p(ring[(k + ring.len() - 1) % ring.len()]);
-        let next = p(ring[(k + 1) % ring.len()]);
-        let reflex = cross(previous, v, next) <= 0.0;
-        if reflex && v != mp && inside_triangle(v, t0, t1, t2) {
-            let offset = v - mp;
-            let angle = offset.y.abs().atan2(offset.x);
-            if angle < best_angle {
-                best_angle = angle;
-                candidate = k;
-            }
-        }
-    }
-    splice(ring, candidate, hole, m_index);
-}
-
-fn splice(ring: &mut Vec<u32>, at: usize, hole: &[u32], start: usize) {
-    let mut merged = Vec::with_capacity(ring.len() + hole.len() + 2);
-    merged.extend_from_slice(&ring[..=at]);
-    for k in 0..=hole.len() {
-        merged.push(hole[(start + k) % hole.len()]);
-    }
-    merged.extend_from_slice(&ring[at..]);
-    *ring = merged;
-}
-
-fn ear_clip(points: &[Vec2], mut ring: Vec<u32>) -> Vec<[u32; 3]> {
-    let p = |i: u32| points[i as usize];
-    let mut triangles = Vec::with_capacity(ring.len().saturating_sub(2));
-    let mut guard = 0;
-    while ring.len() > 3 && guard < ring.len() * ring.len() + 64 {
-        guard += 1;
-        let n = ring.len();
-        let mut clipped = false;
-        for k in 0..n {
-            let (ia, ib, ic) = (ring[(k + n - 1) % n], ring[k], ring[(k + 1) % n]);
-            let (a, b, c) = (p(ia), p(ib), p(ic));
-            let area = cross(a, b, c);
-            if area <= 1.0e-14 {
-                // Collinear spikes from bridges: drop them without a triangle.
-                if area.abs() <= 1.0e-14 && (a == c || (b - a).dot(c - b) < 0.0) {
-                    ring.remove(k);
-                    clipped = true;
-                    break;
-                }
-                continue;
-            }
-            let blocked = ring.iter().any(|&j| {
-                let q = p(j);
-                q != a && q != b && q != c && inside_triangle(q, a, b, c)
-            });
-            if !blocked {
-                triangles.push([ia, ib, ic]);
-                ring.remove(k);
-                clipped = true;
-                break;
-            }
-        }
-        if !clipped {
-            // Self-touching input: fan what remains rather than looping.
-            break;
-        }
-    }
-    if ring.len() >= 3 {
-        for k in 1..ring.len() - 1 {
-            let (a, b, c) = (ring[0], ring[k], ring[k + 1]);
-            if cross(p(a), p(b), p(c)) > 1.0e-14 {
-                triangles.push([a, b, c]);
-            }
-        }
-    }
-    triangles
+    super::earcut::triangulate(outer, holes)
 }
 
 // ---------------------------------------------------------------------------
@@ -522,25 +366,47 @@ pub(crate) fn straight_edges(points: &[Vec3]) -> Vec<(Vec3, Vec3)> {
 
 /// Picks the face-group polygon containing `point` (part space) whose plane
 /// matches `normal`, for re-finding a selected face after regeneration.
+#[cfg(test)]
 pub(crate) fn resolve_group(mesh: &Mesh, point: Vec3, normal: Vec3) -> Option<u32> {
+    resolve_groups(mesh, &[(point, normal)])[0]
+}
+
+/// [`resolve_group`] for several references in one pass over the mesh's
+/// triangles (selections are re-resolved after every regeneration).
+pub(crate) fn resolve_groups(mesh: &Mesh, references: &[(Vec3, Vec3)]) -> Vec<Option<u32>> {
     let size = mesh_extent(mesh).max(1.0e-6);
-    let mut best: Option<(f32, u32)> = None;
+    let mut best: Vec<Option<(f32, u32)>> = vec![None; references.len()];
+    if references.is_empty() {
+        return Vec::new();
+    }
     for (triangle, face) in mesh.triangles_with_faces() {
         let [a, b, c] = triangle.map(|i| mesh.positions[i as usize]);
         let n = (b - a).cross(c - a).normalize_or_zero();
-        if n.dot(normal) < 0.995 {
+        let Some(group) = mesh.face_group(face) else {
             continue;
-        }
-        let offset = (point - a).dot(n);
-        let projected = point - n * offset;
-        let lateral = projected.distance(closest_on_triangle(projected, a, b, c));
-        let score = lateral + offset.abs();
-        if best.is_none_or(|(s, _)| score < s) {
-            best = Some((score, mesh.face_group(face)?));
+        };
+        for (slot, (point, normal)) in best.iter_mut().zip(references) {
+            if n.dot(*normal) < 0.995 {
+                continue;
+            }
+            let offset = (*point - a).dot(n);
+            if offset.abs() > size * 1.0e-3 {
+                continue;
+            }
+            let projected = *point - n * offset;
+            let lateral = projected.distance(closest_on_triangle(projected, a, b, c));
+            let score = lateral + offset.abs();
+            if slot.is_none_or(|(s, _)| score < s) {
+                *slot = Some((score, group));
+            }
         }
     }
-    best.filter(|(score, _)| *score <= size * 1.0e-3)
-        .map(|(_, g)| g)
+    best.into_iter()
+        .map(|b| {
+            b.filter(|(score, _)| *score <= size * 1.0e-3)
+                .map(|(_, g)| g)
+        })
+        .collect()
 }
 
 fn mesh_extent(mesh: &Mesh) -> f32 {
@@ -963,6 +829,227 @@ mod tests {
         ];
         let triangles = triangulate(&l_shape, &[]);
         assert!((triangles_area(&l_shape, &triangles) - 3.0).abs() < 1.0e-5);
+    }
+
+    /// Deterministic xorshift for the property tests.
+    struct Rng(u64);
+    impl Rng {
+        fn next(&mut self) -> u64 {
+            self.0 ^= self.0 << 13;
+            self.0 ^= self.0 >> 7;
+            self.0 ^= self.0 << 17;
+            self.0
+        }
+        fn range(&mut self, lo: f32, hi: f32) -> f32 {
+            lo + (hi - lo) * ((self.next() >> 40) as f32 / (1u64 << 24) as f32)
+        }
+    }
+
+    /// Covered area and clockwise triangle count of a triangulation.
+    fn coverage(outer: &[Vec2], holes: &[Vec<Vec2>]) -> (f32, f32, usize) {
+        let triangles = triangulate(outer, holes);
+        let mut points = outer.to_vec();
+        for hole in holes {
+            points.extend_from_slice(hole);
+        }
+        let mut sum = 0.0;
+        let mut clockwise = 0;
+        for t in &triangles {
+            let [a, b, c] = t.map(|i| points[i as usize]);
+            let area = cross(a, b, c) * 0.5;
+            clockwise += usize::from(area < 0.0);
+            sum += area;
+        }
+        let expected = signed_area(outer).abs()
+            - holes
+                .iter()
+                .filter(|h| h.len() >= 3)
+                .map(|h| signed_area(h).abs())
+                .sum::<f32>();
+        (sum, expected, clockwise)
+    }
+
+    /// Regression (review): with two or more holes, bridges could be made to
+    /// the wrong copy of a vertex an earlier bridge duplicated, and the
+    /// fallback fanned overlapping triangles (11 of 712 two-hole cases, 63 of
+    /// 765 three-hole cases failed). Random star holes in random outer loops
+    /// must cover exactly the region's area with counter-clockwise triangles.
+    #[test]
+    fn random_regions_with_many_holes_cover_their_exact_area() {
+        let mut rng = Rng(0x9e37_79b9_7f4a_7c15);
+        let mut failures = Vec::new();
+        for case in 0..3000 {
+            let n = 8 + (rng.next() % 40) as usize;
+            let outer: Vec<Vec2> = (0..n)
+                .map(|i| {
+                    let a = (i as f32 + rng.range(-0.3, 0.3)) / n as f32 * TAU;
+                    Vec2::new(a.cos(), a.sin()) * rng.range(2.0, 4.0)
+                })
+                .collect();
+            let centres = [
+                Vec2::new(-0.9, 0.0),
+                Vec2::new(0.9, 0.0),
+                Vec2::new(0.0, 0.9),
+                Vec2::new(0.0, -0.9),
+            ];
+            let count = (rng.next() % 5) as usize;
+            let holes: Vec<Vec<Vec2>> = centres
+                .iter()
+                .take(count)
+                .map(|c| {
+                    // Jittered, evenly spread angles keep every gap below a
+                    // half turn, so the star is simple (sorted random angles
+                    // can leave a gap over 180° and cross themselves).
+                    let m = 3 + (rng.next() % 12) as usize;
+                    (0..m)
+                        .map(|k| {
+                            let a = (k as f32 + rng.range(-0.3, 0.3)) / m as f32 * TAU;
+                            *c + Vec2::new(a.cos(), a.sin()) * rng.range(0.1, 0.4)
+                        })
+                        .collect::<Vec<Vec2>>()
+                })
+                .filter(|h| h.len() >= 3)
+                .collect();
+            let (sum, expected, clockwise) = coverage(&outer, &holes);
+            if (sum - expected).abs() > expected * 1.0e-3 || clockwise > 0 {
+                failures.push((case, holes.len(), sum, expected, clockwise));
+            }
+        }
+        assert!(
+            failures.is_empty(),
+            "{} failures, first {:?}",
+            failures.len(),
+            &failures[..failures.len().min(5)]
+        );
+    }
+
+    /// Regression (review): a plate with four corner bolt holes covered
+    /// 15.01 instead of 7.22.
+    #[test]
+    fn plates_with_hole_patterns_triangulate_exactly() {
+        let circle = |c: Vec2, r: f32, n: usize| -> Vec<Vec2> {
+            (0..n)
+                .map(|i| c + Vec2::from_angle(i as f32 / n as f32 * TAU) * r)
+                .collect()
+        };
+        let rect = |w: f32, h: f32| {
+            vec![
+                Vec2::new(-w, -h),
+                Vec2::new(w, -h),
+                Vec2::new(w, h),
+                Vec2::new(-w, h),
+            ]
+        };
+        let layouts: Vec<(Vec<Vec2>, Vec<Vec<Vec2>>)> = vec![
+            (
+                rect(2.0, 1.0),
+                [(-1.5, -0.6), (1.5, -0.6), (1.5, 0.6), (-1.5, 0.6)]
+                    .iter()
+                    .map(|&(x, y)| circle(Vec2::new(x, y), 0.25, 48))
+                    .collect(),
+            ),
+            (
+                rect(1.0, 2.0),
+                [-1.0, 0.0, 1.0]
+                    .iter()
+                    .map(|&y| circle(Vec2::new(0.0, y), 0.3, 48))
+                    .collect(),
+            ),
+            (
+                rect(2.0, 1.5),
+                [
+                    (-1.2, -0.7),
+                    (0.0, -0.7),
+                    (1.2, -0.7),
+                    (-1.2, 0.7),
+                    (0.0, 0.7),
+                    (1.2, 0.7),
+                ]
+                .iter()
+                .map(|&(x, y)| circle(Vec2::new(x, y), 0.3, 40))
+                .collect(),
+            ),
+            (
+                circle(Vec2::ZERO, 2.0, 96),
+                (0..6)
+                    .map(|k| circle(Vec2::from_angle(k as f32 / 6.0 * TAU) * 1.4, 0.2, 32))
+                    .chain([circle(Vec2::ZERO, 0.6, 64)])
+                    .collect(),
+            ),
+            (
+                rect(2.0, 1.0),
+                vec![
+                    vec![
+                        Vec2::new(-1.5, -0.5),
+                        Vec2::new(-0.5, -0.5),
+                        Vec2::new(-0.5, 0.5),
+                        Vec2::new(-1.5, 0.5),
+                    ],
+                    vec![
+                        Vec2::new(0.5, -0.5),
+                        Vec2::new(1.5, -0.5),
+                        Vec2::new(1.5, 0.5),
+                        Vec2::new(0.5, 0.5),
+                    ],
+                ],
+            ),
+        ];
+        for (outer, holes) in layouts {
+            let (sum, expected, clockwise) = coverage(&outer, &holes);
+            assert!(
+                (sum - expected).abs() <= expected * 1.0e-4 && clockwise == 0,
+                "{} holes: {sum} vs {expected}",
+                holes.len()
+            );
+        }
+    }
+
+    /// Degenerate input terminates and never covers more than its area.
+    #[test]
+    fn degenerate_regions_terminate_without_overlap() {
+        let mut rng = Rng(12345);
+        for _ in 0..2000 {
+            let n = 3 + (rng.next() % 30) as usize;
+            let outer: Vec<Vec2> = (0..n)
+                .map(|_| {
+                    Vec2::new(
+                        (rng.range(-3.0, 3.0) * 2.0).round() / 2.0,
+                        (rng.range(-3.0, 3.0) * 2.0).round() / 2.0,
+                    )
+                })
+                .collect();
+            let holes: Vec<Vec<Vec2>> = (0..(rng.next() % 3))
+                .map(|_| {
+                    (0..3 + rng.next() % 5)
+                        .map(|_| Vec2::new(rng.range(-4.0, 4.0), rng.range(-4.0, 4.0)))
+                        .collect()
+                })
+                .collect();
+            let _ = triangulate(&outer, &holes);
+        }
+        assert!(triangulate(&[Vec2::NAN, Vec2::ONE, Vec2::X], &[]).is_empty());
+        let _ = triangulate(
+            &[Vec2::ZERO, Vec2::splat(f32::INFINITY), Vec2::X, Vec2::Y],
+            &[vec![Vec2::NAN; 3]],
+        );
+        // A hole touching the outer loop at a vertex.
+        let square = vec![
+            Vec2::ZERO,
+            Vec2::new(4.0, 0.0),
+            Vec2::new(4.0, 4.0),
+            Vec2::new(0.0, 4.0),
+        ];
+        let touching = vec![
+            Vec2::new(4.0, 2.0),
+            Vec2::new(3.0, 1.0),
+            Vec2::new(2.0, 2.0),
+            Vec2::new(3.0, 3.0),
+        ];
+        let (sum, expected, clockwise) = coverage(&square, &[touching]);
+        assert!(
+            (sum - expected).abs() < 1.0e-4 && clockwise == 0,
+            "{sum} vs {expected}"
+        );
     }
 
     #[test]

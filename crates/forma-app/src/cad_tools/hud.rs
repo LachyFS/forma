@@ -419,10 +419,11 @@ impl Studio {
         let Some(Tool::Sketch(tool)) = self.cad_tool.tool.as_ref() else {
             return None;
         };
-        let preview = tool.session.preview.as_ref()?;
-        let part = self.scene.part(preview.part)?;
-        let issue = part
-            .issues()
+        let preview = tool.preview.as_ref()?;
+        let issue = preview
+            .outcome
+            .as_ref()?
+            .issues
             .iter()
             .find(|i| i.feature == preview.feature || i.feature == 0)?;
         Some(if issue.suggestion.is_empty() {

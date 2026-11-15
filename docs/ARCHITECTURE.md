@@ -314,17 +314,25 @@ viewport canvas), `cad_tool_hud` and `adjust_panel` (the reserved slots), and
 `cad_tool_hints` / `cad_tool_summary` (the status bar).
 
 - **Ghosts, not kernel calls, during drags.** `geometry.rs` is pure: closest
-  point between the pointer ray and the drag axis, adaptive snapping, ear
-  clipping with hole bridging, and `Prism`/`Lathe` ghosts cached per pick (each
-  frame only offsets cached base points and projects them). Front faces of a
-  ghost are filled as one non-zero path, so overlaps tint once.
-- **Sessions.** Extrude and Revolve keep `Session::before`. On release (or
-  after typing settles) the candidate feature is applied to a copy of that
-  scene, so the worker regenerates the real result while the tool is still
-  open; starting another drag restores `before` first. Commit records `before`
-  as the one checkpoint; cancel restores it. Push/Pull and Chamfer commit on
-  release/click from ghost previews. Until a committed part's new stamp is
-  evaluated, its ghost stays (`PendingGhost`), so geometry never snaps back.
+  point between the pointer ray and the drag axis (clamped to a reach scaled
+  to the scene for near-parallel rays), adaptive snapping, and `Prism`/`Lathe`
+  ghosts cached per pick (each frame only offsets cached base points and
+  projects them). Regions with holes are triangulated by an earcut port
+  (`earcut.rs`, hole bridging, never overlapping fallback fans). Front faces of
+  a ghost are filled as one non-zero path, so overlaps tint once.
+- **Display-only kernel previews.** On release (or after typing settles)
+  Extrude and Revolve build the candidate part from the current document and
+  send it to the worker under a reserved job id (`preview_job`, above
+  `PREVIEW_JOBS`), so it never replaces the document's own regeneration
+  entry. The outcome (`PreviewOutcome`) is composed into the render snapshot
+  only (`render_scene`); the document, its history and every edit made while
+  the tool is open stay untouched. Commit rebuilds the feature on the current
+  document as one checkpoint and installs the preview's tessellation when it
+  matches; cancel just drops the preview. New/Open/Import, Draw and other tools
+  end the running tool first (`reset_cad_tools`, `cancel_cad_tool`). Push/Pull
+  and Chamfer commit on release/click from ghost previews. Until a committed
+  part's final stamp is evaluated, every ghost of that commit stays
+  (`PendingGhost`), so geometry never snaps back.
 - **Features.** New features go in at `timeline::marker` (keeping the marker
   after them) via `insert_feature`, carry `source` for sketch features, and map
   sketches into part space with `timeline::links::map_sketch`, exactly as
@@ -333,14 +341,22 @@ viewport canvas), `cad_tool_hud` and `adjust_panel` (the reserved slots), and
   the extrusion direction with its outward normal.
 - **Part edit mode** is component mode with a part active (`part_editing`).
   Selections are stored as `FaceRef`s and end-point/mid-point edge references
-  in part space and re-resolved after each regeneration. B-rep edges come from
-  the tessellation after welding positions (`geometry::weld`): part
-  tessellations repeat edge points per face group.
+  in part space and re-resolved once per scene revision (cached, one pass over
+  the triangles). Hovers carry the scene revision they were picked at and
+  expire with it, since undo or regeneration renumbers groups and edges. Face
+  hovers pick through a bounding volume hierarchy built once per revision
+  (`pick.rs`, only the edited part in part edit, occlusion through the shared
+  visibility query). B-rep edges come from the tessellation after welding
+  positions (`geometry::weld`): part tessellations repeat edge points per face
+  group. Sketch planes on part faces snap to the face group's exact plane
+  from the last regeneration's `FaceInfo` when it matches the fitted one.
 - **Adjust panel.** `LastOperation` records what was committed; panel fields
   are `Field::CadAdjust`, read and written through `timeline::params`, and
   amend the feature without a checkpoint (so undo removes the operation whole);
-  scrubs skip the usual release checkpoint. Any other command, selection
-  click, tool, or change to the object hides it.
+  scrubs skip the usual release checkpoint. It records `History::version()` at
+  commit and hides once anything else changes history (an inspector edit, undo,
+  another tool), as well as on other commands and selection clicks. Flip
+  re-infers an inferred Join/Cut from the new direction.
 
 ## Interaction and scheduling
 

@@ -10,6 +10,8 @@ pub struct History {
     redo: VecDeque<Scene>,
     limit: usize,
     byte_limit: usize,
+    /// Bumped by every checkpoint, undo and redo (see [`History::version`]).
+    version: u64,
 }
 
 impl Default for History {
@@ -19,6 +21,7 @@ impl Default for History {
             redo: VecDeque::new(),
             limit: 64,
             byte_limit: 256 * 1024 * 1024,
+            version: 0,
         }
     }
 }
@@ -32,6 +35,7 @@ impl History {
     /// first, apply the edit, and record the copy only once it succeeded, so
     /// a failed edit neither adds an undo step nor clears redo.
     pub fn checkpoint_owned(&mut self, before: Scene) {
+        self.version += 1;
         self.redo.clear();
         self.undo.push_back(before);
         Self::trim(&mut self.undo, self.limit, self.byte_limit);
@@ -41,6 +45,7 @@ impl History {
         let Some(previous) = self.undo.pop_back() else {
             return false;
         };
+        self.version += 1;
         self.redo.push_back(std::mem::replace(scene, previous));
         Self::trim(&mut self.redo, self.limit, self.byte_limit);
         true
@@ -50,9 +55,17 @@ impl History {
         let Some(next) = self.redo.pop_back() else {
             return false;
         };
+        self.version += 1;
         self.undo.push_back(std::mem::replace(scene, next));
         Self::trim(&mut self.undo, self.limit, self.byte_limit);
         true
+    }
+
+    /// Changes with every checkpoint, undo and redo, so callers can tell
+    /// that the document moved to another undo step (unlike the stack depth,
+    /// which stays put once the history is trimmed to its limit).
+    pub fn version(&self) -> u64 {
+        self.version
     }
 
     pub fn can_undo(&self) -> bool {
@@ -165,6 +178,31 @@ mod tests {
             scene_bytes(&scene),
             faces_only + 2 * std::mem::size_of::<u32>()
         );
+    }
+
+    #[test]
+    fn versions_change_with_every_step_even_when_trimmed() {
+        let mut history = History {
+            limit: 2,
+            ..History::default()
+        };
+        let mut scene = Scene::empty();
+        let mut seen = vec![history.version()];
+        for _ in 0..4 {
+            history.checkpoint(&scene);
+            seen.push(history.version());
+        }
+        assert!(history.undo(&mut scene));
+        seen.push(history.version());
+        assert!(history.redo(&mut scene));
+        seen.push(history.version());
+        let mut unique = seen.clone();
+        unique.dedup();
+        assert_eq!(unique, seen, "every step has its own version");
+        // A failed undo or redo changes nothing.
+        let mut empty = History::default();
+        assert!(!empty.undo(&mut scene));
+        assert_eq!(empty.version(), 0);
     }
 
     #[test]

@@ -24,10 +24,21 @@ pub fn start(window: WindowHandle<Studio>, output: PathBuf, cx: &mut App) {
         }
         Err(error) => {
             eprintln!("FORMA_NATIVE_SMOKE_FAIL: {error:#}");
-            std::process::exit(1);
+            exit_after_failure(window, cx);
         }
     })
     .detach();
+}
+
+/// Ends an unattended run with a failure status. `process::exit` skips the
+/// app-quit observers, so stop the GPU and CAD workers here first: a render
+/// thread still inside the Vulkan driver during exit teardown can crash.
+pub(crate) fn exit_after_failure(window: WindowHandle<Studio>, cx: &mut AsyncApp) -> ! {
+    let _ = window.update(cx, |s, _, _| {
+        s.shutdown_renderer();
+        s.shutdown_cad();
+    });
+    std::process::exit(1);
 }
 
 pub(crate) async fn settle(window: WindowHandle<Studio>, cx: &mut AsyncApp) -> Result<()> {
@@ -1517,6 +1528,7 @@ async fn run(window: WindowHandle<Studio>, output: PathBuf, cx: &mut AsyncApp) -
     check_cad_workflow(window, &output, cx).await?;
     crate::timeline::smoke::check_timeline_workflow(window, cx).await?;
     crate::cad_tools::smoke::check_cad_tools_workflow(window, cx).await?;
+    crate::cad_tools::smoke::check_cad_tools_regressions(window, &output, cx).await?;
     keys(window, &["0"], cx).await?;
     let (id, before_x) = window.update(cx, |s, w, cx| {
         s.execute(Command::Add(Primitive::Cube), w, cx);

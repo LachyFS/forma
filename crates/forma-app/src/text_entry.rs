@@ -138,10 +138,9 @@ pub(crate) fn next_field(
         Samples | Bounces | Exposure | WorldStrength | DenoiseStart => {
             &[Samples, Bounces, Exposure, WorldStrength, DenoiseStart]
         }
-        CadAdjust(_) => &[
-            CadAdjust(crate::cad_tools::AdjustParam::Distance),
-            CadAdjust(crate::cad_tools::AdjustParam::Angle),
-        ],
+        // The adjust panel shows one value: Tab stays on it rather than
+        // reaching a hidden field.
+        CadAdjust(_) => return current,
         PreviewRotation | PreviewStrength | PreviewOpacity | PreviewBlur => &[
             PreviewRotation,
             PreviewStrength,
@@ -165,6 +164,16 @@ pub(crate) fn next_field(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tab_stays_on_the_adjust_panels_only_field() {
+        use crate::cad_tools::AdjustParam;
+        for param in [AdjustParam::Distance, AdjustParam::Angle] {
+            let field = Field::CadAdjust(param);
+            assert_eq!(next_field(field, false, |_| true), field);
+            assert_eq!(next_field(field, true, |_| true), field);
+        }
+    }
 
     #[test]
     fn paste_replaces_all_or_appends_without_losing_rejected_input() {

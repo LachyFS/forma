@@ -139,6 +139,13 @@ impl CadState {
         self.next_ticket
     }
 
+    /// Regenerate a candidate part for display under a preview job id (see
+    /// `cad_tools::preview_job`); results come back through `receive_cad`.
+    pub(crate) fn submit_preview(&mut self, job: u64, part: PartData) -> Result<(), String> {
+        self.host()?.regenerate(job, part);
+        Ok(())
+    }
+
     /// Stop the worker process; called before the app exits.
     pub(crate) fn shutdown(&self) {
         if let Some(host) = &self.host {
@@ -670,6 +677,26 @@ impl Studio {
     fn receive_cad(&mut self, event: HostEvent, cx: &mut Context<Self>) {
         match event {
             HostEvent::Started { .. } => {}
+            HostEvent::Regenerated(result) if crate::cad_tools::is_preview_job(result.part_id) => {
+                let outcome = crate::cad_tools::PreviewOutcome {
+                    mesh: result.mesh,
+                    issues: result.issues,
+                    failed: false,
+                };
+                self.receive_preview(result.part_id, result.stamp, outcome, cx);
+            }
+            HostEvent::RegenFailed {
+                part_id,
+                stamp,
+                issue,
+            } if crate::cad_tools::is_preview_job(part_id) => {
+                let outcome = crate::cad_tools::PreviewOutcome {
+                    mesh: None,
+                    issues: vec![issue],
+                    failed: true,
+                };
+                self.receive_preview(part_id, stamp, outcome, cx);
+            }
             HostEvent::Regenerated(result) => {
                 if self.cad.requested.get(&result.part_id) == Some(&result.stamp) {
                     self.cad.requested.remove(&result.part_id);
@@ -1116,6 +1143,7 @@ impl Studio {
     pub(crate) fn cad_idle(&self) -> bool {
         self.cad.requested.is_empty()
             && self.cad.pending.is_empty()
+            && !self.preview_pending()
             && self
                 .scene
                 .parts

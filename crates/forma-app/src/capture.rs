@@ -567,7 +567,7 @@ pub fn start(window: WindowHandle<Studio>, output: PathBuf, filter: Vec<String>,
             }
             Err(error) => {
                 eprintln!("FORMA_UI_CAPTURE_FAIL: {error:#}");
-                std::process::exit(1);
+                crate::smoke::exit_after_failure(window, cx);
             }
         },
     )

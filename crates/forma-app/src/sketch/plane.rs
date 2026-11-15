@@ -1,6 +1,9 @@
 //! Choosing the plane a new sketch is drawn on, and the camera that looks
 //! straight at it.
+use forma_cad::{FaceInfo, SurfaceKind};
 use forma_core::{Camera, Ray, Scene, SketchCurve, SketchPlane, Vec3};
+use glam::DVec3;
+use std::collections::HashMap;
 use std::f32::consts::FRAC_PI_2;
 use std::time::{Duration, Instant};
 
@@ -15,10 +18,19 @@ pub(crate) struct PlaneChoice {
     pub focus: Vec3,
 }
 
+/// The kernel's face groups of each regenerated part (`FaceInfo` per group,
+/// by part id): the exact planes that part faces snap to.
+pub(crate) type ExactFaces = HashMap<u64, Vec<FaceInfo>>;
+
 /// Plane under the pointer: a planar face, else the named orthographic view's
 /// plane, else the ground.
-pub(crate) fn choose(scene: &Scene, camera: Camera, ray: Option<Ray>) -> PlaneChoice {
-    if let Some(choice) = ray.and_then(|ray| face_plane(scene, camera, ray)) {
+pub(crate) fn choose(
+    scene: &Scene,
+    camera: Camera,
+    ray: Option<Ray>,
+    exact: &ExactFaces,
+) -> PlaneChoice {
+    if let Some(choice) = ray.and_then(|ray| face_plane(scene, camera, ray, exact)) {
         return choice;
     }
     if let Some((plane, label)) = named_view_plane(camera) {
@@ -84,7 +96,12 @@ pub(crate) fn named_view_plane(camera: Camera) -> Option<(SketchPlane, &'static 
 /// whole B-rep face group of a part. Axes follow the face's longest straight
 /// edge, choosing the orientation the camera can show upright; the origin
 /// sits on a face corner so the grid lines up with the face's edges.
-pub(crate) fn face_plane(scene: &Scene, camera: Camera, ray: Ray) -> Option<PlaneChoice> {
+pub(crate) fn face_plane(
+    scene: &Scene,
+    camera: Camera,
+    ray: Ray,
+    exact: &ExactFaces,
+) -> Option<PlaneChoice> {
     let hit = scene.pick(ray)?;
     let instance = scene.mesh_instance(hit.object_id)?;
     let group = instance.mesh.face_group(hit.face)?;
@@ -94,6 +111,7 @@ pub(crate) fn face_plane(scene: &Scene, camera: Camera, ray: Ray) -> Option<Plan
         hit.object_id,
         group,
         Some((ray.direction, hit.position)),
+        exact,
     )
 }
 
@@ -101,12 +119,18 @@ pub(crate) fn face_plane(scene: &Scene, camera: Camera, ray: Ray) -> Option<Plan
 /// without groups), if every vertex of every polygon in it is coplanar —
 /// tested across the whole group, so a curved B-rep face whose facets are
 /// each flat is rejected. `pick` is the viewing ray direction and hit point.
+///
+/// For a part face the fitted plane is then snapped to the kernel's exact
+/// plane for that face group (when `exact` has a matching one): the f32
+/// tessellation is a few 1e-7 off, enough for a sketch on the face to miss
+/// it and make the kernel guess at a nearly-flush boolean.
 pub(crate) fn group_plane_choice(
     scene: &Scene,
     camera: Camera,
     object: u64,
     group: u32,
     pick: Option<(Vec3, Vec3)>,
+    exact: &ExactFaces,
 ) -> Option<PlaneChoice> {
     use crate::cad_tools::geometry;
     let instance = scene.mesh_instance(object)?;
@@ -154,6 +178,27 @@ pub(crate) fn group_plane_choice(
     if deviation > extent * 2.0e-3 + 1.0e-6 {
         return None;
     }
+    // The plane's anchor: the exact face point when the kernel reports this
+    // group's plane, else the fitted centroid.
+    let mut anchor = centroid.as_dvec3();
+    if let Some((exact_normal, exact_point)) = instance
+        .object
+        .part_id()
+        .and_then(|part| exact.get(&part)?.get(group as usize))
+        .and_then(|info| {
+            exact_plane(
+                info,
+                instance.world_transform,
+                normal,
+                centroid,
+                extent,
+                deviation,
+            )
+        })
+    {
+        normal = exact_normal;
+        anchor = exact_point;
+    }
     // The group's outline, with collinear tessellation segments merged.
     let boundary = geometry::group_boundary(mesh, &faces);
     let edges: Vec<(Vec3, Vec3)> = geometry::chain_loops(&boundary)
@@ -179,7 +224,11 @@ pub(crate) fn group_plane_choice(
         .into_iter()
         .max_by(|a, b| a.dot(desired).total_cmp(&b.dot(desired)))?;
     let y_axis = normal.cross(x_axis).normalize();
-    let on_plane = |p: Vec3| p - normal * (p - centroid).dot(normal);
+    let on_plane = |p: Vec3| {
+        let n = normal.as_dvec3();
+        let p = p.as_dvec3();
+        (p - n * (p - anchor).dot(n)).as_vec3()
+    };
     let corner = world
         .iter()
         .copied()
@@ -210,6 +259,41 @@ pub(crate) fn group_plane_choice(
         reference,
         focus: project_onto(&plane, pick.map_or(centroid, |(_, hit)| hit)),
     })
+}
+
+/// The world plane of a planar kernel face group, as a unit normal oriented
+/// like `fitted` and a point on it — if it is the plane the tessellation fits
+/// (it may describe an older regeneration whose groups were numbered
+/// differently).
+fn exact_plane(
+    info: &FaceInfo,
+    matrix: forma_core::Mat4,
+    fitted: Vec3,
+    centroid: Vec3,
+    extent: f32,
+    deviation: f32,
+) -> Option<(Vec3, DVec3)> {
+    if info.kind != SurfaceKind::Planar || !info.point.is_finite() {
+        return None;
+    }
+    let matrix = matrix.as_dmat4();
+    let normal = matrix
+        .inverse()
+        .transpose()
+        .transform_vector3(info.normal.as_dvec3())
+        .try_normalize()?;
+    let point = matrix.transform_point3(info.point.as_dvec3());
+    let fitted = fitted.as_dvec3();
+    let normal = if normal.dot(fitted) < 0.0 {
+        -normal
+    } else {
+        normal
+    };
+    // Same orientation and offset as the fit, within its own flatness.
+    let tolerance = (deviation as f64).max(extent as f64 * 1.0e-5) + 1.0e-6;
+    let tilt = normal.cross(fitted).length() * extent as f64;
+    let offset = (centroid.as_dvec3() - point).dot(normal).abs();
+    (tilt <= tolerance && offset <= tolerance).then(|| (normal.as_vec3(), point))
 }
 
 /// `camera` turned to look straight at `plane` (world space) around `focus`,
@@ -372,6 +456,7 @@ mod tests {
                 origin: Vec3::new(0.1, 5.0, 0.2),
                 direction: Vec3::NEG_Y,
             }),
+            &ExactFaces::new(),
         );
         assert!(choice.label.starts_with("Face of"));
         assert!(choice.plane.normal().distance(Vec3::Y) < 1.0e-4);
@@ -395,8 +480,47 @@ mod tests {
                 origin: Vec3::new(9.0, 5.0, 9.0),
                 direction: Vec3::NEG_Y,
             }),
+            &ExactFaces::new(),
         );
         assert_eq!(miss.label, "Ground plane");
+    }
+
+    /// Kernel planes replace the fitted one only when they describe the same
+    /// face: a stale group numbering can point at another face.
+    #[test]
+    fn exact_planes_must_match_the_fitted_face() {
+        let info = |kind, point, normal| FaceInfo {
+            kind,
+            brep_faces: vec![0],
+            point,
+            normal,
+            area: 1.0,
+        };
+        let matrix = forma_core::Mat4::from_translation(Vec3::new(0.0, 1.0, 0.0));
+        let fitted = Vec3::new(0.0, 1.0, 1.0e-8).normalize();
+        let centroid = Vec3::new(0.0, 1.0 + 1.0e-7, 0.0);
+        let check = |face: &FaceInfo| exact_plane(face, matrix, fitted, centroid, 1.0, 2.0e-7);
+        // The same plane, reported facing the other way, at another point.
+        let (normal, point) = check(&info(
+            SurfaceKind::Planar,
+            Vec3::new(0.2, 0.0, 0.1),
+            Vec3::NEG_Y,
+        ))
+        .unwrap();
+        assert_eq!(normal, Vec3::Y, "oriented like the fit");
+        assert_eq!(point.y, 1.0);
+        // A parallel face elsewhere, a tilted one and a curved one are not it.
+        for other in [
+            info(SurfaceKind::Planar, Vec3::new(0.0, -0.5, 0.0), Vec3::Y),
+            info(
+                SurfaceKind::Planar,
+                Vec3::ZERO,
+                Vec3::new(0.0, 1.0, 0.01).normalize(),
+            ),
+            info(SurfaceKind::Curved, Vec3::ZERO, Vec3::Y),
+        ] {
+            assert!(check(&other).is_none(), "{other:?}");
+        }
     }
 
     #[test]
@@ -424,7 +548,7 @@ mod tests {
             origin: Vec3::new(0.4, 5.0, 0.1),
             direction: Vec3::NEG_Y,
         };
-        let choice = face_plane(&scene, Camera::default(), ray).unwrap();
+        let choice = face_plane(&scene, Camera::default(), ray, &ExactFaces::new()).unwrap();
         // The whole top face (not one triangle): four edges, and the grid
         // follows the long 3 m edge.
         assert_eq!(choice.reference.len(), 4);
@@ -448,7 +572,7 @@ mod tests {
             .unwrap();
         mesh.groups[side] = top;
         mesh.groups[side + 1] = top;
-        assert!(face_plane(&scene, Camera::default(), ray).is_none());
+        assert!(face_plane(&scene, Camera::default(), ray, &ExactFaces::new()).is_none());
     }
 
     #[test]
