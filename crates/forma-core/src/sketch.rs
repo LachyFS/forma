@@ -452,6 +452,8 @@ impl SketchCurve {
                     && sweep.is_finite()
                     && sweep.abs() > 1.0e-5
                     && sweep.abs() < TAU
+                    // Like lines, arcs must be longer than the join tolerance.
+                    && radius * sweep.abs() > SKETCH_TOLERANCE
             }
             Self::Circle { center, radius } => {
                 finite(center)
@@ -666,11 +668,18 @@ impl Sketch {
                 kept: [kept].into_iter().filter(valid).collect(),
             });
         }
+        if params.len() < 2 {
+            return Some(TrimPiece {
+                entity,
+                removed: self.entities[entity].curve,
+                kept: Vec::new(),
+            });
+        }
         let after = params
             .iter()
             .position(|&p| p > t)
             .unwrap_or(params.len() - 1)
-            .max(1);
+            .clamp(1, params.len() - 1);
         let (start, end) = (params[after - 1], params[after]);
         let mut kept = Vec::new();
         if start > 0.0 {
@@ -1291,5 +1300,119 @@ mod tests {
         assert!(wrapped.midpoint().distance(Vec2::new(2.0, 0.0)) < 1.0e-5);
         let moved = circle.translated(Vec2::new(1.0, 1.0));
         assert_eq!(moved.center(), Some(Vec2::new(1.0, 1.0)));
+    }
+
+    #[test]
+    fn curves_shorter_than_tolerance_are_invalid_and_never_panic_trim() {
+        // Review case "tinyarc": passed validation, then panicked in trim.
+        let tiny = SketchCurve::Arc {
+            center: Vec2::ZERO,
+            radius: 0.5,
+            start_angle: 0.0,
+            sweep: 1.5e-5,
+        };
+        assert!(!tiny.is_valid());
+        let sketch = sketch_of(vec![tiny.into()]);
+        assert!(sketch.validate().is_err());
+        assert_eq!(
+            sketch.trim_piece(0, Vec2::new(0.5, 0.0), SKETCH_TOLERANCE),
+            None
+        );
+        // Review case "tangenttiny": a typed tangent arc of 0.001 degrees.
+        let start = Vec2::new(1.0, 0.0);
+        let center = start + Vec2::Y * 0.5;
+        let typed = SketchCurve::Arc {
+            center,
+            radius: 0.5,
+            start_angle: (start - center).to_angle(),
+            sweep: 0.001_f32.to_radians(),
+        };
+        assert!(!typed.is_valid());
+        // A valid line barely longer than the tolerance, touched near both
+        // ends and in its middle, trims without collapsing its own ends.
+        let short = 2.5e-5;
+        let mut sketch = sketch_of(vec![
+            line((0.0, 0.0), (short, 0.0)),
+            line((0.0, -1.0), (0.0, 1.0)),
+            line((short * 0.5, -1.0), (short * 0.5, 1.0)),
+            line((short, -1.0), (short, 1.0)),
+        ]);
+        for at in [0.0, short * 0.25, short * 0.5, short] {
+            let trim = sketch.trim_piece(0, Vec2::new(at, 0.0), SKETCH_TOLERANCE);
+            assert!(trim.is_some());
+        }
+        assert!(sketch.trim(0, Vec2::new(short * 0.25, 0.0), SKETCH_TOLERANCE));
+        assert!(sketch.validate().is_ok());
+    }
+
+    /// The review's randomized check: profiles never panic, loops are closed
+    /// and oriented, regions are disjoint, and trimming any curve leaves a
+    /// valid sketch.
+    #[test]
+    fn random_sketches_keep_profile_and_trim_invariants() {
+        struct Rng(u64);
+        impl Rng {
+            fn next(&mut self) -> u64 {
+                let mut x = self.0;
+                x ^= x << 13;
+                x ^= x >> 7;
+                x ^= x << 17;
+                self.0 = x;
+                x
+            }
+            fn grid(&mut self, n: u32) -> f32 {
+                (self.next() % n as u64) as f32
+            }
+        }
+        let mut rng = Rng(0x9e3779b97f4a7c15);
+        for _ in 0..400 {
+            let count = 2 + (rng.next() % 8) as usize;
+            let mut entities = Vec::new();
+            for _ in 0..count {
+                let point = |r: &mut Rng| Vec2::new(r.grid(6), r.grid(6));
+                let curve = match rng.next() % 3 {
+                    0 => SketchCurve::Line {
+                        start: point(&mut rng),
+                        end: point(&mut rng),
+                    },
+                    1 => SketchCurve::Circle {
+                        center: point(&mut rng),
+                        radius: 0.5 + rng.grid(4) * 0.5,
+                    },
+                    _ => SketchCurve::Arc {
+                        center: point(&mut rng),
+                        radius: 0.5 + rng.grid(4) * 0.5,
+                        start_angle: rng.grid(8) * std::f32::consts::FRAC_PI_4,
+                        sweep: (rng.grid(15) + 1.0)
+                            * std::f32::consts::FRAC_PI_4
+                            * if rng.next() % 2 == 0 { 1.0 } else { -1.0 },
+                    },
+                };
+                if curve.is_valid() {
+                    entities.push(SketchEntity::from(curve));
+                }
+            }
+            let sketch = sketch_of(entities.clone());
+            let profiles = sketch.profiles(SKETCH_TOLERANCE);
+            assert_loops_are_closed(&profiles);
+            for gx in 0..30 {
+                for gy in 0..30 {
+                    let point = Vec2::new(
+                        -3.0 + gx as f32 * 0.4 + 0.0123,
+                        -3.0 + gy as f32 * 0.4 + 0.0371,
+                    );
+                    if entities.iter().any(|e| e.curve.closest(point).1 < 0.03) {
+                        continue;
+                    }
+                    let inside = profiles.iter().filter(|p| p.contains(point)).count();
+                    assert!(inside <= 1, "{point} in {inside} profiles of {entities:?}");
+                }
+            }
+            for index in 0..entities.len() {
+                let mut trimmed = sketch.clone();
+                trimmed.trim(index, entities[index].curve.midpoint(), SKETCH_TOLERANCE);
+                assert!(trimmed.validate().is_ok(), "trim {index} of {entities:?}");
+            }
+        }
     }
 }

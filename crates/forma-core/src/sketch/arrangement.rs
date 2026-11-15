@@ -983,11 +983,8 @@ pub(super) fn split_parameters(
     }
     let geo = Geo::new(&entity.curve);
     let (lo, hi) = geo.bounds();
-    let mut params: Vec<f64> = if geo.is_closed() {
-        Vec::new()
-    } else {
-        vec![0.0, 1.0]
-    };
+    let length = geo.length().max(f64::MIN_POSITIVE);
+    let mut contacts_at: Vec<f64> = Vec::new();
     for (index, other) in entities.iter().enumerate() {
         if index == target || !other.curve.is_valid() {
             continue;
@@ -997,17 +994,27 @@ pub(super) fn split_parameters(
         if olo.x > hi.x + tol || ohi.x < lo.x - tol || olo.y > hi.y + tol || ohi.y < lo.y - tol {
             continue;
         }
-        params.extend(contacts(&geo, &other, tol).into_iter().map(|(t, _, _)| t));
+        contacts_at.extend(contacts(&geo, &other, tol).into_iter().map(|(t, _, _)| t));
     }
-    params.sort_by(f64::total_cmp);
-    let length = geo.length().max(f64::MIN_POSITIVE);
-    params.dedup_by(|next, previous| (*next - *previous) * length <= tol);
-    if geo.is_closed()
-        && params.len() > 1
-        && (params[0] + 1.0 - params[params.len() - 1]) * length <= tol
-    {
-        params.pop();
+    contacts_at.sort_by(f64::total_cmp);
+    contacts_at.dedup_by(|next, previous| (*next - *previous) * length <= tol);
+    if geo.is_closed() {
+        if contacts_at.len() > 1
+            && (contacts_at[0] + 1.0 - contacts_at[contacts_at.len() - 1]) * length <= tol
+        {
+            contacts_at.pop();
+        }
+        return Some((geo, contacts_at));
     }
+    // An open curve always keeps its own ends; contacts within tolerance of
+    // an end are that end, so the list never collapses below two entries.
+    let mut params = vec![0.0];
+    params.extend(
+        contacts_at
+            .into_iter()
+            .filter(|t| *t * length > tol && (1.0 - *t) * length > tol),
+    );
+    params.push(1.0);
     Some((geo, params))
 }
 
