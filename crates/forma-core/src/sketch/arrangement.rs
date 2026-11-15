@@ -455,23 +455,27 @@ struct Graph {
     pieces: Vec<Piece>,
 }
 
-/// The join tolerance for a set of curves: at least `tol`, and never finer
-/// than single precision can resolve at the sketch's coordinates. Points
-/// computed from an arc's centre, radius and angles carry rounding error
-/// proportional to their magnitude, which a fixed absolute tolerance cannot
-/// absorb a few hundred units from the origin.
+/// The join tolerance for a set of curves: at least `tol`, and not finer
+/// than single precision resolves the ends of arcs at the sketch's
+/// coordinates. An arc's ends are computed from its centre, radius and
+/// angles with rounding error proportional to their magnitude, which a fixed
+/// absolute tolerance cannot absorb a few hundred units from the origin.
+/// Lines need no allowance (their ends are the stored values), and the
+/// tolerance never exceeds a tenth of the shortest curve, so scaling can
+/// never merge real geometry away.
 pub(super) fn effective_tolerance(entities: &[SketchEntity], tol: f64) -> f64 {
-    let magnitude = entities
-        .iter()
-        .filter(|entity| entity.curve.is_valid())
-        .map(|entity| match entity.curve {
-            SketchCurve::Line { start, end } => start.abs().max(end.abs()).max_element() as f64,
-            SketchCurve::Arc { center, radius, .. } | SketchCurve::Circle { center, radius } => {
-                (center.abs().max_element() + radius) as f64
-            }
-        })
-        .fold(0.0, f64::max);
-    tol.max(magnitude * 3.0 * f32::EPSILON as f64)
+    let mut magnitude: f64 = 0.0;
+    let mut shortest = f64::INFINITY;
+    for entity in entities.iter().filter(|entity| entity.curve.is_valid()) {
+        shortest = shortest.min(entity.curve.length() as f64);
+        if let SketchCurve::Arc { center, radius, .. } | SketchCurve::Circle { center, radius } =
+            entity.curve
+        {
+            magnitude = magnitude.max((center.abs().max_element() + radius) as f64);
+        }
+    }
+    let allowance = (magnitude * 3.0 * f32::EPSILON as f64).min(shortest * 0.1);
+    tol.max(allowance)
 }
 
 /// Profile-forming curves, with circles that coincide with an earlier

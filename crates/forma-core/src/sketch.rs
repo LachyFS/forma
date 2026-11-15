@@ -1641,4 +1641,16 @@ mod tests {
             started.elapsed()
         );
     }
+
+    #[test]
+    fn geometry_far_from_the_origin_keeps_its_regions() {
+        // Review case "huge": shapes near the coordinate limit.
+        let big = 9.0e7_f32;
+        let square = rectangle((big, big), (big + 10.0, big + 10.0));
+        assert_eq!(sketch_of(square).profiles(SKETCH_TOLERANCE).len(), 1);
+        let lone = sketch_of(vec![circle((big, big), 1.0)]);
+        assert_eq!(lone.profiles(SKETCH_TOLERANCE).len(), 1);
+        let nested = sketch_of(vec![circle((0.0, 0.0), 1.0e8), circle((0.0, 0.0), 1.0e-4)]);
+        assert_eq!(nested.profiles(SKETCH_TOLERANCE).len(), 2);
+    }
 }
