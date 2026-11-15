@@ -1900,9 +1900,16 @@ pub(crate) async fn prepare_capture(window: WindowHandle<Studio>, cx: &mut Async
 #[cfg(not(target_os = "macos"))]
 pub(crate) fn capture_window(
     studio: &Studio,
-    _window: &gpui::Window,
+    window: &gpui::Window,
     path: &std::path::Path,
 ) -> Result<()> {
+    #[cfg(target_os = "linux")]
+    match crate::capture::capture_x11(window, path) {
+        Ok(()) => return Ok(()),
+        Err(error) => println!("window_capture_unavailable={error:#}"),
+    }
+    #[cfg(not(target_os = "linux"))]
+    let _ = window;
     let frame = studio
         .frame
         .as_ref()
@@ -1920,7 +1927,7 @@ pub(crate) fn capture_window(
         image::ColorType::Rgba8,
     )?;
     println!(
-        "viewport_capture={} (full-window capture is available on macOS)",
+        "viewport_capture={} (full-window capture needs macOS or an X11 session)",
         path.display()
     );
     Ok(())

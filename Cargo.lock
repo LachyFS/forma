@@ -1900,6 +1900,7 @@ dependencies = [
  "objc2-foundation",
  "raw-window-handle",
  "smallvec",
+ "x11rb",
 ]
 
 [[package]]

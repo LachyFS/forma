@@ -1,4 +1,5 @@
 mod app;
+mod capture;
 mod code_editor;
 mod exchange;
 mod mesh_commands;
@@ -54,12 +55,13 @@ actions!(
     ]
 );
 
-const USAGE: &str = "Forma — 3D modelling and GPU rendering\n\nUsage: forma [--open PROJECT] [--renderer BACKEND] [--smoke-test [DIRECTORY]]\n\nBackends: auto, wgpu, native-metal, metal, dx12, vulkan\n  auto          Native Metal on macOS; wgpu DX12 on Windows; wgpu Vulkan on Linux\n  wgpu          wgpu using the platform's default GPU backend\n  native-metal  Existing native Metal renderer (macOS)\n  metal         wgpu Metal (macOS)\n  dx12          wgpu DirectX 12 (Windows)\n  vulkan        wgpu Vulkan (Windows/Linux)\n\nFORMA_RENDERER sets the default backend; --renderer overrides it.\n";
+const USAGE: &str = "Forma — 3D modelling and GPU rendering\n\nUsage: forma [--open PROJECT] [--renderer BACKEND] [--smoke-test [DIRECTORY]]\n             [--ui-capture DIRECTORY [SCENARIO...]]\n\nBackends: auto, wgpu, native-metal, metal, dx12, vulkan\n  auto          Native Metal on macOS; wgpu DX12 on Windows; wgpu Vulkan on Linux\n  wgpu          wgpu using the platform's default GPU backend\n  native-metal  Existing native Metal renderer (macOS)\n  metal         wgpu Metal (macOS)\n  dx12          wgpu DirectX 12 (Windows)\n  vulkan        wgpu Vulkan (Windows/Linux)\n\nFORMA_RENDERER sets the default backend; --renderer overrides it.\n";
 
 #[derive(Debug)]
 struct LaunchOptions {
     backend: Backend,
     smoke_output: Option<std::path::PathBuf>,
+    capture: Option<(std::path::PathBuf, Vec<String>)>,
     help: bool,
     project: Option<std::path::PathBuf>,
 }
@@ -69,6 +71,7 @@ impl LaunchOptions {
         let mut args = args.into_iter().peekable();
         let mut backend = None;
         let mut smoke_output = None;
+        let mut capture = None;
         let mut help = false;
         let mut project = None;
         while let Some(arg) = args.next() {
@@ -83,6 +86,16 @@ impl LaunchOptions {
                     } else {
                         "artifacts/native-smoke".into()
                     });
+                }
+                "--ui-capture" => {
+                    let directory = args
+                        .next()
+                        .context("--ui-capture requires an output directory")?;
+                    let mut scenarios = Vec::new();
+                    while args.peek().is_some_and(|arg| !arg.starts_with('-')) {
+                        scenarios.push(args.next().unwrap());
+                    }
+                    capture = Some((directory.into(), scenarios));
                 }
                 "--help" | "-h" => help = true,
                 "--open" => {
@@ -113,6 +126,7 @@ impl LaunchOptions {
         Ok(Self {
             backend,
             smoke_output,
+            capture,
             help,
             project,
         })
@@ -145,6 +159,8 @@ fn main() -> Result<()> {
         return Ok(());
     }
     let smoke_output = options.smoke_output;
+    let capture = options.capture;
+    let unattended = smoke_output.is_some() || capture.is_some();
     let backend = options.backend;
     let project = options.project;
     Application::new().run(move |cx: &mut App| {
@@ -157,6 +173,7 @@ fn main() -> Result<()> {
         // Smoke tests use an isolated preference file and never change the user's theme.
         let theme_path = smoke_output
             .as_ref()
+            .or(capture.as_ref().map(|(output, _)| output))
             .map(|output| output.join("preferences/color-theme"))
             .or_else(theme::preference_path);
         let bounds = Bounds::centered(None, size(px(1512.), px(960.)), cx);
@@ -164,7 +181,7 @@ fn main() -> Result<()> {
             .open_window(
                 WindowOptions {
                     window_bounds: Some(WindowBounds::Windowed(bounds)),
-                    focus: smoke_output.is_none(),
+                    focus: !unattended,
                     window_min_size: Some(size(px(1000.), px(650.))),
                     titlebar: Some(gpui::TitlebarOptions {
                         title: Some("Forma".into()),
@@ -283,6 +300,8 @@ fn main() -> Result<()> {
         ]);
         if let Some(output) = smoke_output {
             smoke::start(window, output, cx);
+        } else if let Some((output, scenarios)) = capture {
+            capture::start(window, output, scenarios, cx);
         } else {
             let _ = window.update(cx, |s, _, cx| {
                 if let Some(path) = project {

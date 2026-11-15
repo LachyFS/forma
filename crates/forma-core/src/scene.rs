@@ -1,4 +1,4 @@
-use crate::{Camera, Material, Mesh, Primitive, Ray};
+use crate::{Camera, Material, Mesh, Primitive, Ray, Sketch};
 use anyhow::{Context, Result, ensure};
 use glam::{EulerRot, Mat4, Quat, Vec3};
 use serde::{Deserialize, Serialize};
@@ -104,6 +104,12 @@ pub enum ObjectData {
     Camera {
         camera: CameraData,
     },
+    /// A planar drawing. Its plane is in the object's local space, so moving
+    /// the object moves the sketch. Sketches are drawn as viewport overlays and
+    /// supply profiles to CAD features; they have no renderable surface.
+    Sketch {
+        sketch: Sketch,
+    },
     /// A durable extension point for object kinds Forma does not understand
     /// yet. Core graph operations preserve these properties losslessly.
     Custom {
@@ -120,6 +126,7 @@ impl ObjectData {
             Self::Empty { .. } => "empty",
             Self::Light { .. } => "light",
             Self::Camera { .. } => "camera",
+            Self::Sketch { .. } => "sketch",
             Self::Custom { kind, .. } => kind,
         }
     }
@@ -612,6 +619,24 @@ impl Scene {
         self.add_object(name, ObjectData::Camera { camera })
     }
 
+    pub fn add_sketch(&mut self, name: impl Into<String>, sketch: Sketch) -> Result<u64> {
+        self.add_object(name, ObjectData::Sketch { sketch })
+    }
+
+    pub fn object_sketch(&self, object_id: u64) -> Option<&Sketch> {
+        match &self.object(object_id)?.data {
+            ObjectData::Sketch { sketch } => Some(sketch),
+            _ => None,
+        }
+    }
+
+    pub fn object_sketch_mut(&mut self, object_id: u64) -> Option<&mut Sketch> {
+        match &mut self.object_mut(object_id)?.data {
+            ObjectData::Sketch { sketch } => Some(sketch),
+            _ => None,
+        }
+    }
+
     pub fn add_object(&mut self, name: impl Into<String>, data: ObjectData) -> Result<u64> {
         let name = name.into();
         ensure!(self.objects.len() < 10_000, "Scene exceeds 10,000 objects");
@@ -632,6 +657,7 @@ impl Scene {
             ),
             ObjectData::Light { light } => validate_light(light)?,
             ObjectData::Camera { camera } => validate_camera_data(camera)?,
+            ObjectData::Sketch { sketch } => sketch.validate()?,
             ObjectData::Custom { kind, properties } => {
                 ensure!(valid_name(kind), "Invalid custom object type");
                 ensure!(
@@ -1454,6 +1480,9 @@ impl Scene {
                     .with_context(|| format!("Invalid light in {}", object.name))?,
                 ObjectData::Camera { camera } => validate_camera_data(camera)
                     .with_context(|| format!("Invalid camera data in {}", object.name))?,
+                ObjectData::Sketch { sketch } => sketch
+                    .validate()
+                    .with_context(|| format!("Invalid sketch in {}", object.name))?,
                 ObjectData::Custom { kind, properties } => {
                     ensure!(valid_name(kind), "Invalid custom object type");
                     ensure!(

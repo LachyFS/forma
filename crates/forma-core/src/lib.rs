@@ -10,8 +10,13 @@ mod mesh_tools;
 mod obj;
 mod object_ops;
 mod scene;
+mod sketch;
 mod stl;
 mod surface_query;
+pub use sketch::{
+    MAX_SKETCH_COORDINATE, MAX_SKETCH_ENTITIES, Profile, ProfileLoop, SKETCH_TOLERANCE, Sketch,
+    SketchCurve, SketchEntity, SketchPlane,
+};
 pub use surface_query::SurfaceQuery;
 
 pub use camera::{Camera, Ray};

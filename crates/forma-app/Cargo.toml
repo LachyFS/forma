@@ -19,6 +19,9 @@ naga = { version = "27.0.3", features = ["termcolor"] }
 smallvec = "1"
 async-channel = "2.5"
 
+[target.'cfg(target_os = "linux")'.dependencies]
+x11rb = "0.13"
+
 [target.'cfg(target_os = "macos")'.dependencies]
 core-graphics = "0.24"
 raw-window-handle = "0.6"
