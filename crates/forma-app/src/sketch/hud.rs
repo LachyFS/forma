@@ -236,31 +236,22 @@ impl Studio {
             "Tilted"
         };
         let drawing = self.session_object() == Some(id);
+        // `section` pads its contents like every other inspector section.
         let contents = col()
-            .px(px(SP_3))
-            .pb(px(SP_3))
             .gap(px(SP_1))
-            .child(readonly_row(
-                t,
-                "Curves",
-                "",
-                sketch.entities.len().to_string(),
-                "Lines, arcs and circles in this sketch",
-            ))
-            .child(readonly_row(
-                t,
-                "Profiles",
-                "",
-                profiles.to_string(),
-                "Closed regions that CAD features can extrude",
-            ))
-            .child(readonly_row(
-                t,
-                "Construction",
-                "",
-                construction.to_string(),
-                "Guide curves that never form profiles",
-            ))
+            .child(
+                stat_tiles([
+                    stat_tile(t, "Curves", sketch.entities.len().to_string()),
+                    stat_tile(t, "Profiles", profiles.to_string()),
+                    stat_tile(t, "Construction", construction.to_string()),
+                ])
+                .id("sketch-stats")
+                .tooltip(tip(
+                    t,
+                    "Curves: lines, arcs and circles · Profiles: closed regions features can extrude · Construction: guides that never form profiles",
+                    None,
+                )),
+            )
             .child(readonly_row(
                 t,
                 "Plane",

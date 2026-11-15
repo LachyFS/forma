@@ -61,25 +61,6 @@ fn choice_row(t: Colors, label: &'static str, control: impl IntoElement) -> Div 
         .child(control)
 }
 
-fn stat(t: Colors, label: &'static str, value: String) -> Div {
-    col()
-        .flex_1()
-        .min_w(px(0.))
-        .px(px(SP_2 + 2.))
-        .py(px(SP_1_5))
-        .gap(px(1.))
-        .rounded(px(R_SM))
-        .bg(rgb(t.field))
-        .child(caption(t, label).text_size(px(TEXT_XS)))
-        .child(
-            div()
-                .tabular()
-                .font_weight(WEIGHT_MEDIUM)
-                .truncate()
-                .child(value),
-        )
-}
-
 fn thousands(value: usize) -> String {
     if value >= 10_000 {
         format!("{:.0}k", value as f64 / 1000.)
@@ -389,9 +370,6 @@ fn parameters(
                         .h(px(H_SM))
                         .px(px(SP_2))
                         .gap(px(SP_1_5))
-                        .rounded(px(R_SM))
-                        .border_1()
-                        .border_color(rgb(t.hairline))
                         .child(icon(Icon::Part, ICON_SM, t.text_faint))
                         .child(
                             div()
@@ -467,10 +445,16 @@ fn sketch_link(t: Colors, s: &Studio, feature: &Feature, cx: &mut Context<Studio
             },
         ),
         None => (
-            "Embedded copy".to_owned(),
-            "The source sketch was deleted · Edit sketch recreates it from this copy",
+            // Beside the "Sketch" label: an embedded sketch.
+            "Embedded".to_owned(),
+            "Stored in this feature · Edit sketch opens it in Draw as a linked sketch",
         ),
     };
+    // Sidebar minus the section insets, label column, row padding, icon and
+    // the curve count: GPUI cannot ellipsize this nested text by itself.
+    let room =
+        s.panels.laid_out_sidebar() - 2. * SP_3 - LABEL_W - 3. * SP_2 - ICON_SM - 2. * SP_1_5 - 46.;
+    let name = fit_text(cx, name.into(), TEXT_MD, room.max(24.));
     Some(
         col()
             .gap(px(SP_1))
@@ -485,8 +469,6 @@ fn sketch_link(t: Colors, s: &Studio, feature: &Feature, cx: &mut Context<Studio
                     .h(px(H_SM))
                     .px(px(SP_2))
                     .gap(px(SP_1_5))
-                    .rounded(px(R_SM))
-                    .bg(rgb(t.field))
                     .child(icon(
                         Icon::Sketch,
                         ICON_SM,
@@ -831,10 +813,8 @@ fn part_summary(
             ),
         ))
         .child(
-            row()
-                .gap(px(SP_1))
-                .py(px(SP_1))
-                .child(stat(
+            stat_tiles([
+                stat_tile(
                     t,
                     "Features",
                     if suppressed > 0 {
@@ -842,13 +822,11 @@ fn part_summary(
                     } else {
                         part.features.len().to_string()
                     },
-                ))
-                .child(stat(t, "Faces", faces.map_or("—".into(), thousands)))
-                .child(stat(
-                    t,
-                    "Triangles",
-                    triangles.map_or("—".into(), thousands),
-                )),
+                ),
+                stat_tile(t, "Faces", faces.map_or("—".into(), thousands)),
+                stat_tile(t, "Triangles", triangles.map_or("—".into(), thousands)),
+            ])
+            .py(px(SP_1)),
         )
         .when_some(stats, |d, stats| {
             d.child(caption(

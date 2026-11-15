@@ -178,6 +178,8 @@ pub(crate) struct PanelState {
     pub(crate) dismissed_update: Option<String>,
     /// Feature timeline selection, context menu and marker drag.
     pub(crate) timeline: crate::timeline::TimelineState,
+    /// The sidebar width at the last layout, for text fitted ahead of layout.
+    laid_out_sidebar: Cell<f32>,
 }
 
 impl Default for PanelState {
@@ -212,6 +214,7 @@ impl Default for PanelState {
             rename_in_outliner: false,
             dismissed_update: None,
             timeline: Default::default(),
+            laid_out_sidebar: Cell::new(SIDEBAR_DEFAULT_WIDTH),
         }
     }
 }
@@ -326,6 +329,11 @@ impl PanelState {
 
     pub(crate) fn sidebar_width(&self, window_width: f32) -> f32 {
         Self::clamp_sidebar_width(self.sidebar_width, window_width)
+    }
+
+    /// The sidebar's width when it was last laid out.
+    pub(crate) fn laid_out_sidebar(&self) -> f32 {
+        self.laid_out_sidebar.get()
     }
 
     fn clamp_outliner_height(height: f32, sidebar_height: f32) -> f32 {
@@ -990,6 +998,7 @@ pub fn render(
     let t = studio.theme_colors();
     let width = f32::from(window.viewport_size().width);
     let sidebar_width = studio.panels.sidebar_width(width);
+    studio.panels.laid_out_sidebar.set(sidebar_width);
     let outliner_height = studio
         .panels
         .outliner_height(sidebar_height(window), studio.outliner_rows());

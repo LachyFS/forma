@@ -21,6 +21,10 @@ use std::{
     sync::Arc,
 };
 
+/// Longest the first frame waits for the startup scene's part, so a slow or
+/// failed CAD worker never keeps the viewport blank.
+const STARTUP_HOLD: std::time::Duration = std::time::Duration::from_millis(1500);
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Tool {
     Select,
@@ -278,6 +282,9 @@ pub struct Studio {
     preview_load_id: u64,
     pub(crate) cad: crate::cad::CadState,
     pub(crate) cad_tool: crate::cad_tools::CadToolState,
+    /// Set at launch while the startup scene's part regenerates: the first
+    /// presented frame waits for it (briefly) so the scene appears complete.
+    startup_hold: Option<std::time::Instant>,
 }
 
 impl Studio {
@@ -303,8 +310,8 @@ impl Studio {
         };
         let focus = cx.focus_handle();
         window.focus(&focus);
-        let scene = Scene::default();
-        let selected = scene.objects.first().map(|o| o.id);
+        let scene = crate::startup::studio_scene();
+        let selected = crate::startup::hero(&scene);
         let (worker, notifications) = RenderWorker::new(backend);
         cx.on_release(|studio, cx| {
             if let Some(image) = studio.frame_image.take() {
@@ -493,7 +500,19 @@ impl Studio {
             preview_load_id: 0,
             cad: crate::cad::CadState::new(cx),
             cad_tool: Default::default(),
+            startup_hold: Some(std::time::Instant::now()),
         };
+        // The startup part has no tessellation yet; regenerate it now.
+        studio.sync_parts();
+        cx.spawn(async move |this, cx| {
+            Timer::after(STARTUP_HOLD).await;
+            let _ = this.update(cx, |s, cx| {
+                if s.startup_hold.take().is_some() {
+                    s.invalidate(false, cx);
+                }
+            });
+        })
+        .detach();
         studio.invalidate(false, cx);
         studio
     }
@@ -776,6 +795,15 @@ impl Studio {
     }
 
     fn submit_render(&mut self) {
+        if let Some(since) = self.startup_hold {
+            if self.cad_idle() || since.elapsed() >= STARTUP_HOLD {
+                self.startup_hold = None;
+            } else {
+                // Regeneration finishing (or the hold timing out) renders.
+                self.needs_render = false;
+                return;
+            }
+        }
         if self.needs_snapshot {
             // The document, plus a modelling tool's display-only preview.
             self.scene_snapshot = Arc::new(self.render_scene());
@@ -1596,10 +1624,10 @@ impl Studio {
         self.preview_loading = false;
         self.project_epoch += 1;
         self.reset_cad_tools();
-        self.scene = Scene::default();
+        self.scene = crate::startup::studio_scene();
         self.history = History::default();
         self.restore_render_preferences();
-        self.selected = self.scene.objects.first().map(|o| o.id);
+        self.selected = crate::startup::hero(&self.scene);
         self.objects_selected.clear();
         self.clear_components();
         self.path = None;
@@ -1935,7 +1963,7 @@ impl Studio {
                     && selection.as_ref().is_none_or(|ids| ids.contains(&mesh.id))
             })
         {
-            self.status = "No visible mesh objects in the export scope".into();
+            self.status = "Nothing visible in the export scope".into();
             cx.notify();
             return;
         }
@@ -2140,7 +2168,11 @@ impl Studio {
                 | Field::Scale(_)
                 | Field::Dimensions(_)
                 | Field::CadAdjust(_)
-                | Field::Feature(_) => crate::transform::format_precision_value(value),
+                | Field::Feature(_)
+                // Whole degrees and percentages read better without "0.00".
+                | Field::PreviewRotation
+                | Field::PreviewOpacity
+                | Field::PreviewBlur => crate::transform::format_precision_value(value),
                 Field::Samples | Field::Bounces | Field::DenoiseStart => value.to_string(),
                 _ => format!("{value:.2}"),
             })
@@ -2720,6 +2752,12 @@ impl Studio {
                 }
                 "enter" => {
                     if let Some((_, _, command)) = commands.get(self.palette_index) {
+                        if let Some(reason) = self.command_unavailable(*command) {
+                            self.status = reason.into();
+                            cx.notify();
+                            cx.stop_propagation();
+                            return;
+                        }
                         self.palette_open = false;
                         self.panels.remember_command(*command);
                         self.execute(*command, window, cx);
@@ -3083,6 +3121,16 @@ pub(crate) fn palette_commands(query: &str) -> Vec<(&'static str, &'static str, 
         ("Export image (PNG)…", "", Command::ExportImage),
         ("Export Wavefront OBJ…", "", Command::ExportObj),
         ("Export STL with units and scope…", "", Command::ExportStl),
+        (
+            "Import STEP as a part…",
+            "",
+            Command::Cad(CadCommand::ImportStep),
+        ),
+        (
+            "Export parts as STEP…",
+            "",
+            Command::Cad(CadCommand::ExportStep),
+        ),
         // Add
         ("Add cube", "", Command::Add(Primitive::Cube)),
         ("Add sphere", "", Command::Add(Primitive::Sphere)),
@@ -3176,8 +3224,6 @@ pub(crate) fn palette_commands(query: &str) -> Vec<(&'static str, &'static str, 
             "D",
             Command::CadTool(crate::cad_tools::ToolCommand::SketchOnFace),
         ),
-        ("Import STEP…", "", Command::Cad(CadCommand::ImportStep)),
-        ("Export STEP…", "", Command::Cad(CadCommand::ExportStep)),
         // Timeline (the selected part's history)
         (
             "Timeline: Edit feature sketch",
@@ -3395,7 +3441,10 @@ impl Studio {
                 !self.palette_exports_only
                     || matches!(
                         command,
-                        Command::ExportObj | Command::ExportStl | Command::ExportImage
+                        Command::ExportObj
+                            | Command::ExportStl
+                            | Command::ExportImage
+                            | Command::Cad(crate::cad::CadCommand::ExportStep)
                     )
             })
             .collect();
@@ -3411,6 +3460,11 @@ impl Studio {
             items = front;
         }
         items
+    }
+
+    /// Why a palette command cannot run now (shown on its row), if so.
+    pub(crate) fn command_unavailable(&self, command: Command) -> Option<&'static str> {
+        crate::exchange::export_unavailable(&self.scene, command)
     }
 
     /// How many leading palette items are recent commands.

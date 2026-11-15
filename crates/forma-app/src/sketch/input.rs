@@ -111,6 +111,10 @@ impl Studio {
     pub(crate) fn execute_draw(&mut self, command: DrawCommand, cx: &mut Context<Self>) {
         match command {
             DrawCommand::NewSketch => self.enter_draw(DrawTarget::AtPointer, cx),
+            DrawCommand::NewGroundSketch => self.enter_draw(
+                DrawTarget::Plane(forma_core::SketchPlane::ground(), "Ground plane".into()),
+                cx,
+            ),
             DrawCommand::EditSketch => {
                 let target = self
                     .selected

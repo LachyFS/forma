@@ -10,6 +10,7 @@ mod render_worker;
 mod shading_pie;
 mod sketch;
 mod smoke;
+mod startup;
 mod text_entry;
 mod theme;
 mod timeline;

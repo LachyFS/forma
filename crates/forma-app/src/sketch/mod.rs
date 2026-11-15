@@ -42,6 +42,8 @@ use tools::{Options, Step};
 pub enum DrawCommand {
     /// Start a sketch on the face or view plane under the pointer.
     NewSketch,
+    /// Start a sketch on the ground plane, wherever the pointer is.
+    NewGroundSketch,
     /// Edit the selected sketch object.
     EditSketch,
     /// Commit and leave Draw mode.
