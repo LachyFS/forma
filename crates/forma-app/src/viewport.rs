@@ -9,7 +9,7 @@ use gpui::{
 use std::{collections::BTreeSet, rc::Rc};
 
 #[derive(Clone, Copy, Debug, PartialEq)]
-struct WorldBounds {
+pub(crate) struct WorldBounds {
     min: Vec3,
     max: Vec3,
 }
@@ -30,17 +30,17 @@ impl WorldBounds {
         ))
     }
 
-    fn dimensions(self) -> Vec3 {
+    pub(crate) fn dimensions(self) -> Vec3 {
         self.max - self.min
     }
 }
 
 #[derive(Default)]
-struct SelectionMeasurements {
-    bounds: Option<WorldBounds>,
+pub(crate) struct SelectionMeasurements {
+    pub(crate) bounds: Option<WorldBounds>,
     edges: Vec<[Vec3; 2]>,
-    edge_count: usize,
-    edge_length: f64,
+    pub(crate) edge_count: usize,
+    pub(crate) edge_length: f64,
 }
 
 /// The selection key changes independently from geometry. Geometry invalidation
@@ -123,7 +123,7 @@ fn measure_selection(
     measurements
 }
 
-fn measurement_value(value: f64) -> String {
+pub(crate) fn measurement_value(value: f64) -> String {
     if value == 0. {
         "0".into()
     } else if !(0.001..100_000.).contains(&value.abs()) {
@@ -136,7 +136,7 @@ fn measurement_value(value: f64) -> String {
     }
 }
 
-fn camera_view_label(camera: forma_core::Camera) -> &'static str {
+pub(crate) fn camera_view_label(camera: forma_core::Camera) -> &'static str {
     if !camera.orthographic {
         return "User perspective";
     }
@@ -156,22 +156,16 @@ fn camera_view_label(camera: forma_core::Camera) -> &'static str {
     "User orthographic"
 }
 
-struct ViewHint(&'static str, crate::theme::Colors);
-
-impl Render for ViewHint {
-    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-        div()
-            .px(px(8.))
-            .py(px(5.))
-            .rounded(px(5.))
-            .bg(rgb(self.1.panel))
-            .border_1()
-            .border_color(rgb(self.1.edge))
-            .text_color(rgb(self.1.text))
-            .text_size(px(11.))
-            .child(self.0)
-    }
-}
+/// Top of the orientation gizmo, below the floating view controls.
+const GIZMO_TOP: f32 = 56.;
+const GIZMO_RIGHT: f32 = 12.;
+const GIZMO_SIZE: f32 = 108.;
+/// Overlay colors drawn over the 3D image. They are independent of the editor
+/// theme so they stay legible over any material or environment.
+const COMPONENT_HIGHLIGHT: u32 = 0xffa94d;
+const COMPONENT_VERTEX: u32 = 0xffd8a8;
+const ACTIVE_AXIS: u32 = 0xffffff;
+const PIVOT: u32 = 0xf4f6f6;
 
 #[derive(Clone, Copy)]
 pub(crate) enum NavigationMode {
@@ -311,7 +305,12 @@ fn measurement_label(
     if !bounds.contains(&label_bounds.origin) || !bounds.contains(&label_bounds.bottom_right()) {
         return None;
     }
-    window.paint_quad(fill(label_bounds, rgb(background)));
+    window.paint_quad(
+        fill(label_bounds, rgb(background))
+            .corner_radii(px(4.))
+            .border_widths(px(1.))
+            .border_color(gpui::rgba(0xffffff1f)),
+    );
     let _ = text.paint(
         label_bounds.origin + point(px(5.), px(2.)),
         px(16.),
@@ -356,15 +355,15 @@ fn paint_measurements(
         let (start, end) = (a + normal * 18., b + normal * 18.);
         let points = [start, end].map(|p| point(px(p.x), px(p.y)));
         // A contrasting under-stroke keeps guides legible over every material.
-        line(window, &points, colors.panel, 3.5);
-        line(window, &points, colors.axis_ink[axis], 1.);
+        line(window, &points, colors.overlay, 3.5);
+        line(window, &points, colors.axis[axis], 1.25);
         for (from, to) in [
             (a + normal * 7., start + normal * 4.),
             (b + normal * 7., end + normal * 4.),
         ] {
             let points = [from, to].map(|p| point(px(p.x), px(p.y)));
-            line(window, &points, colors.panel, 3.);
-            line(window, &points, colors.axis_ink[axis], 1.);
+            line(window, &points, colors.overlay, 3.);
+            line(window, &points, colors.axis[axis], 1.25);
         }
         let midpoint = (start + end) * 0.5 + normal * 12.;
         let position = point(px(midpoint.x), px(midpoint.y));
@@ -381,8 +380,8 @@ fn paint_measurements(
             ),
             position,
             bounds,
-            colors.axis_ink[axis],
-            colors.panel,
+            colors.axis_text[axis],
+            colors.overlay,
             window,
             cx,
         ) {
@@ -410,8 +409,8 @@ fn paint_measurements(
             measurement_value(a.as_dvec3().distance(b.as_dvec3())),
             position,
             bounds,
-            colors.accent,
-            colors.panel,
+            colors.accent_text,
+            colors.overlay,
             window,
             cx,
         ) {
@@ -538,7 +537,7 @@ impl Studio {
             .map(WorldBounds::dimensions)
     }
 
-    fn selection_measurements(&self) -> Rc<SelectionMeasurements> {
+    pub(crate) fn selection_measurements(&self) -> Rc<SelectionMeasurements> {
         let objects = self.selected_ids();
         let components = self.component_elements();
         let mut cache = self.measurement_cache.borrow_mut();
@@ -615,50 +614,66 @@ impl Studio {
         directions.sort_by(|a, b| a.0.z.total_cmp(&b.0.z));
         let mut gizmo = div()
             .absolute()
-            .top(px(12.))
-            .right(px(12.))
-            .w(px(108.))
-            .h(px(108.));
+            .top(px(GIZMO_TOP))
+            .right(px(GIZMO_RIGHT))
+            .w(px(GIZMO_SIZE))
+            .h(px(GIZMO_SIZE));
+        let center = GIZMO_SIZE * 0.5;
         for (vector, axis, positive, command, hint, active) in directions {
-            let label = format!(
-                "{}{}",
-                if positive { "" } else { "−" },
-                ["X", "Y", "Z"][axis]
-            );
-            gizmo = gizmo.child(
-                div()
-                    .id(("view-axis", axis * 2 + usize::from(positive)))
-                    .absolute()
-                    .left(px(43. + vector.x * 34.))
-                    .top(px(43. - vector.y * 34.))
-                    .w(px(22.))
-                    .h(px(22.))
-                    .rounded_full()
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .bg(rgb(if active { colors.active } else { colors.panel }))
-                    .border_1()
-                    .border_color(rgb(if positive {
-                        colors.axis_ink[axis]
+            // Positive axes are labelled solid discs; negative axes are quiet
+            // rings, so the dominant directions read at a glance.
+            let side = if positive { 20. } else { 15. };
+            let color = colors.axis[axis];
+            let mut handle = div()
+                .id(("view-axis", axis * 2 + usize::from(positive)))
+                .absolute()
+                .left(px(center - side * 0.5 + vector.x * 34.))
+                .top(px(center - side * 0.5 - vector.y * 34.))
+                .size(px(side))
+                .rounded_full()
+                .flex()
+                .items_center()
+                .justify_center()
+                .text_size(px(10.))
+                .font_weight(gpui::FontWeight::SEMIBOLD)
+                .cursor_pointer()
+                .tooltip(crate::ui::components::tip(colors, hint, None))
+                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                .on_mouse_down(MouseButton::Right, |_, _, cx| cx.stop_propagation())
+                .on_mouse_down(MouseButton::Middle, |_, _, cx| cx.stop_propagation())
+                .on_scroll_wheel(|_, _, cx| cx.stop_propagation())
+                .on_click(cx.listener(move |studio, _, window, cx| {
+                    cx.stop_propagation();
+                    studio.execute(command, window, cx);
+                }));
+            handle = if positive {
+                handle
+                    .bg(rgb(color))
+                    .text_color(rgb(0x14161a))
+                    .border_2()
+                    .border_color(if active {
+                        gpui::rgba(0xffffffff)
                     } else {
-                        colors.edge
-                    }))
-                    .text_size(px(10.))
-                    .text_color(rgb(colors.axis_ink[axis]))
-                    .cursor_pointer()
-                    .hover(move |style| style.bg(rgb(colors.active_hover)))
-                    .tooltip(move |_, cx| cx.new(|_| ViewHint(hint, colors)).into())
-                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                    .on_mouse_down(MouseButton::Right, |_, _, cx| cx.stop_propagation())
-                    .on_mouse_down(MouseButton::Middle, |_, _, cx| cx.stop_propagation())
-                    .on_scroll_wheel(|_, _, cx| cx.stop_propagation())
-                    .on_click(cx.listener(move |studio, _, window, cx| {
-                        cx.stop_propagation();
-                        studio.execute(command, window, cx);
-                    }))
-                    .child(label),
-            );
+                        gpui::rgba(0x00000000)
+                    })
+                    .hover(|style| style.border_color(gpui::rgba(0xffffffe6)))
+                    .child(["X", "Y", "Z"][axis])
+            } else {
+                let mut ring = crate::ui::tokens::hex(color);
+                ring.a = 0.85;
+                let mut fill = ring;
+                fill.a = if active { 0.7 } else { 0.22 };
+                handle
+                    .bg(fill)
+                    .border_1()
+                    .border_color(ring)
+                    .hover(move |style| {
+                        let mut hover = ring;
+                        hover.a = 0.6;
+                        style.bg(hover)
+                    })
+            };
+            gizmo = gizmo.child(handle);
         }
         gizmo.into_any_element()
     }
@@ -910,9 +925,17 @@ impl Studio {
                 {
                     let a = start.min(selection.current);
                     let b = start.max(selection.current);
-                    let points = [a, Vec2::new(b.x, a.y), b, Vec2::new(a.x, b.y), a]
-                        .map(|p| point(px(p.x), px(p.y)));
-                    line(window, &points, 0x83bde8, 1.);
+                    // A tinted marquee with a crisp accent outline.
+                    let origin = point(px(a.x), px(a.y));
+                    let extent = size(px(b.x - a.x), px(b.y - a.y));
+                    window.paint_quad(
+                        fill(
+                            Bounds::new(origin, extent),
+                            crate::ui::tokens::tint(t.accent, 0.08),
+                        )
+                        .border_widths(px(1.))
+                        .border_color(crate::ui::tokens::hex(t.accent)),
+                    );
                 }
                 for face in &highlights {
                     let mut points: Vec<_> = face
@@ -923,11 +946,11 @@ impl Studio {
                         if edit_mode == EditMode::Face {
                             points.push(points[0]);
                         }
-                        line(window, &points, 0xf4c27a, 2.);
+                        line(window, &points, COMPONENT_HIGHLIGHT, 2.);
                         for p in points.iter().filter(|_| edit_mode.is_component()) {
                             window.paint_quad(fill(
                                 Bounds::new(*p - point(px(3.), px(3.)), size(px(6.), px(6.))),
-                                rgb(0xffdcaa),
+                                rgb(COMPONENT_VERTEX),
                             ));
                         }
                     }
@@ -945,7 +968,7 @@ impl Studio {
                     };
                     let length = depth.max(0.001) * 0.105;
                     if let Some(origin) = project(*center, matrix, bounds) {
-                        for (i, color) in crate::ui::AXIS.into_iter().enumerate() {
+                        for (i, color) in t.axis.into_iter().enumerate() {
                             let active = axis
                                 .is_some_and(|a| if constraint.plane { a != i } else { a == i });
                             if transforming && active {
@@ -969,8 +992,8 @@ impl Studio {
                                 line(
                                     window,
                                     &ring,
-                                    if active { 0xffffff } else { color },
-                                    if active { 2.8 } else { 1.7 },
+                                    if active { ACTIVE_AXIS } else { color },
+                                    if active { 2.8 } else { 1.8 },
                                 );
                             } else if let Some(end) =
                                 project(*center + gizmo_basis.col(i) * length, matrix, bounds)
@@ -978,7 +1001,7 @@ impl Studio {
                                 line(
                                     window,
                                     &[origin, end],
-                                    if active { 0xffffff } else { color },
+                                    if active { ACTIVE_AXIS } else { color },
                                     2.3,
                                 );
                                 if tool == Tool::Move {
@@ -1006,40 +1029,31 @@ impl Studio {
                         }
                         window.paint_quad(fill(
                             Bounds::new(origin - point(px(3.), px(3.)), size(px(6.), px(6.))),
-                            rgb(0xe6eeee),
+                            rgb(PIVOT),
                         ));
                     }
                 }
                 // The endpoint buttons use these same projected world axes.
-                let origin = point(bounds.right() - px(66.), bounds.origin.y + px(66.));
-                for (vector, color) in [Vec3::X, Vec3::Y, Vec3::Z].into_iter().zip(crate::ui::AXIS)
-                {
+                let origin = point(
+                    bounds.right() - px(GIZMO_RIGHT + GIZMO_SIZE * 0.5),
+                    bounds.origin.y + px(GIZMO_TOP + GIZMO_SIZE * 0.5),
+                );
+                for (vector, color) in [Vec3::X, Vec3::Y, Vec3::Z].into_iter().zip(t.axis) {
                     let screen = view.transform_vector3(vector);
-                    for sign in [-1., 1.] {
-                        let end =
-                            origin + point(px(screen.x * 34. * sign), px(-screen.y * 34. * sign));
-                        line(
-                            window,
-                            &[origin, end],
-                            color,
-                            if sign > 0. { 2. } else { 1. },
-                        );
-                    }
+                    let end = origin + point(px(screen.x * 34.), px(-screen.y * 34.));
+                    line(window, &[origin, end], color, 2.);
                 }
             },
         )
         .size_full();
-        let view_label = camera_view_label(camera);
-        let selection_label = self
-            .selected_object()
-            .map(|o| o.name.clone())
-            .unwrap_or_else(|| "No selection".into());
+        // Floating controls, measurements and operation readouts are composed
+        // over this element by `ui::hud`.
         let mut viewport = div()
             .id("model-viewport")
             .relative()
             .size_full()
             .overflow_hidden()
-            .bg(rgb(t.well))
+            .bg(rgb(t.sunken))
             .on_mouse_down(MouseButton::Left, cx.listener(Self::mouse_down))
             .on_mouse_down(MouseButton::Right, cx.listener(Self::mouse_down))
             .on_mouse_down(MouseButton::Middle, cx.listener(Self::mouse_down))
@@ -1056,148 +1070,39 @@ impl Studio {
                 s.scroll_wheel(event, cx);
             }))
             .child(canvas)
-            .child(self.orientation_gizmo(cx))
-            .child(
-                div()
-                    .absolute()
-                    .top(px(14.))
-                    .left(px(16.))
-                    .px(px(9.))
-                    .py(px(7.))
-                    .rounded(px(6.))
-                    .bg(rgb(t.panel))
-                    .text_size(px(11.))
-                    .text_color(rgb(t.muted))
-                    .child(view_label)
-                    .child(
-                        div()
-                            .mt(px(4.))
-                            .text_color(rgb(t.text))
-                            .child(selection_label),
-                    ),
-            );
-        if let Some(measurements) = measurements {
-            let mut panel = div()
-                .absolute()
-                .bottom(px(
-                    if self
-                        .transform_drag
-                        .as_ref()
-                        .is_some_and(|drag| drag.error.is_some())
-                    {
-                        100.
-                    } else if self.transform_drag.is_some() {
-                        58.
-                    } else {
-                        16.
-                    },
-                ))
-                .right(px(16.))
-                .px(px(11.))
-                .py(px(9.))
-                .rounded(px(6.))
-                .bg(rgb(t.panel))
-                .border_1()
-                .border_color(rgb(t.edge))
-                .text_size(px(11.))
-                .text_color(rgb(t.muted))
-                .child("World dimensions · m");
-            if let Some(bounds) = measurements.bounds {
-                let mut dimensions = div().flex().gap(px(14.)).mt(px(5.));
-                for axis in 0..3 {
-                    dimensions =
-                        dimensions.child(div().text_color(rgb(t.axis_ink[axis])).child(format!(
-                            "{} {}",
-                            ["X", "Y", "Z"][axis],
-                            measurement_value(bounds.dimensions()[axis] as f64)
-                        )));
-                }
-                panel = panel.child(dimensions);
-                if measurements.edge_count > 0 {
-                    panel = panel.child(div().mt(px(5.)).text_color(rgb(t.text)).child(format!(
-                        "{} edge{} · total {} m",
-                        measurements.edge_count,
-                        if measurements.edge_count == 1 {
-                            ""
-                        } else {
-                            "s"
-                        },
-                        measurement_value(measurements.edge_length)
-                    )));
-                }
-            } else {
-                panel = panel.child(
-                    div()
-                        .mt(px(5.))
-                        .text_color(rgb(t.text))
-                        .child("Select geometry to measure"),
-                );
-            }
-            viewport = viewport.child(panel);
-        }
+            .child(self.orientation_gizmo(cx));
         if self.frame.is_none() {
+            let error = self.render_error.is_some();
             viewport = viewport.child(
                 div()
                     .absolute()
                     .inset_0()
                     .flex()
+                    .flex_col()
                     .items_center()
                     .justify_center()
+                    .gap(px(10.))
                     .p(px(24.))
                     .text_center()
                     .text_size(px(12.))
-                    .text_color(rgb(if self.render_error.is_some() {
-                        t.alert
-                    } else {
-                        t.muted
-                    }))
+                    .line_height(px(18.))
+                    .text_color(rgb(if error { t.danger } else { t.text_muted }))
+                    .child(crate::ui::assets::icon(
+                        if error {
+                            crate::ui::assets::Icon::Error
+                        } else {
+                            crate::ui::assets::Icon::Device
+                        },
+                        20.,
+                        if error { t.danger } else { t.text_faint },
+                    ))
                     .child(
-                        self.render_error
-                            .clone()
-                            .unwrap_or_else(|| "Preparing the GPU viewport…".into()),
+                        div().max_w(px(420.)).child(
+                            self.render_error
+                                .clone()
+                                .unwrap_or_else(|| "Preparing the GPU viewport…".into()),
+                        ),
                     ),
-            );
-        }
-        if let Some(drag) = &self.transform_drag {
-            let label = drag
-                .mesh_tool
-                .map(|tool| format!("{tool:?}"))
-                .unwrap_or_else(|| format!("{:?}", drag.tool));
-            let text = format!(
-                "{}  {}  {}    ·    Enter to apply · Esc to cancel",
-                label,
-                if drag.mesh_tool == Some(crate::modelling::MeshTool::Bevel) {
-                    "All edges".into()
-                } else if drag.mesh_tool == Some(crate::modelling::MeshTool::Inset) {
-                    "Face region".into()
-                } else {
-                    drag.constraint.label()
-                },
-                drag.numeric
-            );
-            viewport = viewport.child(
-                div()
-                    .absolute()
-                    .bottom(px(16.))
-                    .left(px(16.))
-                    .max_w(gpui::relative(0.95))
-                    .px(px(11.))
-                    .py(px(7.))
-                    .rounded(px(7.))
-                    .bg(rgb(t.active))
-                    .border_1()
-                    .border_color(rgb(t.accent_line))
-                    .text_color(rgb(t.accent))
-                    .text_size(px(11.))
-                    .child(text)
-                    .when_some(drag.error.as_ref(), |d, error| {
-                        d.child(
-                            div()
-                                .mt(px(4.))
-                                .text_color(rgb(t.alert))
-                                .child(error.clone()),
-                        )
-                    }),
             );
         }
         viewport.into_any_element()

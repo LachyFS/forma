@@ -355,9 +355,7 @@ impl Studio {
         cx.observe_window_activation(window, |s, w, cx| {
             if !w.is_window_active() {
                 s.close_shading_pie(cx);
-                if s.panels.finish_sidebar_resize() {
-                    cx.notify();
-                }
+                s.finish_panel_drag(cx);
             }
         })
         .detach();
@@ -881,6 +879,7 @@ impl Studio {
         window.focus(&self.focus);
         self.stl_dialog = None;
         self.shading_pie = None;
+        self.panels.close_menu();
         if command != Command::ToggleTheme {
             self.theme_picker = None;
         }
@@ -2072,7 +2071,7 @@ impl Studio {
 
     // Shared by compact display and exact edit text; dimensions retain their
     // geometry-invalidated cache rather than scanning vertices per axis.
-    fn field_numeric_value(&self, field: Field) -> Option<f32> {
+    pub(crate) fn field_numeric_value(&self, field: Field) -> Option<f32> {
         let object = self.selected_object();
         match field {
             Field::Name => None,
@@ -2122,7 +2121,7 @@ impl Studio {
         self.field_is_active(field) && self.field_replace
     }
 
-    fn field_edit_text(&self, field: Field) -> String {
+    pub(crate) fn field_edit_text(&self, field: Field) -> String {
         if field == Field::Name {
             self.selected_object()
                 .map(|object| object.name.clone())
@@ -2255,7 +2254,7 @@ impl Studio {
         self.panels.scroll_to_active_field(next, window, cx);
     }
 
-    fn commit_field(&mut self, cx: &mut Context<Self>) {
+    pub(crate) fn commit_field(&mut self, cx: &mut Context<Self>) {
         // Keep invalid input active so users can correct an expression or cancel
         // it. History is recorded only after a valid value actually changes data.
         let Some((field, text)) = self.active_field.clone() else {
@@ -2457,7 +2456,10 @@ impl Studio {
             cx.notify();
             return;
         }
-        self.history.checkpoint(&before);
+        // A scrub records one undo step when the drag ends.
+        if !self.panels.is_scrubbing() {
+            self.history.checkpoint(&before);
+        }
         self.dirty = true;
         self.status = "Value updated".into();
         self.invalidate(geometry, cx);
@@ -2524,6 +2526,10 @@ impl Studio {
         }
         let key = event.keystroke.key.as_str();
         let mods = event.keystroke.modifiers;
+        if self.handle_menu_key(event, window, cx) {
+            cx.stop_propagation();
+            return;
+        }
         if let Some(dialog) = self.stl_dialog.as_mut() {
             match key {
                 "escape" => self.stl_dialog = None,
@@ -2620,6 +2626,7 @@ impl Studio {
                 "enter" => {
                     if let Some((_, _, command)) = commands.get(self.palette_index) {
                         self.palette_open = false;
+                        self.panels.remember_command(*command);
                         self.execute(*command, window, cx);
                     }
                 }
@@ -2924,9 +2931,12 @@ fn srgb_to_linear(value: f32) -> f32 {
     }
 }
 
+/// Every palette command, grouped in the order the palette draws its sections
+/// (see `ui::commands::command_group`). Shortcuts use the keycap format.
 pub(crate) fn palette_commands(query: &str) -> Vec<(&'static str, &'static str, Command)> {
     let query = query.to_lowercase();
     [
+        // File
         (
             "New project",
             platform_shortcut("⌘ N", "Ctrl+N"),
@@ -2947,17 +2957,20 @@ pub(crate) fn palette_commands(query: &str) -> Vec<(&'static str, &'static str, 
             platform_shortcut("⇧ ⌘ S", "Ctrl+Shift+S"),
             Command::SaveAs,
         ),
+        ("Import Wavefront OBJ…", "", Command::ImportObj),
+        ("Import STL with units…", "", Command::ImportStl),
+        ("Export image (PNG)…", "", Command::ExportImage),
+        ("Export Wavefront OBJ…", "", Command::ExportObj),
+        ("Export STL with units and scope…", "", Command::ExportStl),
+        // Add
         ("Add cube", "", Command::Add(Primitive::Cube)),
-        ("Check for Updates…", "", Command::CheckForUpdates),
-        ("Update preferences…", "", Command::ToggleUpdates),
         ("Add sphere", "", Command::Add(Primitive::Sphere)),
         ("Add cylinder", "", Command::Add(Primitive::Cylinder)),
         ("Add torus", "", Command::Add(Primitive::Torus)),
         ("Add plane", "", Command::Add(Primitive::Plane)),
-        ("Import Wavefront OBJ…", "", Command::ImportObj),
-        ("Export Wavefront OBJ…", "", Command::ExportObj),
-        ("Import STL with units…", "", Command::ImportStl),
-        ("Export STL with units and scope…", "", Command::ExportStl),
+        // Object
+        ("Duplicate selection", "⇧ D", Command::Duplicate),
+        ("Delete selection", "Delete", Command::Delete),
         ("Apply object scale", "", Command::ApplyScale),
         (
             "Apply object rotation and scale",
@@ -2965,12 +2978,7 @@ pub(crate) fn palette_commands(query: &str) -> Vec<(&'static str, &'static str, 
             Command::ApplyRotationScale,
         ),
         ("Origin to geometry center", "", Command::CenterOrigin),
-        ("Export image (PNG)…", "", Command::ExportImage),
-        ("Duplicate selection", "⇧ D", Command::Duplicate),
-        ("Delete selection", "⌫", Command::Delete),
-        ("Frame selected", "` / . / F", Command::FrameSelected),
-        ("Frame all visible geometry", "Home", Command::FrameAll),
-        ("Subdivide mesh", "", Command::Subdivide),
+        // Mesh
         ("Extrude face region", "E", Command::Extrude),
         ("Inset face region", "I", Command::Inset),
         (
@@ -2978,6 +2986,7 @@ pub(crate) fn palette_commands(query: &str) -> Vec<(&'static str, &'static str, 
             platform_shortcut("⌘ B", "Ctrl+B"),
             Command::Bevel,
         ),
+        ("Subdivide mesh", "", Command::Subdivide),
         ("Triangulate faces", "", Command::Triangulate),
         ("Flip face normals", "", Command::FlipNormals),
         (
@@ -2985,29 +2994,24 @@ pub(crate) fn palette_commands(query: &str) -> Vec<(&'static str, &'static str, 
             "",
             Command::RecalculateNormals,
         ),
+        // Select
         ("Select all components", "A", Command::SelectAll),
-        ("Deselect all components", "Alt+A", Command::DeselectAll),
+        (
+            "Deselect all components",
+            platform_shortcut("⌥ A", "Alt+A"),
+            Command::DeselectAll,
+        ),
         (
             "Invert component selection",
-            "Ctrl+I",
+            platform_shortcut("⌘ I", "Ctrl+I"),
             Command::InvertSelection,
         ),
         ("Select linked components", "L", Command::SelectLinked),
         ("Box select components", "B", Command::BoxSelect),
         (
             "Object edit mode",
-            "",
+            "Tab",
             Command::SetEditMode(EditMode::Object),
-        ),
-        (
-            "Face edit mode",
-            "3 in edit mode",
-            Command::SetEditMode(EditMode::Face),
-        ),
-        (
-            "Edge edit mode",
-            "2 in edit mode",
-            Command::SetEditMode(EditMode::Edge),
         ),
         (
             "Vertex edit mode",
@@ -3015,9 +3019,36 @@ pub(crate) fn palette_commands(query: &str) -> Vec<(&'static str, &'static str, 
             Command::SetEditMode(EditMode::Vertex),
         ),
         (
+            "Edge edit mode",
+            "2 in edit mode",
+            Command::SetEditMode(EditMode::Edge),
+        ),
+        (
+            "Face edit mode",
+            "3 in edit mode",
+            Command::SetEditMode(EditMode::Face),
+        ),
+        // Shading
+        (
             "Wireframe viewport",
-            "Z, 4",
+            "Z then 4",
             Command::SetMode(RenderMode::Wireframe),
+        ),
+        ("Solid viewport", "X", Command::SetMode(RenderMode::Solid)),
+        (
+            "Material preview",
+            "C",
+            Command::SetMode(RenderMode::MaterialPreview),
+        ),
+        (
+            "Rendered viewport",
+            "V",
+            Command::SetMode(RenderMode::Rendered),
+        ),
+        (
+            "Material preview lighting",
+            "",
+            Command::TogglePreviewSettings,
         ),
         (
             "PBR surface shader",
@@ -3030,30 +3061,6 @@ pub(crate) fn palette_commands(query: &str) -> Vec<(&'static str, &'static str, 
             Command::SetShader(ShaderKind::Glass),
         ),
         ("Custom surface shader", "", Command::EditShader),
-        ("Solid viewport", "X", Command::SetMode(RenderMode::Solid)),
-        (
-            "Material preview",
-            "C",
-            Command::SetMode(RenderMode::MaterialPreview),
-        ),
-        (
-            "Rendered viewport",
-            "V",
-            Command::SetMode(RenderMode::Rendered),
-        ),
-        ("Perspective view", "0", Command::ViewPerspective),
-        ("Front view", "1", Command::ViewFront),
-        ("Back view", "Alt+1", Command::ViewBack),
-        ("Right view", "3", Command::ViewRight),
-        ("Left view", "Alt+3", Command::ViewLeft),
-        ("Top view", "7", Command::ViewTop),
-        ("Bottom view", "Alt+7", Command::ViewBottom),
-        ("Toggle grid", "", Command::ToggleGrid),
-        (
-            "Toggle selection measurements",
-            "Shift+M",
-            Command::ToggleMeasurements,
-        ),
         (
             "Toggle viewport AI denoising",
             "",
@@ -3064,17 +3071,48 @@ pub(crate) fn palette_commands(query: &str) -> Vec<(&'static str, &'static str, 
             "",
             Command::ToggleRenderDenoise,
         ),
+        // View
+        ("Frame selected", "F", Command::FrameSelected),
+        ("Frame all visible geometry", "Home", Command::FrameAll),
+        ("Perspective view", "0", Command::ViewPerspective),
+        (
+            "Toggle perspective / orthographic",
+            "5",
+            Command::ToggleProjection,
+        ),
+        ("Front view", "1", Command::ViewFront),
+        (
+            "Back view",
+            platform_shortcut("⌥ 1", "Alt+1"),
+            Command::ViewBack,
+        ),
+        ("Right view", "3", Command::ViewRight),
+        (
+            "Left view",
+            platform_shortcut("⌥ 3", "Alt+3"),
+            Command::ViewLeft,
+        ),
+        ("Top view", "7", Command::ViewTop),
+        (
+            "Bottom view",
+            platform_shortcut("⌥ 7", "Alt+7"),
+            Command::ViewBottom,
+        ),
+        ("Toggle grid", "", Command::ToggleGrid),
+        (
+            "Toggle selection measurements",
+            "⇧ M",
+            Command::ToggleMeasurements,
+        ),
+        // Workspace
         ("Keyboard shortcuts", "?", Command::ToggleHelp),
         (
             "Preferences: Color Theme",
             platform_shortcut("⇧ ⌘ T", "Ctrl+Shift+T"),
             Command::ToggleTheme,
         ),
-        (
-            "Material preview lighting",
-            "",
-            Command::TogglePreviewSettings,
-        ),
+        ("Check for Updates…", "", Command::CheckForUpdates),
+        ("Update preferences…", "", Command::ToggleUpdates),
     ]
     .into_iter()
     .filter(|(label, _, _)| {
@@ -3087,9 +3125,10 @@ pub(crate) fn palette_commands(query: &str) -> Vec<(&'static str, &'static str, 
 
 impl Studio {
     /// Use one filtered list for drawing and keyboard dispatch so scoped menus
-    /// cannot execute an item from the unrestricted command palette.
+    /// cannot execute an item from the unrestricted command palette. With no
+    /// query, recently run commands come first.
     pub(crate) fn palette_items(&self) -> Vec<(&'static str, &'static str, Command)> {
-        palette_commands(&self.palette_query)
+        let mut items: Vec<_> = palette_commands(&self.palette_query)
             .into_iter()
             .filter(|(_, _, command)| {
                 !self.palette_exports_only
@@ -3098,7 +3137,28 @@ impl Studio {
                         Command::ExportObj | Command::ExportStl | Command::ExportImage
                     )
             })
-            .collect()
+            .collect();
+        let recent = self.palette_recent_count();
+        if recent > 0 {
+            let recents = self.panels.recent_commands();
+            let mut front: Vec<_> = recents
+                .iter()
+                .filter_map(|command| items.iter().find(|(_, _, c)| c == command).copied())
+                .collect();
+            items.retain(|(_, _, command)| !recents.contains(command));
+            front.extend(items);
+            items = front;
+        }
+        items
+    }
+
+    /// How many leading palette items are recent commands.
+    pub(crate) fn palette_recent_count(&self) -> usize {
+        if self.palette_query.is_empty() && !self.palette_exports_only {
+            self.panels.recent_commands().len()
+        } else {
+            0
+        }
     }
 
     fn selected_material_id(&self) -> Option<u64> {

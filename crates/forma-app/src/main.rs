@@ -163,154 +163,157 @@ fn main() -> Result<()> {
     let unattended = smoke_output.is_some() || capture.is_some();
     let backend = options.backend;
     let project = options.project;
-    Application::new().run(move |cx: &mut App| {
-        cx.on_window_closed(|cx| {
-            if cx.windows().is_empty() {
-                cx.quit();
+    Application::new()
+        .with_assets(ui::Assets)
+        .run(move |cx: &mut App| {
+            ui::register_fonts(cx);
+            cx.on_window_closed(|cx| {
+                if cx.windows().is_empty() {
+                    cx.quit();
+                }
+            })
+            .detach();
+            // Smoke tests use an isolated preference file and never change the user's theme.
+            let theme_path = smoke_output
+                .as_ref()
+                .or(capture.as_ref().map(|(output, _)| output))
+                .map(|output| output.join("preferences/color-theme"))
+                .or_else(theme::preference_path);
+            let bounds = Bounds::centered(None, size(px(1512.), px(960.)), cx);
+            let window = cx
+                .open_window(
+                    WindowOptions {
+                        window_bounds: Some(WindowBounds::Windowed(bounds)),
+                        focus: !unattended,
+                        window_min_size: Some(size(px(1000.), px(650.))),
+                        titlebar: Some(gpui::TitlebarOptions {
+                            title: Some("Forma".into()),
+                            appears_transparent: true,
+                            // Center the 12-pixel macOS controls in our 40-pixel title bar.
+                            traffic_light_position: Some(gpui::point(px(14.), px(14.))),
+                        }),
+                        ..Default::default()
+                    },
+                    |window, cx| cx.new(|cx| Studio::new(backend, theme_path, window, cx)),
+                )
+                .expect("could not open Forma window");
+            macro_rules! register {
+                ($action:ty, $command:expr) => {
+                    cx.on_action(move |_: &$action, cx| {
+                        let _ = window.update(cx, |s, w, cx| s.execute($command, w, cx));
+                    });
+                };
             }
-        })
-        .detach();
-        // Smoke tests use an isolated preference file and never change the user's theme.
-        let theme_path = smoke_output
-            .as_ref()
-            .or(capture.as_ref().map(|(output, _)| output))
-            .map(|output| output.join("preferences/color-theme"))
-            .or_else(theme::preference_path);
-        let bounds = Bounds::centered(None, size(px(1512.), px(960.)), cx);
-        let window = cx
-            .open_window(
-                WindowOptions {
-                    window_bounds: Some(WindowBounds::Windowed(bounds)),
-                    focus: !unattended,
-                    window_min_size: Some(size(px(1000.), px(650.))),
-                    titlebar: Some(gpui::TitlebarOptions {
-                        title: Some("Forma".into()),
-                        appears_transparent: true,
-                        // Center the 12-pixel macOS controls in our 36-pixel title bar.
-                        traffic_light_position: Some(gpui::point(px(8.), px(12.))),
-                    }),
-                    ..Default::default()
-                },
-                |window, cx| cx.new(|cx| Studio::new(backend, theme_path, window, cx)),
-            )
-            .expect("could not open Forma window");
-        macro_rules! register {
-            ($action:ty, $command:expr) => {
-                cx.on_action(move |_: &$action, cx| {
-                    let _ = window.update(cx, |s, w, cx| s.execute($command, w, cx));
+            register!(NewProject, Command::New);
+            register!(OpenProject, Command::Open);
+            register!(SaveProject, Command::Save);
+            register!(SaveProjectAs, Command::SaveAs);
+            register!(ImportObj, Command::ImportObj);
+            register!(ExportObj, Command::ExportObj);
+            register!(ImportStl, Command::ImportStl);
+            register!(ExportStl, Command::ExportStl);
+            register!(ExportPng, Command::ExportImage);
+            register!(Undo, Command::Undo);
+            register!(Redo, Command::Redo);
+            register!(Commands, Command::TogglePalette);
+            register!(ColorTheme, Command::ToggleTheme);
+            register!(FrameAll, Command::FrameAll);
+            register!(Measurements, Command::ToggleMeasurements);
+            register!(BevelEdges, Command::Bevel);
+            register!(TriangulateFaces, Command::Triangulate);
+            register!(FlipNormals, Command::FlipNormals);
+            register!(RecalculateNormals, Command::RecalculateNormals);
+            register!(ApplyScale, Command::ApplyScale);
+            register!(ApplyRotationScale, Command::ApplyRotationScale);
+            register!(CenterOrigin, Command::CenterOrigin);
+            register!(Help, Command::ToggleHelp);
+            register!(CheckForUpdates, Command::CheckForUpdates);
+            cx.on_action(move |_: &Quit, cx| {
+                let _ = window.update(cx, |s, w, cx| {
+                    if s.should_close(w, cx) {
+                        w.remove_window();
+                    }
                 });
-            };
-        }
-        register!(NewProject, Command::New);
-        register!(OpenProject, Command::Open);
-        register!(SaveProject, Command::Save);
-        register!(SaveProjectAs, Command::SaveAs);
-        register!(ImportObj, Command::ImportObj);
-        register!(ExportObj, Command::ExportObj);
-        register!(ImportStl, Command::ImportStl);
-        register!(ExportStl, Command::ExportStl);
-        register!(ExportPng, Command::ExportImage);
-        register!(Undo, Command::Undo);
-        register!(Redo, Command::Redo);
-        register!(Commands, Command::TogglePalette);
-        register!(ColorTheme, Command::ToggleTheme);
-        register!(FrameAll, Command::FrameAll);
-        register!(Measurements, Command::ToggleMeasurements);
-        register!(BevelEdges, Command::Bevel);
-        register!(TriangulateFaces, Command::Triangulate);
-        register!(FlipNormals, Command::FlipNormals);
-        register!(RecalculateNormals, Command::RecalculateNormals);
-        register!(ApplyScale, Command::ApplyScale);
-        register!(ApplyRotationScale, Command::ApplyRotationScale);
-        register!(CenterOrigin, Command::CenterOrigin);
-        register!(Help, Command::ToggleHelp);
-        register!(CheckForUpdates, Command::CheckForUpdates);
-        cx.on_action(move |_: &Quit, cx| {
-            let _ = window.update(cx, |s, w, cx| {
-                if s.should_close(w, cx) {
-                    w.remove_window();
-                }
             });
+            cx.bind_keys([
+                KeyBinding::new(platform_shortcut("cmd-q", "ctrl-q"), Quit, None),
+                KeyBinding::new(platform_shortcut("cmd-w", "ctrl-w"), Quit, None),
+            ]);
+            cx.set_menus(vec![
+                Menu {
+                    name: "Forma".into(),
+                    items: vec![
+                        MenuItem::action("Keyboard shortcuts", Help),
+                        MenuItem::action("Check for Updates…", CheckForUpdates),
+                        MenuItem::separator(),
+                        MenuItem::action("Quit Forma", Quit),
+                    ],
+                },
+                Menu {
+                    name: "File".into(),
+                    items: vec![
+                        MenuItem::action("New project", NewProject),
+                        MenuItem::action("Open…", OpenProject),
+                        MenuItem::action("Save", SaveProject),
+                        MenuItem::action("Save as…", SaveProjectAs),
+                        MenuItem::separator(),
+                        MenuItem::action("Import OBJ…", ImportObj),
+                        MenuItem::action("Export OBJ…", ExportObj),
+                        MenuItem::action("Import STL…", ImportStl),
+                        MenuItem::action("Export STL…", ExportStl),
+                        MenuItem::action("Export image…", ExportPng),
+                    ],
+                },
+                Menu {
+                    name: "Edit".into(),
+                    items: vec![
+                        MenuItem::action("Undo", Undo),
+                        MenuItem::action("Redo", Redo),
+                    ],
+                },
+                Menu {
+                    name: "Object".into(),
+                    items: vec![
+                        MenuItem::action("Apply scale", ApplyScale),
+                        MenuItem::action("Apply rotation and scale", ApplyRotationScale),
+                        MenuItem::action("Origin to geometry center", CenterOrigin),
+                    ],
+                },
+                Menu {
+                    name: "Mesh".into(),
+                    items: vec![
+                        MenuItem::action("Bevel convex mesh edges…", BevelEdges),
+                        MenuItem::action("Triangulate faces", TriangulateFaces),
+                        MenuItem::separator(),
+                        MenuItem::action("Recalculate normals outside", RecalculateNormals),
+                        MenuItem::action("Flip normals", FlipNormals),
+                    ],
+                },
+                Menu {
+                    name: "View".into(),
+                    items: vec![
+                        MenuItem::action("Frame all visible geometry", FrameAll),
+                        MenuItem::action("Selection measurements", Measurements),
+                        MenuItem::separator(),
+                        MenuItem::action("Commands", Commands),
+                        MenuItem::action("Color Theme…", ColorTheme),
+                        MenuItem::action("Keyboard shortcuts", Help),
+                    ],
+                },
+            ]);
+            if let Some(output) = smoke_output {
+                smoke::start(window, output, cx);
+            } else if let Some((output, scenarios)) = capture {
+                capture::start(window, output, scenarios, cx);
+            } else {
+                let _ = window.update(cx, |s, _, cx| {
+                    if let Some(path) = project {
+                        s.open_from(path, false, cx);
+                    }
+                });
+                cx.activate(true);
+            }
         });
-        cx.bind_keys([
-            KeyBinding::new(platform_shortcut("cmd-q", "ctrl-q"), Quit, None),
-            KeyBinding::new(platform_shortcut("cmd-w", "ctrl-w"), Quit, None),
-        ]);
-        cx.set_menus(vec![
-            Menu {
-                name: "Forma".into(),
-                items: vec![
-                    MenuItem::action("Keyboard shortcuts", Help),
-                    MenuItem::action("Check for Updates…", CheckForUpdates),
-                    MenuItem::separator(),
-                    MenuItem::action("Quit Forma", Quit),
-                ],
-            },
-            Menu {
-                name: "File".into(),
-                items: vec![
-                    MenuItem::action("New project", NewProject),
-                    MenuItem::action("Open…", OpenProject),
-                    MenuItem::action("Save", SaveProject),
-                    MenuItem::action("Save as…", SaveProjectAs),
-                    MenuItem::separator(),
-                    MenuItem::action("Import OBJ…", ImportObj),
-                    MenuItem::action("Export OBJ…", ExportObj),
-                    MenuItem::action("Import STL…", ImportStl),
-                    MenuItem::action("Export STL…", ExportStl),
-                    MenuItem::action("Export image…", ExportPng),
-                ],
-            },
-            Menu {
-                name: "Edit".into(),
-                items: vec![
-                    MenuItem::action("Undo", Undo),
-                    MenuItem::action("Redo", Redo),
-                ],
-            },
-            Menu {
-                name: "Object".into(),
-                items: vec![
-                    MenuItem::action("Apply scale", ApplyScale),
-                    MenuItem::action("Apply rotation and scale", ApplyRotationScale),
-                    MenuItem::action("Origin to geometry center", CenterOrigin),
-                ],
-            },
-            Menu {
-                name: "Mesh".into(),
-                items: vec![
-                    MenuItem::action("Bevel convex mesh edges…", BevelEdges),
-                    MenuItem::action("Triangulate faces", TriangulateFaces),
-                    MenuItem::separator(),
-                    MenuItem::action("Recalculate normals outside", RecalculateNormals),
-                    MenuItem::action("Flip normals", FlipNormals),
-                ],
-            },
-            Menu {
-                name: "View".into(),
-                items: vec![
-                    MenuItem::action("Frame all visible geometry", FrameAll),
-                    MenuItem::action("Selection measurements", Measurements),
-                    MenuItem::separator(),
-                    MenuItem::action("Commands", Commands),
-                    MenuItem::action("Color Theme…", ColorTheme),
-                    MenuItem::action("Keyboard shortcuts", Help),
-                ],
-            },
-        ]);
-        if let Some(output) = smoke_output {
-            smoke::start(window, output, cx);
-        } else if let Some((output, scenarios)) = capture {
-            capture::start(window, output, scenarios, cx);
-        } else {
-            let _ = window.update(cx, |s, _, cx| {
-                if let Some(path) = project {
-                    s.open_from(path, false, cx);
-                }
-            });
-            cx.activate(true);
-        }
-    });
     Ok(())
 }
 
