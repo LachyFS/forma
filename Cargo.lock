@@ -1964,6 +1964,7 @@ dependencies = [
  "async-channel 2.5.0",
  "block2",
  "core-graphics 0.24.0",
+ "forma-cad",
  "forma-core",
  "forma-render",
  "forma-update",

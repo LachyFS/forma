@@ -65,7 +65,18 @@ pub(crate) fn boolean(a: &Body, b: &Body, op: BoolOp) -> Result<Body, KernelErro
         base = base.min(min_radius * 0.2);
     }
     let base = base.clamp((size * 1.0e-4).max(2.0e-6), size * 0.05);
-    let check = |result: &Solid| sane(result, op, volume_a, volume_b, check_tolerance, min_radius);
+    let probes = Probes::new(&mesh_a, &mesh_b, op, size);
+    let check = |result: &Solid| {
+        sane(
+            result,
+            op,
+            volume_a,
+            volume_b,
+            check_tolerance,
+            min_radius,
+            &probes,
+        )
+    };
 
     // Nested bounds: truck panics or silently returns an operand unchanged
     // when one surface never touches the other, so classify those first.
@@ -146,6 +157,92 @@ fn run(a: &Solid, b: &Solid, op: BoolOp, tolerance: f64) -> Result<Option<Solid>
 }
 
 /// Reject results that are empty, open or have implausible volumes.
+/// Points whose membership in a correct result is known in advance: just
+/// inside the tool's surface (and inside the target), and for intersections
+/// just inside the target but outside the tool. They catch results truck
+/// returns with plausible volume but the wrong regions, such as a hole that
+/// is imprinted on a face but never cut.
+struct Probes {
+    /// Points that must be inside the result.
+    inside: Vec<DVec3>,
+    /// Points that must be outside the result.
+    outside: Vec<DVec3>,
+}
+
+impl Probes {
+    fn new(a: &TriMesh, b: &TriMesh, op: BoolOp, size: f64) -> Self {
+        let inset = size * 2.0e-3;
+        let sample = |mesh: &TriMesh| -> Vec<DVec3> {
+            let count = mesh.triangles.len();
+            let step = (count / 48).max(1);
+            (0..count)
+                .step_by(step)
+                .filter_map(|i| {
+                    let [p, q, r] = mesh.triangle(i);
+                    let normal = (q - p).cross(r - p);
+                    // Skip slivers whose centroid is too close to an edge.
+                    (normal.length() > inset * inset * 4.0)
+                        .then(|| (p + q + r) / 3.0 - normal.normalize() * inset)
+                })
+                .collect()
+        };
+        let in_b: Vec<DVec3> = sample(b).into_iter().filter(|p| b.contains(*p)).collect();
+        let mut probes = Self {
+            inside: Vec::new(),
+            outside: Vec::new(),
+        };
+        match op {
+            BoolOp::Union => probes.inside = in_b,
+            BoolOp::Subtract => {
+                probes.outside = in_b.into_iter().filter(|p| a.contains(*p)).collect()
+            }
+            BoolOp::Intersect => {
+                probes.inside = in_b.into_iter().filter(|p| a.contains(*p)).collect();
+                probes.outside = sample(a)
+                    .into_iter()
+                    .filter(|p| a.contains(*p) && !b.contains(*p))
+                    .collect();
+            }
+        }
+        probes
+    }
+
+    /// The share of probes the result misclassifies.
+    fn errors(&self, result: &TriMesh) -> (usize, usize) {
+        let wrong = self.inside.iter().filter(|p| !result.contains(**p)).count()
+            + self.outside.iter().filter(|p| result.contains(**p)).count();
+        (wrong, self.inside.len() + self.outside.len())
+    }
+}
+
+/// A face whose largest triangle lacks material behind it or has material in
+/// front of it, if any.
+fn hollow_face(mesh: &TriMesh) -> Option<u32> {
+    let size = mesh.bounds().diagonal();
+    let mut largest: std::collections::BTreeMap<u32, (f64, usize)> = Default::default();
+    for (index, &face) in mesh.faces.iter().enumerate() {
+        let [p, q, r] = mesh.triangle(index);
+        let area = (q - p).cross(r - p).length();
+        let entry = largest.entry(face).or_insert((0.0, index));
+        if area > entry.0 {
+            *entry = (area, index);
+        }
+    }
+    largest.into_iter().find_map(|(face, (area, index))| {
+        let [p, q, r] = mesh.triangle(index);
+        let normal = (q - p).cross(r - p).normalize_or_zero();
+        // Stay well inside small triangles so the probe sees this face.
+        let inset = (size * 2.0e-4).min(area.sqrt() * 0.05);
+        if normal == DVec3::ZERO || inset <= 0.0 {
+            return None;
+        }
+        let center = (p + q + r) / 3.0;
+        let behind = mesh.contains(center - normal * inset);
+        let ahead = mesh.contains(center + normal * inset);
+        (!behind || ahead).then_some(face)
+    })
+}
+
 fn sane(
     result: &Solid,
     op: BoolOp,
@@ -153,6 +250,7 @@ fn sane(
     volume_b: f64,
     tolerance: f64,
     min_radius: f64,
+    probes: &Probes,
 ) -> Result<(), KernelError> {
     let shells = result.boundaries();
     if shells.iter().all(|shell| shell.is_empty()) {
@@ -165,7 +263,24 @@ fn sane(
         return Err(KernelError::new("the result was not a closed solid", ""));
     }
     let body = Body::solid(result.clone(), min_radius);
-    let volume = body.volume(tolerance)?;
+    let mesh = body.trimesh(tolerance)?;
+    let volume = mesh.volume();
+    // Every face must have material just behind it and none just in front:
+    // truck sometimes keeps a zero-thickness lid where a tool's cap was flush.
+    if let Some(face) = hollow_face(&mesh) {
+        return Err(KernelError::new(
+            format!("face {face} of the result does not bound material"),
+            "",
+        ));
+    }
+    // Allow a few probes sitting on tessellation error near tangent surfaces.
+    let (wrong, total) = probes.errors(&mesh);
+    if total > 0 && wrong * 10 > total {
+        return Err(KernelError::new(
+            format!("the result missed part of the operation ({wrong} of {total} checks)"),
+            "",
+        ));
+    }
     let slack = 0.03 * volume_a.max(volume_b) + 1.0e-12;
     let plausible = match op {
         BoolOp::Union => {

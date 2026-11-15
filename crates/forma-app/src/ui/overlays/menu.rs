@@ -7,6 +7,7 @@ use super::super::tokens::*;
 use super::super::{Anchor, MenuKind, hud::view_name};
 use super::{backdrop, contain, pop_in};
 use crate::app::{Command, Studio};
+use crate::cad::{CadCommand, PartShape};
 use crate::theme::Colors;
 use forma_core::Primitive;
 use gpui::{prelude::*, *};
@@ -51,9 +52,21 @@ pub(crate) fn items(kind: MenuKind, camera: forma_core::Camera) -> Vec<MenuItem>
             action(Command::Add(Primitive::Torus), "Torus"),
             action(Command::Add(Primitive::Plane), "Plane"),
             MenuItem::Separator,
+            MenuItem::Heading("Part"),
+            action(Command::Cad(CadCommand::AddPart(PartShape::Box)), "Box"),
+            action(
+                Command::Cad(CadCommand::AddPart(PartShape::Cylinder)),
+                "Cylinder",
+            ),
+            action(
+                Command::Cad(CadCommand::AddPart(PartShape::Sphere)),
+                "Sphere",
+            ),
+            MenuItem::Separator,
             MenuItem::Heading("Import"),
             action(Command::ImportObj, "Wavefront OBJ…"),
             action(Command::ImportStl, "STL…"),
+            action(Command::Cad(CadCommand::ImportStep), "STEP…"),
         ],
         MenuKind::View => {
             let current = view_name(camera);
@@ -226,6 +239,7 @@ pub(super) fn overlay(t: Colors, s: &Studio, cx: &mut Context<Studio>) -> AnyEle
 mod tests {
     use super::{MenuKind, first_item, items, step};
     use crate::app::Command;
+    use crate::cad::{CadCommand, PartShape};
     use forma_core::Primitive;
 
     #[test]
@@ -234,7 +248,10 @@ mod tests {
         let first = first_item(MenuKind::Add);
         assert_eq!(items[first].command(), Some(Command::Add(Primitive::Cube)));
         let last = step(&items, first, -1);
-        assert_eq!(items[last].command(), Some(Command::ImportStl));
+        assert_eq!(
+            items[last].command(),
+            Some(Command::Cad(CadCommand::ImportStep))
+        );
         assert_eq!(step(&items, last, 1), first);
         let plane = items
             .iter()
@@ -242,7 +259,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             items[step(&items, plane, 1)].command(),
-            Some(Command::ImportObj)
+            Some(Command::Cad(CadCommand::AddPart(PartShape::Box)))
         );
     }
 }

@@ -1,4 +1,5 @@
 mod app;
+mod cad;
 mod capture;
 mod code_editor;
 mod exchange;
@@ -50,6 +51,17 @@ actions!(
         ApplyScale,
         ApplyRotationScale,
         CenterOrigin,
+        AddPartBox,
+        AddPartCylinder,
+        AddPartSphere,
+        ExtrudeSketch,
+        CombineJoin,
+        CombineCut,
+        CombineIntersect,
+        ConvertToPart,
+        ConvertToMesh,
+        ImportStep,
+        ExportStep,
         Help,
         CheckForUpdates,
         Quit
@@ -152,6 +164,11 @@ pub(crate) fn command_modifier(modifiers: gpui::Modifiers) -> bool {
 }
 
 fn main() -> Result<()> {
+    // The CAD worker is this executable in a child process; it must not
+    // start the updater or a window.
+    if std::env::args().nth(1).as_deref() == Some("--cad-worker") {
+        forma_cad::worker::serve_stdio();
+    }
     forma_update::startup();
     let environment = std::env::var("FORMA_RENDERER").ok();
     let options = LaunchOptions::parse(std::env::args().skip(1), environment.as_deref())?;
@@ -200,7 +217,10 @@ fn main() -> Result<()> {
                 .expect("could not open Forma window");
             // Leave the GPU driver before its exit-time teardown runs.
             cx.on_app_quit(move |cx| {
-                let _ = window.update(cx, |s, _, _| s.shutdown_renderer());
+                let _ = window.update(cx, |s, _, _| {
+                    s.shutdown_renderer();
+                    s.shutdown_cad();
+                });
                 async {}
             })
             .detach();
@@ -233,6 +253,39 @@ fn main() -> Result<()> {
             register!(ApplyScale, Command::ApplyScale);
             register!(ApplyRotationScale, Command::ApplyRotationScale);
             register!(CenterOrigin, Command::CenterOrigin);
+            {
+                use cad::{CadCommand, PartShape};
+                use forma_core::FeatureOperation;
+                register!(
+                    AddPartBox,
+                    Command::Cad(CadCommand::AddPart(PartShape::Box))
+                );
+                register!(
+                    AddPartCylinder,
+                    Command::Cad(CadCommand::AddPart(PartShape::Cylinder))
+                );
+                register!(
+                    AddPartSphere,
+                    Command::Cad(CadCommand::AddPart(PartShape::Sphere))
+                );
+                register!(ExtrudeSketch, Command::Cad(CadCommand::ExtrudeSketch));
+                register!(
+                    CombineJoin,
+                    Command::Cad(CadCommand::Combine(FeatureOperation::Join))
+                );
+                register!(
+                    CombineCut,
+                    Command::Cad(CadCommand::Combine(FeatureOperation::Cut))
+                );
+                register!(
+                    CombineIntersect,
+                    Command::Cad(CadCommand::Combine(FeatureOperation::Intersect))
+                );
+                register!(ConvertToPart, Command::Cad(CadCommand::ConvertToPart));
+                register!(ConvertToMesh, Command::Cad(CadCommand::ConvertToMesh));
+                register!(ImportStep, Command::Cad(CadCommand::ImportStep));
+                register!(ExportStep, Command::Cad(CadCommand::ExportStep));
+            }
             register!(Help, Command::ToggleHelp);
             register!(CheckForUpdates, Command::CheckForUpdates);
             cx.on_action(move |_: &Quit, cx| {
@@ -268,6 +321,8 @@ fn main() -> Result<()> {
                         MenuItem::action("Export OBJ…", ExportObj),
                         MenuItem::action("Import STL…", ImportStl),
                         MenuItem::action("Export STL…", ExportStl),
+                        MenuItem::action("Import STEP…", ImportStep),
+                        MenuItem::action("Export STEP…", ExportStep),
                         MenuItem::action("Export image…", ExportPng),
                     ],
                 },
@@ -284,6 +339,22 @@ fn main() -> Result<()> {
                         MenuItem::action("Apply scale", ApplyScale),
                         MenuItem::action("Apply rotation and scale", ApplyRotationScale),
                         MenuItem::action("Origin to geometry center", CenterOrigin),
+                    ],
+                },
+                Menu {
+                    name: "Part".into(),
+                    items: vec![
+                        MenuItem::action("Box", AddPartBox),
+                        MenuItem::action("Cylinder", AddPartCylinder),
+                        MenuItem::action("Sphere", AddPartSphere),
+                        MenuItem::action("Extrude sketch", ExtrudeSketch),
+                        MenuItem::separator(),
+                        MenuItem::action("Join", CombineJoin),
+                        MenuItem::action("Cut", CombineCut),
+                        MenuItem::action("Intersect", CombineIntersect),
+                        MenuItem::separator(),
+                        MenuItem::action("Convert to part", ConvertToPart),
+                        MenuItem::action("Convert to mesh", ConvertToMesh),
                     ],
                 },
                 Menu {

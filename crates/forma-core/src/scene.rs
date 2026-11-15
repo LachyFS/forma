@@ -873,8 +873,27 @@ impl Scene {
         Ok(id)
     }
 
+    /// Record issues for the current content of `part_id` without changing
+    /// its cached tessellation, for regenerations that produced nothing.
+    /// Returns false for stale stamps.
+    pub fn mark_part_evaluated(
+        &mut self,
+        part_id: u64,
+        stamp: u64,
+        issues: Vec<crate::FeatureIssue>,
+    ) -> bool {
+        match self.part_mut(part_id) {
+            Some(part) if part.stamp == stamp => {
+                part.evaluated = Some(PartEvaluation { stamp, issues });
+                true
+            }
+            _ => false,
+        }
+    }
+
     /// Install a regenerated tessellation for every object of `part_id`, if
-    /// the part still has content `stamp`. Returns `Ok(false)` for stale
+    /// the part still has content `stamp`. `None` means the history produced
+    /// no body, and the objects stop rendering. Returns `Ok(false)` for stale
     /// results, which callers drop. The cache is not an undoable edit; undo
     /// restores whichever cache the earlier scene held and the stamp check
     /// then requests a fresh regeneration if needed.
@@ -897,6 +916,16 @@ impl Scene {
             .filter(|object| object.part_id() == Some(part_id))
             .map(|object| object.id)
             .collect();
+        if mesh.is_none() {
+            // The history produced no body: show nothing.
+            for id in &users {
+                if let Some(ObjectData::Part { mesh, .. }) =
+                    self.object_mut(*id).map(|object| &mut object.data)
+                {
+                    *mesh = None;
+                }
+            }
+        }
         if let Some(mesh) = mesh {
             mesh.validate().context("Invalid part tessellation")?;
             let mut existing: Vec<u64> = users

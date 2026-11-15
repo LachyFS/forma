@@ -12,7 +12,7 @@ use crate::app::{Command, EditMode, Field, Studio};
 use crate::sketch::demo;
 use crate::smoke::{capture_window, prepare_capture};
 use crate::theme::Theme;
-use crate::ui::{Anchor, InspectorTab, MenuKind};
+use crate::ui::{Anchor, InspectorTab, MenuKind, PanelSection};
 use anyhow::{Result, ensure};
 use forma_render::RenderMode;
 use gpui::{App, AsyncApp, Timer, WindowHandle};
@@ -66,6 +66,34 @@ fn restore_scene(s: &mut Studio, cx: &mut gpui::Context<Studio>) {
         s.dirty = false;
         s.invalidate(true, cx);
     }
+}
+
+/// The CAD showcase scene, with `select` selected, in `mode`.
+fn parts(
+    s: &mut Studio,
+    w: &mut gpui::Window,
+    cx: &mut gpui::Context<Studio>,
+    mode: RenderMode,
+    select: Option<&str>,
+) {
+    stash_scene(s);
+    s.scene = crate::cad::demo_scene();
+    let selected = select.and_then(|name| {
+        s.scene
+            .objects
+            .iter()
+            .find(|object| object.name == name)
+            .map(|object| object.id)
+    });
+    s.select_objects(selected.into_iter().collect(), selected);
+    s.execute(Command::SetMode(mode), w, cx);
+    s.invalidate(true, cx);
+}
+fn leave_parts(s: &mut Studio, w: &mut gpui::Window, cx: &mut gpui::Context<Studio>) {
+    restore_scene(s, cx);
+    let first = s.scene.objects.first().map(|object| object.id);
+    s.select_objects(first.into_iter().collect(), first);
+    s.execute(Command::SetMode(RenderMode::MaterialPreview), w, cx);
 }
 
 /// Workspace states captured by `--ui-capture`. Add a scenario here whenever a
@@ -387,6 +415,39 @@ pub(crate) fn scenarios() -> Vec<Scenario> {
             enter: demo::finished_objects,
             leave: demo::restore,
         },
+        Scenario {
+            name: "parts-material",
+            enter: |s, w, cx| parts(s, w, cx, RenderMode::MaterialPreview, Some("Bracket")),
+            leave: leave_parts,
+        },
+        Scenario {
+            name: "parts-solid",
+            enter: |s, w, cx| parts(s, w, cx, RenderMode::Solid, None),
+            leave: leave_parts,
+        },
+        Scenario {
+            name: "parts-wireframe",
+            enter: |s, w, cx| parts(s, w, cx, RenderMode::Wireframe, None),
+            leave: leave_parts,
+        },
+        Scenario {
+            name: "parts-inspector",
+            enter: |s, w, cx| {
+                parts(s, w, cx, RenderMode::MaterialPreview, Some("Bracket"));
+                s.toggle_section(PanelSection::Transform, cx);
+                s.toggle_section(PanelSection::Surface, cx);
+            },
+            leave: |s, w, cx| {
+                s.toggle_section(PanelSection::Transform, cx);
+                s.toggle_section(PanelSection::Surface, cx);
+                leave_parts(s, w, cx);
+            },
+        },
+        Scenario {
+            name: "parts-wireframe-selected",
+            enter: |s, w, cx| parts(s, w, cx, RenderMode::Wireframe, Some("Block")),
+            leave: leave_parts,
+        },
     ]
 }
 
@@ -440,6 +501,15 @@ async fn run(
             (scenario.enter)(s, w, cx);
             cx.notify();
         })?;
+        // CAD parts regenerate in the worker process; wait for their meshes.
+        let deadline = Instant::now() + Duration::from_secs(60);
+        while !window.update(cx, |s, _, _| s.cad_idle())? {
+            ensure!(
+                Instant::now() < deadline,
+                "CAD parts did not regenerate within 60 seconds"
+            );
+            Timer::after(Duration::from_millis(50)).await;
+        }
         Timer::after(Duration::from_millis(450)).await;
         prepare_capture(window, cx).await?;
         let path = output.join(format!("{}.png", scenario.name));

@@ -154,6 +154,7 @@ pub enum Command {
     LoadPreviewHdri,
     ResetPreview,
     Draw(crate::sketch::DrawCommand),
+    Cad(crate::cad::CadCommand),
 }
 
 pub(crate) struct TransformDrag {
@@ -253,12 +254,13 @@ pub struct Studio {
     scene_snapshot: Arc<Scene>,
     needs_render: bool,
     needs_snapshot: bool,
-    project_epoch: u64,
+    pub(crate) project_epoch: u64,
     saving: bool,
     loading: bool,
     exporting_obj: bool,
     exporting_stl: bool,
     preview_load_id: u64,
+    pub(crate) cad: crate::cad::CadState,
 }
 
 impl Studio {
@@ -472,6 +474,7 @@ impl Studio {
             exporting_obj: false,
             exporting_stl: false,
             preview_load_id: 0,
+            cad: crate::cad::CadState::new(cx),
         };
         studio.invalidate(false, cx);
         studio
@@ -722,6 +725,8 @@ impl Studio {
             self.surface_query.take();
             self.measurement_cache.get_mut().take();
             self.local_dimension_cache.get_mut().take();
+            // Edits, undo and loads can leave part tessellations stale.
+            self.sync_parts();
         }
         self.generation += 1;
         self.denoised_generation = None;
@@ -923,6 +928,10 @@ impl Studio {
             self.help_open = false;
         }
         if self.draw_before_command(command, cx) {
+            cx.notify();
+            return;
+        }
+        if self.cad_blocks(command) {
             cx.notify();
             return;
         }
@@ -1550,6 +1559,7 @@ impl Studio {
             }
             Command::LoadPreviewHdri => self.choose_preview_hdri(cx),
             Command::Draw(_) => {}
+            Command::Cad(command) => self.execute_cad(command, cx),
         }
         cx.notify();
     }
@@ -2971,6 +2981,8 @@ fn srgb_to_linear(value: f32) -> f32 {
 /// Every palette command, grouped in the order the palette draws its sections
 /// (see `ui::commands::command_group`). Shortcuts use the keycap format.
 pub(crate) fn palette_commands(query: &str) -> Vec<(&'static str, &'static str, Command)> {
+    use crate::cad::{CadCommand, PartShape};
+    use forma_core::FeatureOperation;
     let query = query.to_lowercase();
     [
         // File
@@ -3021,6 +3033,54 @@ pub(crate) fn palette_commands(query: &str) -> Vec<(&'static str, &'static str, 
             "Return",
             Command::Draw(crate::sketch::DrawCommand::Finish),
         ),
+        // Part
+        (
+            "Part: Box",
+            "",
+            Command::Cad(CadCommand::AddPart(PartShape::Box)),
+        ),
+        (
+            "Part: Cylinder",
+            "",
+            Command::Cad(CadCommand::AddPart(PartShape::Cylinder)),
+        ),
+        (
+            "Part: Sphere",
+            "",
+            Command::Cad(CadCommand::AddPart(PartShape::Sphere)),
+        ),
+        (
+            "Extrude sketch",
+            "",
+            Command::Cad(CadCommand::ExtrudeSketch),
+        ),
+        (
+            "Combine: Join",
+            "",
+            Command::Cad(CadCommand::Combine(FeatureOperation::Join)),
+        ),
+        (
+            "Combine: Cut",
+            "",
+            Command::Cad(CadCommand::Combine(FeatureOperation::Cut)),
+        ),
+        (
+            "Combine: Intersect",
+            "",
+            Command::Cad(CadCommand::Combine(FeatureOperation::Intersect)),
+        ),
+        (
+            "Convert to part",
+            "",
+            Command::Cad(CadCommand::ConvertToPart),
+        ),
+        (
+            "Convert to mesh",
+            "",
+            Command::Cad(CadCommand::ConvertToMesh),
+        ),
+        ("Import STEP…", "", Command::Cad(CadCommand::ImportStep)),
+        ("Export STEP…", "", Command::Cad(CadCommand::ExportStep)),
         // Object
         ("Duplicate selection", "⇧ D", Command::Duplicate),
         ("Delete selection", "Delete", Command::Delete),

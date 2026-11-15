@@ -38,9 +38,10 @@ pub(crate) enum PanelSection {
     Lighting,
     Display,
     Sketch,
+    Part,
 }
 
-const SECTION_COUNT: usize = 9;
+const SECTION_COUNT: usize = 10;
 
 impl PanelSection {
     fn contains_field(self, field: Field) -> bool {
@@ -64,9 +65,12 @@ impl PanelSection {
 
     fn tab(self) -> InspectorTab {
         match self {
-            Self::Transform | Self::Surface | Self::Geometry | Self::Textures | Self::Sketch => {
-                InspectorTab::Object
-            }
+            Self::Transform
+            | Self::Surface
+            | Self::Geometry
+            | Self::Textures
+            | Self::Sketch
+            | Self::Part => InspectorTab::Object,
             Self::Render | Self::Denoise | Self::Lighting | Self::Display => InspectorTab::Render,
         }
     }
@@ -180,6 +184,7 @@ impl Default for PanelState {
             PanelSection::Lighting,
             PanelSection::Display,
             PanelSection::Sketch,
+            PanelSection::Part,
         ] {
             open[section as usize] = true;
         }
