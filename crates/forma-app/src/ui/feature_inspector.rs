@@ -845,10 +845,17 @@ fn part_summary(
         .when_some(stats, |d, stats| {
             d.child(caption(
                 t,
-                format!(
-                    "Regenerated in {:.0} ms · evaluate {:.0} · tessellate {:.0}",
-                    stats.total_ms, stats.evaluate_ms, stats.tessellate_ms
-                ),
+                if stats.evaluate_ms < 0.5 {
+                    format!(
+                        "Regenerated in {:.0} ms · history reused, tessellation only",
+                        stats.total_ms
+                    )
+                } else {
+                    format!(
+                        "Regenerated in {:.0} ms · solid {:.0} ms · mesh {:.0} ms",
+                        stats.total_ms, stats.evaluate_ms, stats.tessellate_ms
+                    )
+                },
             ))
         });
     for issue in issues {
