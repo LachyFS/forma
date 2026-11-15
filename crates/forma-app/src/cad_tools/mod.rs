@@ -24,6 +24,7 @@ mod edit;
 pub(crate) mod geometry;
 mod hud;
 pub(crate) mod overlay;
+mod pick;
 mod push_pull;
 mod sketch_tool;
 pub(crate) mod smoke;
@@ -149,6 +150,16 @@ pub(crate) type FaceCacheEntry = (u64, forma_core::Camera, bool, Rc<overlay::Fac
 /// Per-part topology for one scene revision.
 type TopologyCache = RefCell<Option<(u64, Vec<(u64, Rc<edit::Topology>)>)>>;
 
+/// Scene revision, the one object covered (or all), and the index.
+type CachedPick = (u64, Option<u64>, Rc<pick::PickIndex>);
+/// (scene revision, part, face selection) → resolved face groups.
+type ResolvedFaces = (
+    (u64, u64, Vec<forma_core::FaceRef>),
+    Vec<(u32, forma_core::FaceRef)>,
+);
+/// (scene revision, part, edge selection) → topology edge indices.
+type ResolvedEdges = ((u64, u64, Vec<edit::EdgeSelection>), Vec<usize>);
+
 #[derive(Default)]
 pub(crate) struct CadToolState {
     pub tool: Option<Tool>,
@@ -166,6 +177,11 @@ pub(crate) struct CadToolState {
     /// Visible triangles and outline of highlighted part faces, per scene
     /// revision and camera, and whether the mask is refined.
     pub(crate) faces: RefCell<std::collections::HashMap<(u64, u32), FaceCacheEntry>>,
+    /// Hover picking hierarchy for one scene revision.
+    pick: RefCell<Option<CachedPick>>,
+    /// Resolved part-edit selections, per scene revision and selection.
+    pub(crate) resolved_faces: RefCell<Option<ResolvedFaces>>,
+    pub(crate) resolved_edges: RefCell<Option<ResolvedEdges>>,
     /// Pointer position of the last hover update, to skip redundant picks.
     last_hover: Option<Vec2>,
 }
@@ -793,6 +809,21 @@ impl Studio {
         state.edit = EditState::default();
         state.region_hover = None;
         state.preview_token += 1;
+    }
+
+    /// The hover picking hierarchy for this scene revision, covering
+    /// `object` only when given (built on first use, then reused per move).
+    pub(crate) fn pick_index(&self, object: Option<u64>) -> Rc<pick::PickIndex> {
+        let mut cache = self.cad_tool.pick.borrow_mut();
+        if let Some((revision, only, index)) = cache.as_ref()
+            && *revision == self.scene_revision
+            && *only == object
+        {
+            return index.clone();
+        }
+        let index = Rc::new(pick::PickIndex::new(&self.scene, object));
+        *cache = Some((self.scene_revision, object, index.clone()));
+        index
     }
 
     /// A counter that changes with every undo step (checkpoint, undo, redo).

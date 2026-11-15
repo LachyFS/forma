@@ -213,21 +213,40 @@ impl Studio {
     }
 
     /// Selected faces of the edited part resolved against its tessellation.
+    /// Resolved once per scene revision and selection: the overlay and the
+    /// status bar ask every frame.
     pub(crate) fn selected_edit_faces(&self, id: u64) -> Vec<(u32, FaceRef)> {
         if self.cad_tool.edit.object != Some(id) {
             return Vec::new();
         }
+        let key = (self.scene_revision, id, self.cad_tool.edit.faces.clone());
+        if let Some((cached, groups)) = self.cad_tool.resolved_faces.borrow().as_ref()
+            && *cached == key
+        {
+            return groups.clone();
+        }
         let Some(mesh) = self.scene.object_mesh(id) else {
             return Vec::new();
         };
+        let references: Vec<(Vec3, Vec3)> = self
+            .cad_tool
+            .edit
+            .faces
+            .iter()
+            .map(|r| (r.point, r.normal))
+            .collect();
         let mut groups: Vec<(u32, FaceRef)> = Vec::new();
-        for reference in &self.cad_tool.edit.faces {
-            if let Some(group) = geometry::resolve_group(mesh, reference.point, reference.normal)
+        for (group, reference) in geometry::resolve_groups(mesh, &references)
+            .into_iter()
+            .zip(&self.cad_tool.edit.faces)
+        {
+            if let Some(group) = group
                 && !groups.iter().any(|(g, _)| *g == group)
             {
                 groups.push((group, *reference));
             }
         }
+        *self.cad_tool.resolved_faces.borrow_mut() = Some((key, groups.clone()));
         groups
     }
 
@@ -240,12 +259,21 @@ impl Studio {
         else {
             return Vec::new();
         };
-        self.cad_tool
+        let key = (self.scene_revision, id, self.cad_tool.edit.edges.clone());
+        if let Some((cached, indices)) = self.cad_tool.resolved_edges.borrow().as_ref()
+            && *cached == key
+        {
+            return indices.clone();
+        }
+        let indices: Vec<usize> = self
+            .cad_tool
             .edit
             .edges
             .iter()
             .filter_map(|selection| topology.resolve(mesh, selection))
-            .collect()
+            .collect();
+        *self.cad_tool.resolved_edges.borrow_mut() = Some((key, indices.clone()));
+        indices
     }
 
     /// Workspace commands while editing a part. Returns true when handled.
@@ -488,8 +516,14 @@ impl Studio {
             }
             _ => {
                 let ray = self.tool_ray(position)?;
-                let hit = self.scene.pick(ray)?;
-                if hit.object_id != id {
+                // The edited part's own index, then occlusion by everything
+                // else through the shared visibility hierarchy.
+                let hit = self.pick_index(Some(id)).pick(ray)?;
+                if !crate::viewport::visible_in_query(
+                    self.scene.camera,
+                    self.visibility_query(),
+                    hit.position,
+                ) {
                     return None;
                 }
                 let group = instance.mesh.face_group(hit.face)?;

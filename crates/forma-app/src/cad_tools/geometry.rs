@@ -366,25 +366,47 @@ pub(crate) fn straight_edges(points: &[Vec3]) -> Vec<(Vec3, Vec3)> {
 
 /// Picks the face-group polygon containing `point` (part space) whose plane
 /// matches `normal`, for re-finding a selected face after regeneration.
+#[cfg(test)]
 pub(crate) fn resolve_group(mesh: &Mesh, point: Vec3, normal: Vec3) -> Option<u32> {
+    resolve_groups(mesh, &[(point, normal)])[0]
+}
+
+/// [`resolve_group`] for several references in one pass over the mesh's
+/// triangles (selections are re-resolved after every regeneration).
+pub(crate) fn resolve_groups(mesh: &Mesh, references: &[(Vec3, Vec3)]) -> Vec<Option<u32>> {
     let size = mesh_extent(mesh).max(1.0e-6);
-    let mut best: Option<(f32, u32)> = None;
+    let mut best: Vec<Option<(f32, u32)>> = vec![None; references.len()];
+    if references.is_empty() {
+        return Vec::new();
+    }
     for (triangle, face) in mesh.triangles_with_faces() {
         let [a, b, c] = triangle.map(|i| mesh.positions[i as usize]);
         let n = (b - a).cross(c - a).normalize_or_zero();
-        if n.dot(normal) < 0.995 {
+        let Some(group) = mesh.face_group(face) else {
             continue;
-        }
-        let offset = (point - a).dot(n);
-        let projected = point - n * offset;
-        let lateral = projected.distance(closest_on_triangle(projected, a, b, c));
-        let score = lateral + offset.abs();
-        if best.is_none_or(|(s, _)| score < s) {
-            best = Some((score, mesh.face_group(face)?));
+        };
+        for (slot, (point, normal)) in best.iter_mut().zip(references) {
+            if n.dot(*normal) < 0.995 {
+                continue;
+            }
+            let offset = (*point - a).dot(n);
+            if offset.abs() > size * 1.0e-3 {
+                continue;
+            }
+            let projected = *point - n * offset;
+            let lateral = projected.distance(closest_on_triangle(projected, a, b, c));
+            let score = lateral + offset.abs();
+            if slot.is_none_or(|(s, _)| score < s) {
+                *slot = Some((score, group));
+            }
         }
     }
-    best.filter(|(score, _)| *score <= size * 1.0e-3)
-        .map(|(_, g)| g)
+    best.into_iter()
+        .map(|b| {
+            b.filter(|(score, _)| *score <= size * 1.0e-3)
+                .map(|(_, g)| g)
+        })
+        .collect()
 }
 
 fn mesh_extent(mesh: &Mesh) -> f32 {

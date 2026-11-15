@@ -140,9 +140,9 @@ impl Studio {
     /// same face (so hover does not rebuild outlines every move).
     pub(crate) fn pick_face(&self, screen: Vec2, previous: Option<&FacePick>) -> Option<FacePick> {
         let ray = self.tool_ray(screen)?;
-        let hit = self.scene.pick(ray)?;
-        let object = self.scene.object(hit.object_id)?;
-        let instance = self.scene.mesh_instance(hit.object_id)?;
+        let hit = self.pick_index(None).pick(ray)?;
+        let object = self.scene.object(hit.object)?;
+        let instance = self.scene.mesh_instance(hit.object)?;
         let matrix = instance.world_transform;
         if !matrix.is_finite() || matrix.determinant().abs() < 1.0e-12 {
             return None;
@@ -159,7 +159,7 @@ impl Studio {
         };
         if let Some(previous) = previous
             && previous.revision == self.scene_revision
-            && previous.object == hit.object_id
+            && previous.object == hit.object
             && match previous.kind {
                 FaceKind::Part { group: g, .. } => is_part && g == group,
                 FaceKind::Mesh { face } => !is_part && face == hit.face,
@@ -194,7 +194,7 @@ impl Studio {
         let scale = matrix.transform_vector3(local_normal).length().max(1.0e-9);
         let prism = face_prism(mesh, &faces, matrix, world_normal);
         Some(FacePick {
-            object: hit.object_id,
+            object: hit.object,
             name: object.name.clone(),
             kind,
             normal: world_normal,
