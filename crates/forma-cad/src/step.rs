@@ -290,12 +290,17 @@ pub fn import_step(name: &str, text: &str) -> Result<PartData, KernelError> {
 
 #[cfg(test)]
 fn evaluated_body(part: &PartData) -> Result<Body, KernelError> {
-    evaluated_body_cached(part, &mut RegenCache::default())
+    evaluated_body_cached(part, &[], &mut RegenCache::default(), &mut |_| {})
 }
 
-fn evaluated_body_cached(part: &PartData, cache: &mut RegenCache) -> Result<Body, KernelError> {
+fn evaluated_body_cached(
+    part: &PartData,
+    skip: &[forma_core::FeatureIssue],
+    cache: &mut RegenCache,
+    progress: &mut dyn FnMut(u64),
+) -> Result<Body, KernelError> {
     let mut stats = RegenStats::default();
-    let (body, issues) = evaluate_part(part.id, part, &[], cache, &mut |_| {}, &mut stats);
+    let (body, issues) = evaluate_part(part.id, part, skip, cache, progress, &mut stats);
     match body {
         Some(body) => Ok(body),
         None => Err(issues
@@ -310,20 +315,24 @@ fn evaluated_body_cached(part: &PartData, cache: &mut RegenCache) -> Result<Body
 
 /// Export placed parts as one STEP document (millimetres).
 pub fn export_step(parts: &[StepPart]) -> Result<String, KernelError> {
-    export_step_cached(parts, &mut RegenCache::default())
+    export_step_cached(parts, &[], &mut RegenCache::default(), &mut |_| {})
 }
 
-/// [`export_step`] reusing evaluated feature prefixes from `cache`.
+/// [`export_step`] reusing evaluated feature prefixes from `cache`, skipping
+/// `skips[i]` in part `i` and reporting each feature it evaluates.
 pub(crate) fn export_step_cached(
     parts: &[StepPart],
+    skips: &[Vec<forma_core::FeatureIssue>],
     cache: &mut RegenCache,
+    progress: &mut dyn FnMut(u64),
 ) -> Result<String, KernelError> {
     if parts.is_empty() {
         return Err(KernelError::new("Select a part to export", ""));
     }
     let mut solids: Vec<Solid> = Vec::new();
-    for placed in parts {
-        let body = evaluated_body_cached(&placed.part, cache)?;
+    for (index, placed) in parts.iter().enumerate() {
+        let skip = skips.get(index).map(Vec::as_slice).unwrap_or_default();
+        let body = evaluated_body_cached(&placed.part, skip, cache, progress)?;
         let Geometry::Solid(solid) = &body.geometry else {
             return Err(KernelError::new(
                 format!("{} is an imported STEP body", placed.name),
@@ -375,14 +384,16 @@ pub(crate) fn export_step_cached(
 
 /// Bake a part into an editable polygon mesh in part space.
 pub fn part_to_mesh(part: &PartData) -> Result<Mesh, KernelError> {
-    part_to_mesh_cached(part, &mut RegenCache::default())
+    part_to_mesh_cached(part, &[], &mut RegenCache::default(), &mut |_| {})
 }
 
 pub(crate) fn part_to_mesh_cached(
     part: &PartData,
+    skip: &[forma_core::FeatureIssue],
     cache: &mut RegenCache,
+    progress: &mut dyn FnMut(u64),
 ) -> Result<Mesh, KernelError> {
-    let body = evaluated_body_cached(part, cache)?;
+    let body = evaluated_body_cached(part, skip, cache, progress)?;
     editable_mesh(&body, part.quality)
 }
 

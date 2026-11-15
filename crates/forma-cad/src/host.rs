@@ -275,6 +275,9 @@ struct Runner {
     worker: Option<Worker>,
     cache: RegenCache,
     next_id: u64,
+    /// Features a part's latest regeneration had to skip, by part id with
+    /// its stamp: baking and exporting that version skip them too.
+    skips: std::collections::HashMap<u64, (u64, Vec<FeatureIssue>)>,
 }
 
 impl Runner {
@@ -420,6 +423,14 @@ impl Runner {
         }
     }
 
+    /// Features to skip when baking or exporting this version of `part`.
+    fn known_skips(&self, part: &PartData) -> Vec<FeatureIssue> {
+        match self.skips.get(&part.id) {
+            Some((stamp, skip)) if *stamp == part.stamp => skip.clone(),
+            _ => Vec::new(),
+        }
+    }
+
     fn id(&mut self) -> u64 {
         self.next_id += 1;
         self.next_id
@@ -453,6 +464,12 @@ impl Runner {
             });
             let failure = match outcome {
                 Ok(Response::Regenerated { result, .. }) => {
+                    if request.skip.is_empty() {
+                        self.skips.remove(&request.part_id);
+                    } else {
+                        self.skips
+                            .insert(request.part_id, (request.part.stamp, request.skip.clone()));
+                    }
                     sink(HostEvent::Regenerated(result));
                     return;
                 }
@@ -595,6 +612,7 @@ fn run(config: HostConfig, shared: Arc<Shared>, sink: Sink) {
         worker: None,
         cache: RegenCache::default(),
         next_id: 0,
+        skips: Default::default(),
     };
     loop {
         let job = {
@@ -611,11 +629,16 @@ fn run(config: HostConfig, shared: Arc<Shared>, sink: Sink) {
             Job::Regenerate(request) => runner.regenerate(request, &sink),
             Job::PartToMesh { ticket, part } => {
                 let id = runner.id();
-                runner.simple(Request::PartToMesh { id, part }, ticket, &sink)
+                let skip = runner.known_skips(&part);
+                runner.simple(Request::PartToMesh { id, part, skip }, ticket, &sink)
             }
             Job::ExportStep { ticket, parts } => {
                 let id = runner.id();
-                runner.simple(Request::ExportStep { id, parts }, ticket, &sink)
+                let skips = parts
+                    .iter()
+                    .map(|placed| runner.known_skips(&placed.part))
+                    .collect();
+                runner.simple(Request::ExportStep { id, parts, skips }, ticket, &sink)
             }
             Job::ImportStep { ticket, name, text } => {
                 let id = runner.id();

@@ -105,10 +105,16 @@ pub enum Request {
     PartToMesh {
         id: u64,
         part: PartData,
+        /// Features to treat as failed, as in [`RegenRequest::skip`].
+        #[serde(default)]
+        skip: Vec<FeatureIssue>,
     },
     ExportStep {
         id: u64,
         parts: Vec<StepPart>,
+        /// Features to treat as failed, per part.
+        #[serde(default)]
+        skips: Vec<Vec<FeatureIssue>>,
     },
     /// Check a STEP document and return it as a part history.
     ImportStep {
