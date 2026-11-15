@@ -240,15 +240,17 @@ impl Geo {
     }
 
     /// Points along the curve from `t = 0` towards `t = 1`, excluding the end.
+    /// The chord tolerance is capped relative to each arc's own radius, so
+    /// a small arc in a large sketch keeps its shape (and its area).
     fn sample(&self, chord: f64, out: &mut Vec<DVec2>) {
         match *self {
             Self::Line { a, .. } => out.push(a),
             Self::Arc { r, sweep, .. } => {
-                let steps = arc_steps(r, sweep.abs(), chord);
+                let steps = arc_steps(r, sweep.abs(), chord.min(r * 2.0e-3)).max(3);
                 out.extend((0..steps).map(|i| self.point(i as f64 / steps as f64)));
             }
             Self::Circle { r, .. } => {
-                let steps = arc_steps(r, TAU, chord).max(8);
+                let steps = arc_steps(r, TAU, chord.min(r * 2.0e-3)).max(8);
                 out.extend((0..steps).map(|i| self.point(i as f64 / steps as f64)));
             }
         }

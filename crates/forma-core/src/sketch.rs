@@ -1555,4 +1555,41 @@ mod tests {
             }
         }
     }
+
+    #[test]
+    fn small_arcs_keep_their_regions_in_large_sketches() {
+        // Review case "smallcircle": holes far smaller than the sketch.
+        for (extent, radius) in [
+            (1.0_f32, 0.0005_f32),
+            (100.0, 0.0005),
+            (100.0, 0.002),
+            (1000.0, 0.01),
+        ] {
+            let mut entities = rectangle((0.0, 0.0), (extent, extent));
+            entities.push(circle((extent * 0.5, extent * 0.5), radius));
+            let profiles = sketch_of(entities).profiles(SKETCH_TOLERANCE);
+            assert_eq!(profiles.len(), 2, "square {extent} + circle {radius}");
+            assert_eq!(
+                profiles[0].holes.len(),
+                1,
+                "square {extent} + circle {radius}"
+            );
+        }
+        // A small slot made of two semicircles inside a 100 m square.
+        let mut entities = rectangle((0.0, 0.0), (100.0, 100.0));
+        for start_angle in [std::f32::consts::FRAC_PI_2, -std::f32::consts::FRAC_PI_2] {
+            entities.push(
+                SketchCurve::Arc {
+                    center: Vec2::splat(50.0),
+                    radius: 0.003,
+                    start_angle,
+                    sweep: std::f32::consts::PI,
+                }
+                .into(),
+            );
+        }
+        let profiles = sketch_of(entities).profiles(SKETCH_TOLERANCE);
+        assert_eq!(profiles.len(), 2);
+        assert_eq!(profiles[0].holes.len(), 1);
+    }
 }
