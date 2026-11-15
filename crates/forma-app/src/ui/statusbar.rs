@@ -131,9 +131,19 @@ pub(super) fn statusbar(
     } else {
         t.success
     };
-    // Keep whole hint pairs that fit beside the right-hand readouts.
+    // Keep whole hint pairs that fit beside the right-hand readouts, which
+    // are estimated from their text at the 11 px status size.
     let width = f32::from(window.viewport_size().width);
-    let mut budget = width - if wide { 760. } else { 600. };
+    let text = |chars: usize| chars as f32 * 6.2;
+    let message = text(s.status.chars().count()).min(if wide { 420. } else { 260. }) + 24.;
+    let selection = selection_summary(s).map_or(0., |summary| text(summary.len()) + 25.);
+    let device = if wide {
+        text(s.device_name.chars().count()).min(260.) + 30.
+    } else {
+        0.
+    };
+    let rendered = if s.settings.mode == RenderMode::Rendered { 130. } else { 0. };
+    let mut budget = width - message - selection - device - rendered - 190.;
     let hints: Vec<_> = input_hints(s)
         .into_iter()
         .take_while(|(keys, label)| {
