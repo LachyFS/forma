@@ -1,4 +1,5 @@
 //! Draw mode input: keyboard, pointer and command handling.
+use super::analysis;
 use super::overlay::{ActiveOverlay, AngleArc, DimLabel, format_angle, format_length};
 use super::tools::{self, Step};
 use super::{DragTarget, DrawCommand, DrawTarget, DrawTool, Hover};
@@ -8,7 +9,7 @@ use forma_core::{SKETCH_TOLERANCE, Sketch, SketchCurve, SketchEntity, Vec2};
 use gpui::{
     Context, KeyDownEvent, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Window,
 };
-use std::collections::BTreeSet;
+use std::{collections::BTreeSet, rc::Rc};
 
 /// Pixels within which the pointer picks a curve.
 const PICK_PIXELS: f32 = 7.0;
@@ -56,7 +57,7 @@ impl Studio {
     /// Re-evaluates the pointer, hover and inference memory.
     fn update_draw_pointer(&mut self, screen: Vec2, suppress: bool) {
         self.sync_draw_session();
-        let pointer = self.evaluate_pointer(screen, suppress, &[]);
+        let pointer = self.evaluate_pointer(screen, suppress);
         let analysis = self.sketch_analysis();
         let Some(session) = self.sketch.session.as_ref() else {
             return;
@@ -87,6 +88,7 @@ impl Studio {
             // perpendicular inference.
             let hovered_line = pointer.snap.entity.or(hover.entity).and_then(|index| {
                 analysis
+                    .targets
                     .curves
                     .iter()
                     .find(|(i, _)| *i == index)
@@ -1058,6 +1060,7 @@ impl Studio {
                 press_screen: position,
                 press_point: point,
                 target: DragTarget::Point(point),
+                targets: Rc::new(analysis::snap_targets(&before, &moving, &session.reference)),
                 before,
                 moving,
                 started: false,
@@ -1088,6 +1091,7 @@ impl Studio {
                 press_screen: position,
                 press_point: pointer.snap.point,
                 target,
+                targets: Rc::new(analysis::snap_targets(&before, &moving, &session.reference)),
                 before,
                 moving,
                 started: false,
@@ -1153,7 +1157,7 @@ impl Studio {
         let Some(drag) = self.sketch.session.as_ref().and_then(|s| s.drag.clone()) else {
             return;
         };
-        let Some(pointer) = self.evaluate_pointer(position, suppress, &drag.moving) else {
+        let Some(pointer) = self.evaluate_pointer(position, suppress) else {
             return;
         };
         let target = pointer.snap.point;

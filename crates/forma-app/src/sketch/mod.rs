@@ -117,6 +117,9 @@ pub(crate) struct Drag {
     pub before: Vec<SketchEntity>,
     pub moving: Vec<usize>,
     pub started: bool,
+    /// What the dragged geometry may snap to: everything that is not moving,
+    /// as it was when the drag began. Built once per drag.
+    pub targets: Rc<analysis::SnapTargets>,
 }
 
 /// Points and lines the pointer recently hovered, for SketchUp-style
@@ -169,7 +172,7 @@ pub(crate) struct DrawSession {
     /// Camera before entering and after the entry move, for restoring the
     /// view on finish when the user did not navigate.
     camera_restore: Option<(Camera, Camera)>,
-    analysis: Cached<(u64, u64), Analysis>,
+    analysis: Cached<(u64, u64, bool), Analysis>,
 }
 
 #[derive(Default)]
@@ -276,17 +279,21 @@ impl Studio {
     /// when the scene or a sketch changes.
     pub(crate) fn sketch_analysis(&self) -> Option<Rc<Analysis>> {
         let session = self.sketch.session.as_ref()?;
-        let key = (self.scene_revision, self.sketch.revision);
+        // While a drag moves curves, only what the display needs is rebuilt
+        // per move; the full analysis follows when the drag ends.
+        let dragging = session.drag.as_ref().is_some_and(|drag| drag.started);
+        let key = (self.scene_revision, self.sketch.revision, dragging);
         let mut cache = session.analysis.borrow_mut();
         if let Some((cached, analysis)) = cache.as_ref()
             && *cached == key
         {
             return Some(analysis.clone());
         }
-        let analysis = Rc::new(analysis::analyze(
-            self.session_entities(),
-            &session.reference,
-        ));
+        let analysis = Rc::new(if dragging {
+            analysis::analyze_for_drag(self.session_entities())
+        } else {
+            analysis::analyze(self.session_entities(), &session.reference)
+        });
         *cache = Some((key, analysis.clone()));
         Some(analysis)
     }
@@ -617,14 +624,9 @@ impl Studio {
     }
 
     /// Evaluates a window position against the plane: raw point, snapped
-    /// point and scale. `exclude` keeps dragged curves from snapping to
-    /// themselves.
-    pub(crate) fn evaluate_pointer(
-        &self,
-        screen: Vec2,
-        suppress: bool,
-        exclude: &[usize],
-    ) -> Option<Pointer> {
+    /// point and scale. During a drag the pointer snaps only to geometry
+    /// that is not moving.
+    pub(crate) fn evaluate_pointer(&self, screen: Vec2, suppress: bool) -> Option<Pointer> {
         let session = self.sketch.session.as_ref()?;
         let frame = self.sketch_frame()?;
         let raw = frame.ray_point(self.pointer_ray(screen)?)?;
@@ -632,7 +634,10 @@ impl Studio {
             return None;
         }
         let pixels_per_unit = self.pixels_per_unit(&frame, raw).max(1.0e-9);
-        let analysis = self.sketch_analysis()?;
+        let targets = match session.drag.as_ref() {
+            Some(drag) => drag.targets.clone(),
+            None => self.sketch_analysis()?.targets.clone(),
+        };
         let (grid, _) = self.grid_steps(&frame);
         let mut references: Vec<Vec2> = session.memory.reference.into_iter().collect();
         if let Some(tangent) = match session.step {
@@ -648,9 +653,9 @@ impl Studio {
             None => session.step.anchor(),
         };
         let cx = SnapContext {
-            points: &analysis.snap_points,
-            curves: &analysis.curves,
-            exclude,
+            points: &targets.points,
+            curves: &targets.curves,
+            exclude: &[],
             anchor,
             references: &references,
             tracked: &session.memory.tracked,
