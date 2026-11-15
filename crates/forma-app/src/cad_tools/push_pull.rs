@@ -682,6 +682,16 @@ impl Studio {
         self.history.checkpoint_owned(before);
         self.dirty = true;
         self.cad.announce = true;
+        // Every face of one part shares the part's final content: each
+        // ghost waits for that stamp, not the one after its own feature.
+        let final_stamps = |scene: &forma_core::Scene, ghost: &mut PendingGhost| {
+            if let Some(part) = scene.part(ghost.part) {
+                ghost.stamp = part.stamp;
+            }
+        };
+        for ghost in &mut pending {
+            final_stamps(&self.scene, ghost);
+        }
         self.cad_tool.pending.extend(pending);
         self.cad_tool.last = super::LastOperation::push_pull(
             &active,
@@ -755,9 +765,20 @@ pub(crate) fn push_mesh_face(
     let neighbours: Vec<usize> = (0..mesh.faces.len())
         .filter(|&f| f != face && mesh.faces[f].iter().any(|i| moving.contains(i)))
         .collect();
-    let slides = neighbours
-        .iter()
-        .all(|&f| mesh.face_normal(f).dot(normal).abs() < 1.0e-4);
+    // Sliding needs walls to stretch: at least one face sharing an edge. A
+    // lone polygon (a plane) is extruded instead.
+    let edge = |a: u32, b: u32| (a.min(b), a.max(b));
+    let edges: BTreeSet<(u32, u32)> = (0..polygon.len())
+        .map(|k| edge(polygon[k], polygon[(k + 1) % polygon.len()]))
+        .collect();
+    let walls = neighbours.iter().any(|&f| {
+        let other = &mesh.faces[f];
+        (0..other.len()).any(|k| edges.contains(&edge(other[k], other[(k + 1) % other.len()])))
+    });
+    let slides = walls
+        && neighbours
+            .iter()
+            .all(|&f| mesh.face_normal(f).dot(normal).abs() < 1.0e-4);
     if !slides {
         let faces: BTreeSet<usize> = [face].into_iter().collect();
         return mesh.extrude_region(&faces, offset);
@@ -886,6 +907,13 @@ mod tests {
         assert!((geometry::mesh_volume(&pushed) - 6.0).abs() < 1.0e-5);
         // Pushing through the bottom is refused.
         assert!(push_mesh_face(&mut cube.clone(), top, Vec3::Y * -2.5).is_err());
+        // A lone polygon has no walls to stretch: it is extruded, not slid
+        // (regression: the reviewer's plane slid off on its own).
+        let plane = Mesh::primitive(Primitive::Plane);
+        let mut pulled = plane.clone();
+        push_mesh_face(&mut pulled, 0, plane.face_normal(0) * 0.5).unwrap();
+        assert_eq!(pulled.faces.len(), plane.faces.len() + 4);
+        assert_eq!(&pulled.positions[..4], &plane.positions[..]);
         // A face whose neighbours are not along the move grows walls.
         let mut tilted = cube.clone();
         for p in &mut tilted.positions {

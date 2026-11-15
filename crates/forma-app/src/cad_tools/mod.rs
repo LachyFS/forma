@@ -848,6 +848,14 @@ pub(crate) struct AxisDrag {
     pub start_value: f32,
     /// Screen direction and world units per pixel, for axes seen end on.
     pub fallback: Option<(Vec2, f32)>,
+    /// Furthest the value may move from `start_value`: an axis seen nearly
+    /// end-on maps tiny pointer moves to huge distances.
+    pub reach: f32,
+}
+
+/// `value` kept within `reach` of `start`.
+pub(crate) fn bounded_drag(value: f32, start: f32, reach: f32) -> f32 {
+    value.clamp(start - reach, start + reach)
 }
 
 impl AxisDrag {
@@ -876,6 +884,8 @@ impl AxisDrag {
                 Some((toward, studio.world_per_pixel(origin)))
             }
         };
+        // Relative to what is on screen: a few view depths at most.
+        let reach = studio.scene.camera.distance.max(1.0e-3) * 4.0;
         Self {
             origin,
             direction,
@@ -884,16 +894,19 @@ impl AxisDrag {
             started: false,
             start_value: value,
             fallback,
+            reach,
         }
     }
 
     /// The dragged value at pointer position `screen`.
     pub(crate) fn value(&self, studio: &Studio, screen: Vec2) -> Option<f32> {
-        if let Some((toward, per_pixel)) = self.fallback {
-            return Some(self.start_value + (screen - self.press).dot(toward) * per_pixel);
-        }
-        let ray = studio.tool_ray(screen)?;
-        geometry::axis_parameter(self.origin, self.direction, ray).map(|t| t - self.grab)
+        let raw = if let Some((toward, per_pixel)) = self.fallback {
+            self.start_value + (screen - self.press).dot(toward) * per_pixel
+        } else {
+            let ray = studio.tool_ray(screen)?;
+            geometry::axis_parameter(self.origin, self.direction, ray)? - self.grab
+        };
+        Some(bounded_drag(raw, self.start_value, self.reach))
     }
 }
 
@@ -1004,6 +1017,24 @@ mod tests {
         assert_eq!(0.2 * side_of(0.0), 0.2);
         assert_eq!(format_sweep(270f32.to_radians()), "270°");
         assert_eq!(format_sweep(-std::f32::consts::FRAC_PI_4), "-45°");
+    }
+
+    /// Regression (review): a pointer ray nearly parallel to the drag axis
+    /// produced distances around a kilometre.
+    #[test]
+    fn near_parallel_drags_stay_within_reach() {
+        // The pointer ray is 10 units off an axis that is 0.7° from it.
+        let ray = Ray {
+            origin: glam::Vec3::new(0.0, 10.0, 5.0),
+            direction: glam::Vec3::NEG_Z,
+        };
+        let raw =
+            geometry::axis_parameter(glam::Vec3::ZERO, glam::Vec3::new(0.0, -0.012, -1.0), ray)
+                .unwrap();
+        assert!(raw.abs() > 100.0, "the setup is ill-conditioned: {raw}");
+        let reach = 7.5 * 4.0;
+        assert_eq!(bounded_drag(raw, 0.2, reach), 0.2 + reach * raw.signum());
+        assert_eq!(bounded_drag(0.7, 0.2, reach), 0.7);
     }
 
     #[test]

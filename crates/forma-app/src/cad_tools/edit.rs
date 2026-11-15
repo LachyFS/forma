@@ -690,7 +690,13 @@ impl Studio {
                 }
             }
         }
-        let scale = matrix.x_axis.truncate().length().max(1.0e-9);
+        // Chamfer distances are measured along faces in part space; a part
+        // scaled unevenly would chamfer by different amounts on each side.
+        let Some(scale) = uniform_scale(matrix) else {
+            self.status = "Chamfer needs an evenly scaled part · Apply its scale first".into();
+            cx.notify();
+            return;
+        };
         let first = &edges[0];
         let middle = (first.start + first.end) * 0.5;
         let bisector = (first.into_a + first.into_b).normalize_or_zero();
@@ -860,6 +866,17 @@ impl Studio {
     }
 }
 
+/// The scale of a transform that scales all axes equally (rotations and
+/// mirroring allowed), or `None` for uneven or skewing scales.
+pub(crate) fn uniform_scale(matrix: Mat4) -> Option<f32> {
+    let axes = [matrix.x_axis, matrix.y_axis, matrix.z_axis].map(|a| a.truncate());
+    let lengths = axes.map(|a| a.length());
+    let scale = lengths[0];
+    let even = lengths.iter().all(|l| (l - scale).abs() <= scale * 1.0e-4)
+        && (0..3).all(|i| axes[i].dot(axes[(i + 1) % 3]).abs() <= scale * scale * 1.0e-4);
+    (even && scale > 1.0e-9 && scale.is_finite()).then_some(scale)
+}
+
 fn same_face_ref(a: &FaceRef, b: &FaceRef) -> bool {
     a.normal.dot(b.normal) > 0.9999
         && (a.point - b.point).dot(a.normal).abs() < 1.0e-5
@@ -1000,6 +1017,21 @@ mod tests {
                 .iter()
                 .any(|e| !e.straight && e.points.len() > 8)
         );
+    }
+
+    /// Regression (review): chamfers assumed uniform scale.
+    #[test]
+    fn chamfers_require_even_scale() {
+        use glam::{Quat, Vec3};
+        assert_eq!(uniform_scale(Mat4::IDENTITY), Some(1.0));
+        let even = Mat4::from_scale_rotation_translation(
+            Vec3::splat(2.0),
+            Quat::from_rotation_y(0.7),
+            Vec3::new(1.0, 2.0, 3.0),
+        );
+        assert!((uniform_scale(even).unwrap() - 2.0).abs() < 1.0e-5);
+        assert!(uniform_scale(Mat4::from_scale(Vec3::new(1.0, 2.0, 1.0))).is_none());
+        assert!(uniform_scale(Mat4::from_scale(Vec3::ZERO)).is_none());
     }
 
     /// Regression: Ctrl+B after Undo used an edge index hovered on the
