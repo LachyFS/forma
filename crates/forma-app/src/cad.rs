@@ -517,7 +517,6 @@ impl Studio {
             multiple: false,
             prompt: Some("Import STEP (.step, .stp)".into()),
         });
-        let epoch = self.project_epoch;
         cx.spawn(async move |this, cx| {
             let Ok(Ok(Some(paths))) = receiver.await else {
                 return;
@@ -525,13 +524,21 @@ impl Studio {
             let Some(path) = paths.into_iter().next() else {
                 return;
             };
-            let read = cx
-                .background_executor()
-                .spawn({
-                    let path = path.clone();
-                    async move { read_step(&path) }
-                })
-                .await;
+            let _ = this.update(cx, |s, cx| s.import_step_from(path, cx));
+        })
+        .detach();
+    }
+
+    /// Read a STEP file in the background and add it as a new part.
+    pub(crate) fn import_step_from(&mut self, path: PathBuf, cx: &mut Context<Self>) {
+        let epoch = self.project_epoch;
+        self.status = "Importing STEP…".into();
+        let read = cx.background_executor().spawn({
+            let path = path.clone();
+            async move { read_step(&path) }
+        });
+        cx.spawn(async move |this, cx| {
+            let read = read.await;
             let _ = this.update(cx, |s, cx| {
                 match read {
                     Ok(text) => {
@@ -545,10 +552,7 @@ impl Studio {
                             .collect::<String>();
                         let ticket = s.cad.ticket(Pending::Import { epoch });
                         match s.cad.host() {
-                            Ok(host) => {
-                                host.submit(Job::ImportStep { ticket, name, text });
-                                s.status = "Importing STEP…".into();
-                            }
+                            Ok(host) => host.submit(Job::ImportStep { ticket, name, text }),
                             Err(error) => s.status = error,
                         }
                     }
@@ -558,6 +562,7 @@ impl Studio {
             });
         })
         .detach();
+        cx.notify();
     }
 
     fn choose_step_export(&mut self, cx: &mut Context<Self>) {

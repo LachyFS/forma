@@ -82,6 +82,53 @@ fn quantize(p: DVec3, step: f64) -> Key {
     )
 }
 
+/// Merges points closer than a tolerance. Unlike rounding to a grid, points
+/// straddling a cell boundary still merge, because neighbouring cells are
+/// searched too.
+struct Welder {
+    tolerance: f64,
+    cells: HashMap<Key, Vec<(DVec3, u32)>>,
+}
+
+impl Welder {
+    fn new(tolerance: f64) -> Self {
+        Self {
+            tolerance,
+            cells: HashMap::new(),
+        }
+    }
+
+    fn find(&self, p: DVec3) -> Option<u32> {
+        let (x, y, z) = quantize(p, self.tolerance);
+        for dx in -1..=1 {
+            for dy in -1..=1 {
+                for dz in -1..=1 {
+                    if let Some(points) = self.cells.get(&(x + dx, y + dy, z + dz))
+                        && let Some((_, index)) =
+                            points.iter().find(|(q, _)| q.distance(p) <= self.tolerance)
+                    {
+                        return Some(*index);
+                    }
+                }
+            }
+        }
+        None
+    }
+
+    /// The index of the point at `p`, creating it with `create` if new.
+    fn index(&mut self, p: DVec3, create: impl FnOnce() -> u32) -> u32 {
+        if let Some(index) = self.find(p) {
+            return index;
+        }
+        let index = create();
+        self.cells
+            .entry(quantize(p, self.tolerance))
+            .or_default()
+            .push((p, index));
+        index
+    }
+}
+
 fn find(parent: &mut [usize], mut i: usize) -> usize {
     while parent[i] != i {
         parent[i] = parent[parent[i]];
@@ -120,11 +167,12 @@ fn tessellate_at(body: &Body, tolerance: f64) -> Result<Tessellation, KernelErro
         .collect();
     // Positions on shared edges coincide (truck meshes each edge once per
     // shell); quantize well below the chord tolerance to match them.
-    let step = (tolerance * 1.0e-3).max(size * 1.0e-12);
+    let step = (tolerance * 1.0e-2).max(size * 1.0e-10);
     let mut parent: Vec<usize> = (0..faces.len()).collect();
     {
-        // key -> (face, normal) for every boundary-ish vertex.
-        let mut at: HashMap<Key, Vec<(usize, Option<DVec3>)>> = HashMap::new();
+        // position -> (face, normal) for every vertex.
+        let mut welder = Welder::new(step);
+        let mut at: Vec<Vec<(usize, Option<DVec3>)>> = Vec::new();
         for (index, face) in faces.iter().enumerate() {
             let Some(face) = face else { continue };
             let mut seen = std::collections::HashSet::new();
@@ -132,16 +180,18 @@ fn tessellate_at(body: &Body, tolerance: f64) -> Result<Tessellation, KernelErro
                 for &v in triangle {
                     if seen.insert(v) {
                         let normal = face.normals.as_ref().map(|n| n[v]);
-                        at.entry(quantize(face.positions[v], step))
-                            .or_default()
-                            .push((index, normal));
+                        let slot = welder.index(face.positions[v], || {
+                            at.push(Vec::new());
+                            (at.len() - 1) as u32
+                        });
+                        at[slot as usize].push((index, normal));
                     }
                 }
             }
         }
         // For each face pair sharing vertices: smooth when every shared vertex agrees.
         let mut pairs: HashMap<(usize, usize), (usize, bool)> = HashMap::new();
-        for entries in at.values() {
+        for entries in &at {
             for i in 0..entries.len() {
                 for j in i + 1..entries.len() {
                     let (fa, na) = entries[i];
@@ -193,7 +243,7 @@ fn tessellate_at(body: &Body, tolerance: f64) -> Result<Tessellation, KernelErro
     let mut mesh = Mesh::default();
     let mut infos = Vec::with_capacity(group_faces.len());
     for (group, members) in group_faces.iter().enumerate() {
-        let mut weld: HashMap<(i64, i64, i64), u32> = HashMap::new();
+        let mut weld = Welder::new(step);
         let mut area = 0.0;
         let mut normal_sum = DVec3::ZERO;
         let mut largest = (0.0, DVec3::ZERO, DVec3::ZERO);
@@ -203,7 +253,7 @@ fn tessellate_at(body: &Body, tolerance: f64) -> Result<Tessellation, KernelErro
             for triangle in &face.triangles {
                 let corners = triangle.map(|v| face.positions[v]);
                 let indices = corners.map(|p| {
-                    *weld.entry(quantize(p, step)).or_insert_with(|| {
+                    weld.index(p, || {
                         mesh.positions.push(p.as_vec3());
                         (mesh.positions.len() - 1) as u32
                     })
@@ -276,12 +326,12 @@ pub(crate) fn editable_mesh(
     let tolerance = body.tolerance(quality.chord_fraction(), quality.max_angle());
     let size = body.size();
     let meshes = body.face_meshes(tolerance)?;
-    let step = (tolerance * 1.0e-3).max(size * 1.0e-12);
+    let step = (tolerance * 1.0e-2).max(size * 1.0e-10);
     let degenerate = (size * 1.0e-9).powi(2);
-    let mut weld: HashMap<(i64, i64, i64), u32> = HashMap::new();
+    let mut weld = Welder::new(step);
     let mut positions: Vec<Vec3> = Vec::new();
     let mut index_of = |p: DVec3, positions: &mut Vec<Vec3>| -> u32 {
-        *weld.entry(quantize(p, step)).or_insert_with(|| {
+        weld.index(p, || {
             positions.push(p.as_vec3());
             (positions.len() - 1) as u32
         })
@@ -432,6 +482,30 @@ mod tests {
             .flat_map(|(f, _)| f.iter().copied())
             .collect();
         assert!(cap_vertices.is_disjoint(&side_vertices));
+    }
+
+    #[test]
+    fn baked_boolean_results_are_closed() {
+        use crate::boolean::{BoolOp, boolean, transform_body};
+        let block = primitive(&PrimitiveShape::Box {
+            size: Vec3::splat(2.0),
+        })
+        .unwrap();
+        let tool = primitive(&PrimitiveShape::Cylinder {
+            radius: 0.4,
+            height: 3.0,
+        })
+        .unwrap();
+        let tool = transform_body(
+            &tool,
+            glam::DMat4::from_scale(glam::DVec3::new(1.0, 1.0, 1.0)),
+        )
+        .unwrap();
+        let drilled = boolean(&block, &tool, BoolOp::Subtract).unwrap();
+        let mesh = editable_mesh(&drilled, TessellationQuality::Medium).unwrap();
+        crate::convert::check_closed_manifold(&mesh).unwrap();
+        let display = tessellate(&drilled, TessellationQuality::Medium).unwrap();
+        assert_eq!(display.faces.len(), 7);
     }
 
     #[test]
