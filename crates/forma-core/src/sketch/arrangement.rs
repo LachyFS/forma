@@ -453,13 +453,43 @@ struct Graph {
     pieces: Vec<Piece>,
 }
 
+/// Profile-forming curves, with circles that coincide with an earlier
+/// circle (same centre and radius within `tol`) dropped. Coincident open
+/// curves are split at each other's ends and deduplicated piece by piece,
+/// but closed curves have no ends to split at.
+fn distinct_curves(entities: &[SketchEntity], tol: f64) -> Vec<(usize, Geo)> {
+    let cell = tol.max(1.0e-12) * 2.0;
+    let key = |c: DVec2| ((c.x / cell).floor() as i64, (c.y / cell).floor() as i64);
+    let mut circles: HashMap<(i64, i64), Vec<(DVec2, f64)>> = HashMap::new();
+    let mut curves = Vec::new();
+    for (index, entity) in entities.iter().enumerate() {
+        if entity.construction || !entity.curve.is_valid() {
+            continue;
+        }
+        let geo = Geo::new(&entity.curve);
+        if let Geo::Circle { c, r } = geo {
+            let (x, y) = key(c);
+            let duplicate = (-1..=1).any(|dx| {
+                (-1..=1).any(|dy| {
+                    circles.get(&(x + dx, y + dy)).is_some_and(|nearby| {
+                        nearby.iter().any(|(other, radius)| {
+                            other.distance(c) <= tol && (radius - r).abs() <= tol
+                        })
+                    })
+                })
+            });
+            if duplicate {
+                continue;
+            }
+            circles.entry((x, y)).or_default().push((c, r));
+        }
+        curves.push((index, geo));
+    }
+    curves
+}
+
 fn build_graph(entities: &[SketchEntity], tol: f64) -> Graph {
-    let curves: Vec<(usize, Geo)> = entities
-        .iter()
-        .enumerate()
-        .filter(|(_, entity)| !entity.construction && entity.curve.is_valid())
-        .map(|(index, entity)| (index, Geo::new(&entity.curve)))
-        .collect();
+    let curves = distinct_curves(entities, tol);
     let mut points: Vec<DVec2> = Vec::new();
     let mut splits: Vec<Vec<(f64, usize)>> = vec![Vec::new(); curves.len()];
     for (index, (_, geo)) in curves.iter().enumerate() {
@@ -808,14 +838,29 @@ pub(super) fn profiles(entities: &[SketchEntity], tolerance: f32) -> Vec<Profile
                 })
         })
         .collect();
+    // Each connected component has one outer boundary: its most negative
+    // face. Any other negative face is a numerical sliver and is ignored.
+    let mut outer_of_component: HashMap<usize, usize> = HashMap::new();
+    for face in (0..faces.loops.len()).filter(|&face| areas[face] < -minimum_area) {
+        let entry = outer_of_component
+            .entry(component_of_face[face])
+            .or_insert(face);
+        if areas[face] < areas[*entry] {
+            *entry = face;
+        }
+    }
+    let mut outers: Vec<usize> = outer_of_component.into_values().collect();
+    outers.sort_unstable();
     let mut holes: HashMap<usize, Vec<usize>> = HashMap::new();
-    for outer in (0..faces.loops.len()).filter(|&face| areas[face] < -minimum_area) {
+    for outer in outers {
         let component = component_of_face[outer];
         let sample = graph.vertices[half_edge_origin(&graph, faces.loops[outer][0])];
         let parent = bounded
             .iter()
             .copied()
             .filter(|&face| component_of_face[face] != component)
+            // A hole is always smaller than the region around it.
+            .filter(|&face| areas[face] > -areas[outer])
             .filter(|&face| {
                 let (lo, hi) = face_bounds[face];
                 sample.cmpge(lo).all() && sample.cmple(hi).all()

@@ -1415,4 +1415,63 @@ mod tests {
             }
         }
     }
+
+    #[test]
+    fn coincident_circles_collapse_to_one_carrier() {
+        // Review case "coincident": a circle drawn twice inside a square.
+        let mut entities = rectangle((-2.0, -2.0), (2.0, 2.0));
+        entities.push(circle((0.0, 0.0), 1.0));
+        entities.push(circle((0.0, 0.0), 1.0));
+        let profiles = sketch_of(entities.clone()).profiles(SKETCH_TOLERANCE);
+        let disc = std::f32::consts::PI;
+        assert_close(&sorted_areas(&profiles), &[disc, 16.0 - disc], 1.0e-3);
+        assert_eq!(profiles[0].holes.len(), 1);
+        assert_loops_are_closed(&profiles);
+        // Two identical circles alone, and a radius differing within tolerance.
+        let profiles = sketch_of(vec![circle((0.0, 0.0), 1.0), circle((0.0, 0.0), 1.0)])
+            .profiles(SKETCH_TOLERANCE);
+        assert_close(&sorted_areas(&profiles), &[disc], 1.0e-3);
+        let profiles = sketch_of(vec![
+            circle((0.0, 0.0), 1.0),
+            circle((0.0, 0.0), 1.0 + 5.0e-6),
+        ])
+        .profiles(SKETCH_TOLERANCE);
+        assert_close(&sorted_areas(&profiles), &[disc], 1.0e-3);
+        // Review case "uicircle": a circle redrawn by snapping to a quadrant.
+        let center = Vec2::new(0.3, 0.7);
+        let first = SketchCurve::Circle {
+            center,
+            radius: 1.234,
+        };
+        let redrawn = SketchCurve::Circle {
+            center,
+            radius: center.distance(first.quadrant_points()[1]),
+        };
+        let mut entities = rectangle((-2.0, -2.0), (3.0, 3.0));
+        entities.extend([SketchEntity::from(first), SketchEntity::from(redrawn)]);
+        let profiles = sketch_of(entities).profiles(SKETCH_TOLERANCE);
+        assert_eq!(profiles.len(), 2);
+        assert_eq!(profiles[0].holes.len(), 1);
+        // A duplicate circle crossed by a diameter, and an arc lying on a circle.
+        let profiles = sketch_of(vec![
+            circle((0.0, 0.0), 1.0),
+            circle((0.0, 0.0), 1.0),
+            line((-2.0, 0.0), (2.0, 0.0)),
+        ])
+        .profiles(SKETCH_TOLERANCE);
+        assert_close(&sorted_areas(&profiles), &[disc * 0.5, disc * 0.5], 1.0e-3);
+        let mut entities = rectangle((-2.0, -2.0), (2.0, 2.0));
+        entities.push(circle((0.0, 0.0), 1.0));
+        entities.push(
+            SketchCurve::Arc {
+                center: Vec2::ZERO,
+                radius: 1.0,
+                start_angle: 0.0,
+                sweep: 3.0,
+            }
+            .into(),
+        );
+        let profiles = sketch_of(entities).profiles(SKETCH_TOLERANCE);
+        assert_close(&sorted_areas(&profiles), &[disc, 16.0 - disc], 1.0e-3);
+    }
 }
