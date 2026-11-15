@@ -8,7 +8,7 @@ use crate::app::{Command, EditMode, Field, Studio};
 use crate::theme::Colors;
 use forma_core::{Object, Scene};
 use gpui::{prelude::*, *};
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 
 pub(super) const ROW: f32 = 26.;
 pub(super) const HEADER: f32 = 36.;
@@ -52,6 +52,30 @@ struct Tree<'a> {
     scene: &'a Scene,
     selected: BTreeSet<u64>,
     active: Option<u64>,
+    /// Children listed under each parent (those sharing its collection),
+    /// built once so drawing the tree stays linear in the object count.
+    children: HashMap<u64, Vec<&'a Object>>,
+}
+
+impl<'a> Tree<'a> {
+    fn new(scene: &'a Scene, selected: BTreeSet<u64>, active: Option<u64>) -> Self {
+        let mut tree = Self {
+            scene,
+            selected,
+            active,
+            children: HashMap::new(),
+        };
+        let mut children: HashMap<u64, Vec<&'a Object>> = HashMap::new();
+        for object in &scene.objects {
+            if let Some(parent) = object.parent.and_then(|id| scene.object(id))
+                && tree.home(parent) == tree.home(object)
+            {
+                children.entry(parent.id).or_default().push(object);
+            }
+        }
+        tree.children = children;
+        tree
+    }
 }
 
 impl Tree<'_> {
@@ -79,11 +103,7 @@ impl Tree<'_> {
 
     /// Children nested under `parent`, when they share its collection.
     fn children(&self, parent: &Object) -> impl Iterator<Item = &Object> {
-        let (id, home) = (parent.id, self.home(parent));
-        self.scene
-            .objects
-            .iter()
-            .filter(move |object| object.parent == Some(id) && self.home(object) == home)
+        self.children.get(&parent.id).into_iter().flatten().copied()
     }
 
     fn count(&self, collection: u64) -> usize {
@@ -327,11 +347,7 @@ fn collection_rows(
 }
 
 pub(super) fn outliner(t: Colors, s: &Studio, cx: &mut Context<Studio>) -> Div {
-    let tree = Tree {
-        scene: &s.scene,
-        selected: s.selected_ids(),
-        active: s.selected,
-    };
+    let tree = Tree::new(&s.scene, s.selected_ids(), s.selected);
     let mut rows = Vec::with_capacity(s.scene.objects.len() + s.scene.collections.len());
     if let Some(root) = s.scene.collection(s.scene.root_collection) {
         collection_rows(t, s, &tree, root, 0, &mut rows, cx);
@@ -387,4 +403,43 @@ pub(super) fn outliner(t: Colors, s: &Studio, cx: &mut Context<Studio>) -> Div {
                     )
                 }),
         )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Tree;
+    use forma_core::{Primitive, Scene};
+    use std::collections::BTreeSet;
+
+    #[test]
+    fn children_are_grouped_once_and_stay_in_their_collection() {
+        let mut scene = Scene::empty();
+        let parent = scene.add(Primitive::Cube);
+        let kids: Vec<u64> = (0..3).map(|_| scene.add(Primitive::Cube)).collect();
+        for &kid in &kids {
+            scene.set_parent(kid, Some(parent), false).unwrap();
+        }
+        // A child linked into another collection is listed there instead.
+        let other = scene.add_collection("Other", None).unwrap();
+        scene.link_object(kids[2], other).unwrap();
+        scene.unlink_object(kids[2], scene.root_collection).unwrap();
+        let tree = Tree::new(&scene, BTreeSet::new(), None);
+        let listed: Vec<u64> = tree
+            .children(scene.object(parent).unwrap())
+            .map(|o| o.id)
+            .collect();
+        assert_eq!(listed, kids[..2]);
+        // Large flat scenes build the tree in linear time.
+        let mut scene = Scene::empty();
+        let root = scene.add(Primitive::Plane);
+        for _ in 0..1500 {
+            let id = scene.add(Primitive::Plane);
+            scene.set_parent(id, Some(root), false).unwrap();
+        }
+        let started = std::time::Instant::now();
+        let tree = Tree::new(&scene, BTreeSet::new(), None);
+        let total: usize = scene.objects.iter().map(|o| tree.children(o).count()).sum();
+        assert_eq!(total, 1500);
+        assert!(started.elapsed() < std::time::Duration::from_secs(1));
+    }
 }
