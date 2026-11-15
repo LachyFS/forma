@@ -1228,6 +1228,9 @@ impl Studio {
         self.set_sketch_entities_live(after);
         self.dirty = true;
         self.status = "Moved".into();
+        if let Some(id) = self.session_object() {
+            self.sync_sketch_links(id, cx);
+        }
         cx.notify();
     }
 

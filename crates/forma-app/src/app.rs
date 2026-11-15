@@ -75,6 +75,18 @@ pub enum Field {
     PreviewStrength,
     PreviewOpacity,
     PreviewBlur,
+    /// A value of the feature selected in the part timeline.
+    Feature(crate::timeline::FeatureField),
+}
+
+impl Field {
+    /// Fields edited as free text rather than numeric expressions.
+    pub(crate) fn is_text(self) -> bool {
+        matches!(
+            self,
+            Field::Name | Field::Feature(crate::timeline::FeatureField::Name)
+        )
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -155,6 +167,7 @@ pub enum Command {
     ResetPreview,
     Draw(crate::sketch::DrawCommand),
     Cad(crate::cad::CadCommand),
+    Timeline(crate::timeline::TimelineCommand),
 }
 
 pub(crate) struct TransformDrag {
@@ -535,6 +548,8 @@ impl Studio {
             .filter(|id| ids.contains(id))
             .or_else(|| ids.last().copied());
         self.objects_selected = ids;
+        // A feature is a sub-selection of one part; object picks reset it.
+        self.panels.timeline.clear_selection();
     }
 
     pub(crate) fn clear_components(&mut self) {
@@ -1560,6 +1575,7 @@ impl Studio {
             Command::LoadPreviewHdri => self.choose_preview_hdri(cx),
             Command::Draw(_) => {}
             Command::Cad(command) => self.execute_cad(command, cx),
+            Command::Timeline(command) => self.execute_timeline(command, window, cx),
         }
         cx.notify();
     }
@@ -2098,12 +2114,18 @@ impl Studio {
                 .map(|o| o.name.clone())
                 .unwrap_or_default();
         }
+        if let Field::Feature(crate::timeline::FeatureField::Name) = field {
+            return self
+                .feature_field_text(crate::timeline::FeatureField::Name)
+                .unwrap_or_default();
+        }
         self.field_numeric_value(field)
             .map(|value| match field {
                 Field::Translation(_)
                 | Field::Rotation(_)
                 | Field::Scale(_)
-                | Field::Dimensions(_) => crate::transform::format_precision_value(value),
+                | Field::Dimensions(_)
+                | Field::Feature(_) => crate::transform::format_precision_value(value),
                 Field::Samples | Field::Bounces | Field::DenoiseStart => value.to_string(),
                 _ => format!("{value:.2}"),
             })
@@ -2151,6 +2173,7 @@ impl Studio {
             Field::Samples => Some(self.settings.max_samples as f32),
             Field::Bounces => Some(self.settings.max_bounces as f32),
             Field::DenoiseStart => Some(self.settings.denoise.start_sample as f32),
+            Field::Feature(field) => self.feature_field_value(field),
         }
     }
 
@@ -2163,6 +2186,9 @@ impl Studio {
     }
 
     pub(crate) fn field_edit_text(&self, field: Field) -> String {
+        if let Field::Feature(field) = field {
+            return self.feature_field_text(field).unwrap_or_default();
+        }
         if field == Field::Name {
             self.selected
                 .and_then(|id| self.scene.object(id))
@@ -2202,6 +2228,7 @@ impl Studio {
             Field::Dimensions(_) => "Local dimensions · Parent transform excluded · m / cm / mm / in / ft · Enter apply · Esc cancel",
             Field::Rotation(_) | Field::PreviewRotation => "Angle · Degrees by default, or use deg / rad · Enter apply · Esc cancel",
             Field::Name => "Object name · Enter apply · Esc cancel",
+            Field::Feature(field) => field.entry_hint(),
             _ => "Arithmetic supported: (2+3)/4 · Enter apply · Esc cancel",
         }.into();
         cx.notify();
@@ -2212,7 +2239,7 @@ impl Studio {
         let Some((field, text)) = self.active_field.as_mut() else {
             return;
         };
-        let is_name = *field == Field::Name;
+        let is_name = field.is_text();
         if let Err(error) = crate::text_entry::insert(
             text,
             &mut self.field_replace,
@@ -2285,6 +2312,7 @@ impl Studio {
             Field::DenoiseStart => {
                 self.settings.mode.progressive() && self.settings.denoise.viewport
             }
+            Field::Feature(field) => self.feature_field_available(field),
             Field::WorldStrength => {
                 self.settings.mode.progressive()
                     || (self.settings.mode == RenderMode::MaterialPreview
@@ -2308,6 +2336,10 @@ impl Studio {
             self.active_field = None;
             self.status = "Value unchanged".into();
             cx.notify();
+            return;
+        }
+        if let Field::Feature(field) = field {
+            self.commit_feature_field(field, &text, cx);
             return;
         }
         if field == Field::Name {
@@ -2831,6 +2863,12 @@ impl Studio {
             cx.stop_propagation();
             return;
         }
+        // The timeline only claims keys while a part (not a sketch) is
+        // active, and its open context menu takes every key.
+        if self.timeline_key(event, window, cx) {
+            cx.stop_propagation();
+            return;
+        }
         if self.draw_key(event, window, cx) {
             cx.stop_propagation();
             return;
@@ -2982,6 +3020,7 @@ fn srgb_to_linear(value: f32) -> f32 {
 /// (see `ui::commands::command_group`). Shortcuts use the keycap format.
 pub(crate) fn palette_commands(query: &str) -> Vec<(&'static str, &'static str, Command)> {
     use crate::cad::{CadCommand, PartShape};
+    use crate::timeline::TimelineCommand;
     use forma_core::FeatureOperation;
     let query = query.to_lowercase();
     [
@@ -3081,6 +3120,57 @@ pub(crate) fn palette_commands(query: &str) -> Vec<(&'static str, &'static str, 
         ),
         ("Import STEP…", "", Command::Cad(CadCommand::ImportStep)),
         ("Export STEP…", "", Command::Cad(CadCommand::ExportStep)),
+        // Timeline (the selected part's history)
+        (
+            "Timeline: Edit feature sketch",
+            "Return",
+            Command::Timeline(TimelineCommand::EditSketch),
+        ),
+        (
+            "Timeline: Rename feature",
+            "F2",
+            Command::Timeline(TimelineCommand::Rename),
+        ),
+        (
+            "Timeline: Suppress or unsuppress feature",
+            "",
+            Command::Timeline(TimelineCommand::ToggleSuppress),
+        ),
+        (
+            "Timeline: Delete feature",
+            "Delete",
+            Command::Timeline(TimelineCommand::Delete),
+        ),
+        (
+            "Timeline: Roll back to selected feature",
+            "",
+            Command::Timeline(TimelineCommand::RollBackHere),
+        ),
+        (
+            "Timeline: Roll back one feature",
+            "⇧ ←",
+            Command::Timeline(TimelineCommand::StepMarker(-1)),
+        ),
+        (
+            "Timeline: Roll forward one feature",
+            "⇧ →",
+            Command::Timeline(TimelineCommand::StepMarker(1)),
+        ),
+        (
+            "Timeline: Roll to end",
+            "",
+            Command::Timeline(TimelineCommand::RollToEnd),
+        ),
+        (
+            "Timeline: Previous feature",
+            "←",
+            Command::Timeline(TimelineCommand::Previous),
+        ),
+        (
+            "Timeline: Next feature",
+            "→",
+            Command::Timeline(TimelineCommand::Next),
+        ),
         // Object
         ("Duplicate selection", "⇧ D", Command::Duplicate),
         ("Delete selection", "Delete", Command::Delete),

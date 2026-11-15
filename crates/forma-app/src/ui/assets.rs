@@ -59,6 +59,14 @@ icons! {
     Mesh => "forma-mesh",
     Part => "cuboid",
     Sketch => "spline",
+    Cone => "forma-cone",
+    // CAD features.
+    Revolve => "forma-revolve",
+    Join => "forma-join",
+    Subtract => "forma-subtract",
+    Intersect => "forma-intersect",
+    PushPull => "forma-push-pull",
+    ExtrudeCut => "forma-extrude-cut",
     // Draw tools.
     DrawLine => "pen-line",
     DrawRectangle => "square",

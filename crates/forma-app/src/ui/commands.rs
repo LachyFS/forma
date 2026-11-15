@@ -6,6 +6,7 @@ use crate::app::{Command, EditMode, Tool};
 use crate::cad::{CadCommand, PartShape};
 use crate::platform_shortcut;
 use crate::sketch::{DrawCommand, DrawTool};
+use crate::timeline::TimelineCommand;
 use forma_core::FeatureOperation;
 use forma_core::Primitive;
 use forma_render::RenderMode;
@@ -167,6 +168,49 @@ pub(crate) fn command_info(command: Command) -> CommandInfo {
         Command::ResetPreview => info("Reset preview lighting"),
         Command::Draw(command) => draw_info(command),
         Command::Cad(command) => cad_info(command),
+        Command::Timeline(command) => timeline_info(command),
+    }
+}
+
+fn timeline_info(command: TimelineCommand) -> CommandInfo {
+    match command {
+        TimelineCommand::Select(_) => explained("Select feature", "Double-click to edit"),
+        TimelineCommand::Previous => keyed("Previous feature", "←"),
+        TimelineCommand::Next => keyed("Next feature", "→"),
+        TimelineCommand::Deselect => keyed("Deselect feature", "Esc"),
+        TimelineCommand::Edit => keyed("Edit feature", "Return"),
+        TimelineCommand::EditSketch => explained_keyed(
+            "Edit sketch",
+            "Open the feature's sketch in Draw · the part follows each change",
+            "Return",
+        ),
+        TimelineCommand::Rename => keyed("Rename feature", "F2"),
+        TimelineCommand::ToggleSuppress => explained(
+            "Suppress or unsuppress",
+            "Keep the feature in the history without evaluating it",
+        ),
+        TimelineCommand::Delete => keyed("Delete feature", "Delete"),
+        TimelineCommand::RollBackHere => explained(
+            "Roll back to here",
+            "Evaluate the history only up to this feature",
+        ),
+        TimelineCommand::RollToEnd => explained("Roll to end", "Evaluate the whole history again"),
+        TimelineCommand::StepMarker(step) if step < 0 => keyed("Roll back one feature", "⇧ ←"),
+        TimelineCommand::StepMarker(_) => keyed("Roll forward one feature", "⇧ →"),
+        TimelineCommand::SetOperation(FeatureOperation::Join) => {
+            explained("Join", "Add to the body before this feature")
+        }
+        TimelineCommand::SetOperation(FeatureOperation::Cut) => {
+            explained("Cut", "Remove from the body before this feature")
+        }
+        TimelineCommand::SetOperation(FeatureOperation::Intersect) => {
+            explained("Intersect", "Keep only the overlap with the body")
+        }
+        TimelineCommand::SetOperation(FeatureOperation::NewBody) => {
+            explained("New body", "A separate solid, without a boolean")
+        }
+        TimelineCommand::SetExtent(mode) => explained(mode.label(), mode.detail()),
+        TimelineCommand::ToggleFlip => explained("Flip direction", "Extrude the other way"),
     }
 }
 
@@ -347,15 +391,40 @@ pub(crate) fn command_icon(command: Command) -> Option<Icon> {
         Command::Cad(CadCommand::AddPart(PartShape::Cylinder)) => Icon::Cylinder,
         Command::Cad(CadCommand::AddPart(PartShape::Sphere)) => Icon::Sphere,
         Command::Cad(CadCommand::ExtrudeSketch) => Icon::Extrude,
-        Command::Cad(CadCommand::Combine(FeatureOperation::Cut)) => Icon::Minus,
-        Command::Cad(CadCommand::Combine(FeatureOperation::Intersect)) => Icon::Inset,
-        Command::Cad(CadCommand::Combine(_)) => Icon::Plus,
+        Command::Cad(CadCommand::Combine(FeatureOperation::Cut)) => Icon::Subtract,
+        Command::Cad(CadCommand::Combine(FeatureOperation::Intersect)) => Icon::Intersect,
+        Command::Cad(CadCommand::Combine(_)) => Icon::Join,
         Command::Cad(CadCommand::ConvertToPart) => Icon::Part,
         Command::Cad(CadCommand::ConvertToMesh) => Icon::Mesh,
         Command::Cad(CadCommand::ImportStep) => Icon::Import,
         Command::Cad(CadCommand::ExportStep) => Icon::Export,
+        Command::Timeline(command) => return timeline_icon(command),
         _ => return None,
     })
+}
+
+/// Icon for a timeline command in menus and the palette.
+pub(crate) fn timeline_icon(command: TimelineCommand) -> Option<Icon> {
+    Some(match command {
+        TimelineCommand::EditSketch | TimelineCommand::Edit => Icon::Sketch,
+        TimelineCommand::Rename => Icon::Rename,
+        TimelineCommand::ToggleSuppress => Icon::EyeOff,
+        TimelineCommand::Delete => Icon::Delete,
+        TimelineCommand::RollBackHere | TimelineCommand::StepMarker(_) => Icon::History,
+        TimelineCommand::RollToEnd => Icon::ChevronRight,
+        TimelineCommand::SetOperation(operation) => operation_icon(operation),
+        _ => return None,
+    })
+}
+
+/// Glyph for how a feature combines with the body before it.
+pub(crate) fn operation_icon(operation: FeatureOperation) -> Icon {
+    match operation {
+        FeatureOperation::Join => Icon::Join,
+        FeatureOperation::Cut => Icon::Subtract,
+        FeatureOperation::Intersect => Icon::Intersect,
+        FeatureOperation::NewBody => Icon::Part,
+    }
 }
 
 pub(crate) fn shading_icon(mode: RenderMode) -> Icon {
@@ -383,6 +452,7 @@ pub(crate) fn command_group(command: Command) -> &'static str {
         Command::Add(_) => "Add",
         Command::Draw(_) => "Draw",
         Command::Cad(_) => "Part",
+        Command::Timeline(_) => "Timeline",
         Command::Duplicate
         | Command::Delete
         | Command::ApplyScale
