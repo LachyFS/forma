@@ -42,6 +42,8 @@ struct CachedIssue {
     /// Prefix the message with the feature name (kernel failures do; issues
     /// supplied by the host already name their feature).
     named: bool,
+    /// Applied approximately rather than failed.
+    warning: bool,
 }
 
 #[derive(Clone)]
@@ -159,17 +161,36 @@ pub(crate) fn evaluate_part(
                 message: issue.message.clone(),
                 suggestion: issue.suggestion.clone(),
                 named: false,
+                warning: false,
             });
         } else {
             progress(feature.id);
             stats.evaluated_features += 1;
-            match guard(|| evaluate(feature, body.as_ref())) {
-                Ok(next) => body = Some(next),
+            crate::boolean::take_notes();
+            let evaluated = guard(|| evaluate(feature, body.as_ref()));
+            let notes = crate::boolean::take_notes();
+            match evaluated {
+                Ok(next) => {
+                    body = Some(next);
+                    issues.extend(notes.into_iter().map(|message| {
+                        CachedIssue {
+                            index,
+                            message,
+                            suggestion:
+                                "Move the sketch or tool slightly so faces clearly overlap \
+                                     or clearly separate"
+                                    .into(),
+                            named: true,
+                            warning: true,
+                        }
+                    }));
+                }
                 Err(error) => issues.push(CachedIssue {
                     index,
                     message: error.message,
                     suggestion: error.suggestion,
                     named: true,
+                    warning: false,
                 }),
             }
         }
@@ -193,6 +214,7 @@ pub(crate) fn evaluate_part(
                     issue.message
                 },
                 suggestion: issue.suggestion,
+                warning: issue.warning,
             }
         })
         .collect();
@@ -231,6 +253,7 @@ pub fn regenerate(
                             result.missing_faces
                         ),
                         suggestion: "Try another tessellation quality".into(),
+                        warning: false,
                     });
                 }
                 stats.triangles = result.mesh.faces.len();
@@ -241,6 +264,7 @@ pub fn regenerate(
                 feature: 0,
                 message: error.message,
                 suggestion: error.suggestion,
+                warning: false,
             }),
         }
     }
@@ -293,7 +317,16 @@ fn evaluate(feature: &Feature, body: Option<&Body>) -> Result<Body, KernelError>
                     (-back * sign, distance)
                 }
             };
-            let (start, end) = (start.min(end), start.max(end));
+            let (mut start, mut end) = (start.min(end), start.max(end));
+            if let Some(body) = body {
+                (start, end) = extend_flush_caps(
+                    body,
+                    &extrude.sketch.plane,
+                    &profiles,
+                    (start, end),
+                    extrude.operation,
+                );
+            }
             let tool = extrude_profiles(&extrude.sketch.plane, &profiles, start, end)?;
             apply(body, tool, extrude.operation)
         }
@@ -336,6 +369,78 @@ fn evaluate(feature: &Feature, body: Option<&Body>) -> Result<Body, KernelError>
             apply(body, tool, base.operation)
         }
     }
+}
+
+/// Extend extrusion caps that lie flush on a face of `body` by a sliver, but
+/// only where that provably changes nothing: beyond a cut's cap there must
+/// be empty space, beyond a join's cap there must be material. Sketching on a
+/// face and cutting or joining from it is the most common CAD operation, and
+/// a cap coplanar with a body face is exactly what truck's booleans fail on;
+/// extending just that cap avoids the approximate tool-inflation fallback.
+fn extend_flush_caps(
+    body: &Body,
+    plane: &forma_core::SketchPlane,
+    profiles: &[forma_core::Profile],
+    (start, end): (f64, f64),
+    operation: FeatureOperation,
+) -> (f64, f64) {
+    let want_inside = match operation {
+        FeatureOperation::Cut => false,
+        FeatureOperation::Join => true,
+        FeatureOperation::Intersect | FeatureOperation::NewBody => return (start, end),
+    };
+    let Ok(mesh) = body.trimesh(body.tolerance(3.0e-3, 0.35)) else {
+        return (start, end);
+    };
+    let size = body.size().max((end - start).abs());
+    let sliver = size * 1.0e-4;
+    let normal = plane.normal().as_dvec3().normalize();
+    let origin = plane.origin.as_dvec3();
+    let (x, y) = (plane.x_axis.as_dvec3(), plane.y_axis.as_dvec3());
+    // Points spread over the profiles (in sketch coordinates).
+    let mut samples: Vec<glam::Vec2> = Vec::new();
+    for profile in profiles {
+        samples.extend(crate::regions::interior_point(profile));
+        let (min, max) = profile.outer.bounds();
+        for i in 0..5 {
+            for j in 0..5 {
+                let p = min + (max - min) * glam::Vec2::new(i as f32 + 0.5, j as f32 + 0.5) / 5.0;
+                if profile.contains(p) {
+                    samples.push(p);
+                }
+            }
+        }
+    }
+    if samples.is_empty() {
+        return (start, end);
+    }
+    let flush = |offset: f64| {
+        // Some body triangle lies in the cap's plane.
+        let level = normal.dot(origin) + offset;
+        (0..mesh.triangles.len()).any(|i| {
+            let [a, b, c] = mesh.triangle(i);
+            [a, b, c]
+                .iter()
+                .all(|p| (normal.dot(*p) - level).abs() <= size * 1.0e-7)
+        })
+    };
+    let beyond_is = |offset: f64, outward: f64| {
+        samples.iter().all(|p| {
+            let point = origin
+                + x * f64::from(p.x)
+                + y * f64::from(p.y)
+                + normal * (offset + outward * sliver * 0.5);
+            mesh.contains(point) == want_inside
+        })
+    };
+    let mut extended = (start, end);
+    if flush(start) && beyond_is(start, -1.0) {
+        extended.0 -= sliver;
+    }
+    if flush(end) && beyond_is(end, 1.0) {
+        extended.1 += sliver;
+    }
+    extended
 }
 
 fn nothing_to_edit() -> KernelError {
@@ -949,6 +1054,114 @@ mod tests {
         regen(&part, &mut cache);
         assert!(!cache.parts.contains_key(&1));
         assert!(cache.parts.contains_key(&4) && cache.parts.contains_key(&2));
+    }
+
+    fn top_face_sketch(height: f32, radius: f32) -> Sketch {
+        let mut sketch = Sketch::new(SketchPlane::ground());
+        sketch.plane.origin = Vec3::new(0.0, height, 0.0);
+        sketch.entities.push(
+            SketchCurve::Circle {
+                center: Vec2::new(0.3, 0.2),
+                radius,
+            }
+            .into(),
+        );
+        sketch
+    }
+
+    #[test]
+    fn flush_sketch_features_are_exact_not_approximated() {
+        // Review case: flush caps fell back to enlarging the tool about its
+        // centre (up to ~0.75 mm on a 1 m part) and reported success.
+        let mut part = PartData::new(6, "Plate");
+        part.push_feature(
+            "Plate",
+            box_kind(
+                Vec3::new(2.2, 0.3, 1.5),
+                Vec3::new(0.0, 0.15, 0.0),
+                FeatureOperation::Join,
+            ),
+        );
+        part.push_feature(
+            "Pocket",
+            FeatureKind::Extrude(ExtrudeFeature {
+                sketch: top_face_sketch(0.3, 0.2),
+                profiles: Vec::new(),
+                distance: 0.15,
+                extent: ExtrudeExtent::OneSide,
+                flip: true,
+                operation: FeatureOperation::Cut,
+            }),
+        );
+        part.push_feature(
+            "Through",
+            FeatureKind::Extrude(ExtrudeFeature {
+                sketch: {
+                    let mut sketch = top_face_sketch(0.3, 0.1);
+                    sketch.entities[0] = SketchCurve::Circle {
+                        center: Vec2::new(-0.6, -0.3),
+                        radius: 0.1,
+                    }
+                    .into();
+                    sketch
+                },
+                profiles: Vec::new(),
+                distance: 0.3,
+                extent: ExtrudeExtent::OneSide,
+                flip: true,
+                operation: FeatureOperation::Cut,
+            }),
+        );
+        part.push_feature(
+            "Boss",
+            FeatureKind::Extrude(ExtrudeFeature {
+                sketch: {
+                    let mut sketch = top_face_sketch(0.3, 0.15);
+                    sketch.entities[0] = SketchCurve::Circle {
+                        center: Vec2::new(0.6, -0.3),
+                        radius: 0.15,
+                    }
+                    .into();
+                    sketch
+                },
+                profiles: Vec::new(),
+                distance: 0.25,
+                extent: ExtrudeExtent::OneSide,
+                flip: false,
+                operation: FeatureOperation::Join,
+            }),
+        );
+        let result = regen(&part, &mut RegenCache::default());
+        assert!(result.issues.is_empty(), "{:?}", result.issues);
+        let volume = volume_of(&part);
+        let expected = 2.2 * 0.3 * 1.5 - PI * 0.04 * 0.15 - PI * 0.01 * 0.3 + PI * 0.0225 * 0.25;
+        assert!((volume - expected).abs() < 2.0e-3, "{volume} vs {expected}");
+    }
+
+    #[test]
+    fn approximated_booleans_are_reported_as_warnings() {
+        // A boss resting exactly on a face only joins through the inflated
+        // tool fallback: the result is kept, but the feature says so.
+        let mut part = PartData::new(7, "Part");
+        part.push_feature(
+            "Base",
+            box_kind(Vec3::splat(2.0), Vec3::ZERO, FeatureOperation::Join),
+        );
+        let boss = part.push_feature(
+            "Boss",
+            box_kind(Vec3::ONE, Vec3::new(0.0, 1.5, 0.0), FeatureOperation::Join),
+        );
+        let result = regen(&part, &mut RegenCache::default());
+        assert!(result.mesh.is_some());
+        let [issue] = result.issues.as_slice() else {
+            panic!("{:?}", result.issues);
+        };
+        assert!(issue.warning && issue.feature == boss, "{issue:?}");
+        assert!(issue.message.contains("enlarged by") && issue.message.contains("mm"));
+        assert!(
+            crate::boolean::take_notes().is_empty(),
+            "notes are consumed"
+        );
     }
 
     #[test]

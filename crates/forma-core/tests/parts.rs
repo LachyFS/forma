@@ -55,6 +55,7 @@ fn parts_render_only_after_a_current_tessellation_arrives() {
         feature: 1,
         message: "test".into(),
         suggestion: String::new(),
+        warning: false,
     };
     assert!(
         scene
@@ -253,6 +254,7 @@ fn failed_regenerations_keep_the_cache_and_are_retried_after_reload() {
         feature: 0,
         message: "worker crashed".into(),
         suggestion: String::new(),
+        warning: false,
     };
     assert!(
         !scene.mark_part_failed(part_id, stamp, vec![issue.clone()]),

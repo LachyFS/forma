@@ -228,6 +228,7 @@ impl Response {
                         feature: 0,
                         message: "The tessellation contained invalid coordinates".into(),
                         suggestion: "Try another tessellation quality".into(),
+                        warning: false,
                     });
                 }
             }

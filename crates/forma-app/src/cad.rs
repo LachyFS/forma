@@ -852,6 +852,7 @@ pub(crate) fn install_regeneration(
                 feature: 0,
                 message: format!("The regenerated part was not accepted ({error:#})"),
                 suggestion: "Choose a coarser tessellation quality or simplify the scene".into(),
+                warning: false,
             };
             scene.mark_part_failed(part_id, stamp, vec![issue.clone()]);
             issue
@@ -1025,7 +1026,10 @@ pub(crate) fn demo_scene() -> Scene {
                 height: 2.0,
             },
             center,
-            Vec3::ZERO,
+            // Turning a cylinder about its own axis leaves it unchanged but
+            // moves truck's patch seams off the cube's symmetry planes, where
+            // the intersection only succeeds approximately.
+            Vec3::new(0.0, std::f32::consts::FRAC_PI_4, 0.0),
             FeatureOperation::Intersect,
         ),
     );

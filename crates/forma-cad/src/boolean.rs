@@ -178,7 +178,17 @@ fn boolean_single(a: &Body, b: &Body, op: BoolOp) -> Result<Body, KernelError> {
         };
         match run(solid_a, &tool, op, base * scale) {
             Ok(Some(result)) => match check(&result) {
-                Ok(()) => return Ok(Body::solid(result, min_radius)),
+                Ok(()) => {
+                    // Surfaces moved by up to half the growth of the diagonal.
+                    let moved = (factor - 1.0) * bounds_b.diagonal() * 0.5;
+                    note(format!(
+                        "result approximated: the {} tool was enlarged by {} so touching \
+                         faces would separate",
+                        op.verb().to_lowercase(),
+                        format_length(moved)
+                    ));
+                    return Ok(Body::solid(result, min_radius));
+                }
                 Err(error) => last_error = Some(error),
             },
             Ok(None) => {}
@@ -196,6 +206,32 @@ fn boolean_single(a: &Body, b: &Body, op: BoolOp) -> Result<Body, KernelError> {
         "Faces that touch exactly or meet tangentially are hard for the kernel · \
          Move one body slightly so faces clearly overlap or clearly separate",
     ))
+}
+
+thread_local! {
+    /// Approximations made while evaluating the current feature.
+    static NOTES: std::cell::RefCell<Vec<String>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Record that the current feature's result is approximate.
+pub(crate) fn note(message: String) {
+    NOTES.with(|notes| notes.borrow_mut().push(message));
+}
+
+/// Approximations recorded since the last call (feature evaluation runs on
+/// one thread).
+pub(crate) fn take_notes() -> Vec<String> {
+    NOTES.with(|notes| std::mem::take(&mut *notes.borrow_mut()))
+}
+
+fn format_length(metres: f64) -> String {
+    if metres >= 0.01 {
+        format!("{:.1} cm", metres * 100.0)
+    } else if metres >= 1.0e-4 {
+        format!("{:.2} mm", metres * 1.0e3)
+    } else {
+        format!("{:.1} µm", metres * 1.0e6)
+    }
 }
 
 fn run(a: &Solid, b: &Solid, op: BoolOp, tolerance: f64) -> Result<Option<Solid>, KernelError> {

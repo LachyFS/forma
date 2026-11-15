@@ -792,6 +792,8 @@ fn part_summary(
         )
     } else if issues.is_empty() {
         ("Up to date".to_owned(), BadgeTone::Neutral)
+    } else if issues.iter().all(|issue| issue.warning) {
+        (format!("{} approximated", issues.len()), BadgeTone::Neutral)
     } else {
         (
             format!(

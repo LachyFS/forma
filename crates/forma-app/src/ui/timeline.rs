@@ -108,7 +108,12 @@ pub(crate) fn chip_state(s: &Studio, part: &PartData, feature: &Feature) -> Chip
         if !issue.suggestion.is_empty() {
             text = format!("{text} · {}", issue.suggestion);
         }
-        return ChipState::Error(text);
+        // An approximated feature still applied; it is not a failure.
+        return if issue.warning {
+            ChipState::Warning(text)
+        } else {
+            ChipState::Error(text)
+        };
     }
     if let Some((_, warning)) = s
         .feature_warnings(part)

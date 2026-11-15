@@ -440,6 +440,7 @@ impl Runner {
                     feature: 0,
                     message: format!("The part data is invalid: {error:#}"),
                     suggestion: "Undo the last change".into(),
+                    warning: false,
                 },
             });
             return;
@@ -463,6 +464,7 @@ impl Runner {
                             feature: 0,
                             message,
                             suggestion: "Undo the last change or adjust it slightly".into(),
+                            warning: false,
                         },
                     });
                     return;
@@ -510,6 +512,7 @@ impl Runner {
                         feature: feature.unwrap_or(0),
                         message: format!("Regeneration failed: the geometry kernel {what}"),
                         suggestion: "Undo the last change or simplify the part".into(),
+                        warning: false,
                     },
                 });
                 return;
@@ -522,6 +525,7 @@ impl Runner {
                 feature: culprit,
                 message: format!("{name}: the geometry kernel {what}, so this feature was skipped"),
                 suggestion: "Change its dimensions slightly, or suppress it".into(),
+                warning: false,
             });
         }
         sink(HostEvent::RegenFailed {
@@ -531,6 +535,7 @@ impl Runner {
                 feature: 0,
                 message: "Regeneration failed repeatedly".into(),
                 suggestion: "Undo the last change".into(),
+                warning: false,
             },
         });
     }

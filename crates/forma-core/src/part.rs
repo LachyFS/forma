@@ -80,6 +80,11 @@ pub struct FeatureIssue {
     pub message: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub suggestion: String,
+    /// The feature did apply, but only approximately (for example a tool
+    /// enlarged slightly to separate touching faces). The result is shown;
+    /// this is a warning, not a failure.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub warning: bool,
 }
 
 /// One step of a part history.

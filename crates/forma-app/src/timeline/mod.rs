@@ -1419,12 +1419,14 @@ mod tests {
             feature: 3,
             message: "Bore: the cut removed nothing".into(),
             suggestion: String::new(),
+            warning: false,
         };
         assert_eq!(issue_text(&issue), "The cut removed nothing");
         let part_level = FeatureIssue {
             feature: 0,
             message: "2 faces could not be tessellated".into(),
             suggestion: String::new(),
+            warning: false,
         };
         assert_eq!(issue_text(&part_level), "2 faces could not be tessellated");
     }
