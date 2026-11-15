@@ -526,6 +526,7 @@ pub(super) fn viewport_area(
     let dock = slots::viewport_dock(s, t, cx);
     let adjust = slots::adjust_last_operation(s, t, cx);
     let measurements = measurements_card(t, s);
+    let notice = update_notice(t, s, cx);
     let empty = empty_scene(t, s, cx);
     div()
         .relative()
@@ -591,13 +592,61 @@ pub(super) fn viewport_area(
                     .child(adjust),
             )
         })
-        .when_some(measurements, |d, card| {
+        .when(measurements.is_some() || notice.is_some(), |d| {
             d.child(
-                div()
+                col()
                     .absolute()
                     .right(px(HUD_INSET))
                     .bottom(px(HUD_INSET))
-                    .child(card),
+                    .items_end()
+                    .gap(px(SP_2))
+                    .children(notice)
+                    .children(measurements),
             )
         })
+}
+
+/// A downloaded update waits for a restart; say so once, without a dialog.
+fn update_notice(t: Colors, s: &Studio, cx: &mut Context<Studio>) -> Option<AnimationElement<Div>> {
+    let crate::updater::State::Ready(version) = &s.updates.state else {
+        return None;
+    };
+    if s.updates.open || s.panels.dismissed_update.as_ref() == Some(version) {
+        return None;
+    }
+    let dismissed = version.clone();
+    Some(
+        toast(
+            t,
+            Icon::Update,
+            t.accent_text,
+            "Update ready",
+            Some(format!("Forma {version} installs when you restart. Your work is saved first.").into()),
+        )
+        .child(
+            col()
+                .gap(px(SP_1))
+                .child(command_button(
+                    t,
+                    "notice-restart",
+                    "Restart",
+                    None,
+                    Command::RestartUpdate,
+                    Tone::Primary,
+                    cx,
+                ))
+                .child(
+                    button(t, "notice-later", "Later", None, Tone::Ghost)
+                        .tooltip(tip(t, "Hide until the next update", None))
+                        .on_click(cx.listener(move |s, _, _, cx| {
+                            cx.stop_propagation();
+                            s.panels.dismissed_update = Some(dismissed.clone());
+                            cx.notify();
+                        })),
+                ),
+        )
+        .with_animation("update-notice", enter(), |card, delta| {
+            card.opacity(delta).mb(px((1. - delta) * -8.))
+        }),
+    )
 }

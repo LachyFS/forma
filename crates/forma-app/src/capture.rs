@@ -233,6 +233,17 @@ pub(crate) fn scenarios() -> Vec<Scenario> {
             leave: |s, w, cx| s.execute(Command::ToggleUpdates, w, cx),
         },
         Scenario {
+            name: "update-ready",
+            enter: |s, _, cx| {
+                s.updates.state = crate::updater::State::Ready("0.3.0".into());
+                cx.notify();
+            },
+            leave: |s, _, cx| {
+                s.updates.state = crate::updater::State::Idle;
+                cx.notify();
+            },
+        },
+        Scenario {
             name: "shader-editor",
             enter: |s, w, cx| s.execute(Command::EditShader, w, cx),
             leave: |s, w, cx| s.execute(Command::CloseShader, w, cx),

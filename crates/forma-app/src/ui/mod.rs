@@ -163,6 +163,8 @@ pub(crate) struct PanelState {
     recent: Vec<Command>,
     /// The name field being edited lives in the outliner row, not the inspector.
     pub(crate) rename_in_outliner: bool,
+    /// The update version whose ready notice was dismissed for this session.
+    pub(crate) dismissed_update: Option<String>,
 }
 
 impl Default for PanelState {
@@ -192,6 +194,7 @@ impl Default for PanelState {
             anchors: Rc::new(Default::default()),
             recent: Vec::new(),
             rename_in_outliner: false,
+            dismissed_update: None,
         }
     }
 }

@@ -985,6 +985,62 @@ pub(crate) fn empty_state(t: Colors, glyph: Icon, title: &'static str, body: &'s
         )
 }
 
+/// Notification card: a tinted icon, title, optional body and actions.
+pub(crate) fn toast(
+    t: Colors,
+    glyph: Icon,
+    ink: u32,
+    title: impl Into<SharedString>,
+    body: Option<SharedString>,
+) -> Div {
+    row()
+        .items_start()
+        .w(px(300.))
+        .p(px(SP_3))
+        .gap(px(SP_2 + 2.))
+        .rounded(px(R_LG))
+        .bg(rgb(t.overlay))
+        .border_1()
+        .border_color(rgb(t.border))
+        .shadow(elevation(t, 2))
+        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+        .on_mouse_down(MouseButton::Right, |_, _, cx| cx.stop_propagation())
+        .on_mouse_down(MouseButton::Middle, |_, _, cx| cx.stop_propagation())
+        .on_scroll_wheel(|_, _, cx| cx.stop_propagation())
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .justify_center()
+                .size(px(28.))
+                .flex_shrink_0()
+                .rounded(px(R_MD))
+                .bg(tint(ink, 0.14))
+                .child(icon(glyph, ICON_MD, ink)),
+        )
+        .child(
+            col()
+                .flex_1()
+                .min_w(px(0.))
+                .gap(px(2.))
+                .child(
+                    div()
+                        .font_weight(WEIGHT_SEMIBOLD)
+                        .text_color(rgb(t.text))
+                        .child(title.into()),
+                )
+                .when_some(body, |d, body| {
+                    d.child(
+                        div()
+                            .text_size(px(TEXT_SM))
+                            .line_height(px(16.))
+                            .text_color(rgb(t.text_muted))
+                            .child(body),
+                    )
+                }),
+        )
+}
+
 /// Translucent viewport cluster. It swallows presses and wheel events so the
 /// viewport never selects or zooms through a control, but lets pointer moves
 /// through so an orbit continues when the cursor crosses it.
