@@ -453,7 +453,7 @@ impl Studio {
                     last.label(),
                     match last.param() {
                         AdjustParam::Distance => crate::sketch::overlay::format_length(last.value),
-                        AdjustParam::Angle => crate::sketch::overlay::format_angle(last.value),
+                        AdjustParam::Angle => super::format_sweep(last.value),
                     },
                     if last.part.is_some() {
                         "Regenerating…"

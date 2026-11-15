@@ -313,14 +313,16 @@ pub(crate) fn extrude_light(s: &mut Studio, w: &mut Window, cx: &mut Context<Stu
 
 pub(crate) fn revolve(s: &mut Studio, w: &mut Window, cx: &mut Context<Studio>) {
     let stage = stage(s, cx);
-    s.scene.camera.target = Vec3::new(-1.6, 0.45, -1.0);
-    s.scene.camera.distance = 5.4;
-    s.scene.camera.yaw = 0.62;
+    s.scene.camera.target = Vec3::new(-2.15, 0.42, -1.5);
+    s.scene.camera.distance = 3.1;
+    s.scene.camera.yaw = 0.55;
+    s.scene.camera.pitch = 0.38;
     s.select_objects([stage.profile].into_iter().collect(), Some(stage.profile));
     s.start_sketch_tool(super::SketchToolKind::Revolve, Some(stage.profile), cx);
     if let Some(Tool::Sketch(tool)) = s.cad_tool.tool.as_mut() {
         tool.angle = 270f32.to_radians();
     }
+    s.sketch_tool_changed(false, cx);
     // Rest the pointer on the angle handle.
     let handle = match s.cad_tool.tool.as_ref() {
         Some(Tool::Sketch(tool)) => tool.angle_handle_screen(s),
@@ -413,7 +415,7 @@ pub(crate) fn chamfer(s: &mut Studio, w: &mut Window, cx: &mut Context<Studio>) 
     let start = screen(s, front_top + Vec3::new(0.0, 0.1, 0.1));
     hover(s, w, cx, start);
     s.start_chamfer(cx);
-    let end = screen(s, front_top + Vec3::new(0.0, -0.05, -0.05));
+    let end = screen(s, front_top + Vec3::new(0.0, 0.065, 0.065));
     hover(s, w, cx, end);
 }
 

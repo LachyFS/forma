@@ -320,6 +320,7 @@ impl Prism {
     }
 
     /// Area of the caps.
+    #[cfg(test)]
     pub(crate) fn area(&self) -> f32 {
         self.triangles
             .iter()
@@ -331,6 +332,7 @@ impl Prism {
     }
 
     /// Volume swept between offsets `start` and `end` along the normal.
+    #[cfg(test)]
     pub(crate) fn volume(&self, start: f32, end: f32) -> f32 {
         self.area() * (end - start).abs()
     }
@@ -592,29 +594,76 @@ pub(crate) struct BrepEdge {
     pub straight: bool,
 }
 
-/// Groups the display edges of a part tessellation into B-rep edges: a
-/// curved edge (a circle's rim) is many tessellation segments but one edge.
+/// A canonical vertex per position: part tessellations weld vertices only
+/// within each face group, so neighbouring faces repeat the points of the
+/// edge they share (within a tiny tolerance). Neighbouring grid cells are
+/// searched, since rounding alone splits points that straddle a cell edge.
+pub(crate) fn weld(mesh: &Mesh) -> Vec<u32> {
+    let tolerance = (mesh_extent(mesh) * 2.0e-5).max(1.0e-9);
+    let cell = |p: Vec3| {
+        let q = (p / tolerance).floor();
+        (q.x as i64, q.y as i64, q.z as i64)
+    };
+    let mut grid: HashMap<(i64, i64, i64), Vec<u32>> = HashMap::new();
+    let mut canon = Vec::with_capacity(mesh.positions.len());
+    for (i, p) in mesh.positions.iter().enumerate() {
+        let (x, y, z) = cell(*p);
+        let mut found = None;
+        'search: for dx in -1..=1 {
+            for dy in -1..=1 {
+                for dz in -1..=1 {
+                    if let Some(list) = grid.get(&(x + dx, y + dy, z + dz)) {
+                        if let Some(&j) = list
+                            .iter()
+                            .find(|&&j| mesh.positions[j as usize].distance(*p) <= tolerance)
+                        {
+                            found = Some(j);
+                            break 'search;
+                        }
+                    }
+                }
+            }
+        }
+        let id = found.unwrap_or_else(|| {
+            grid.entry((x, y, z)).or_default().push(i as u32);
+            i as u32
+        });
+        canon.push(id);
+    }
+    canon
+}
+
+/// Groups the edges between face groups of a part tessellation into B-rep
+/// edges: a curved edge (a circle's rim) is many tessellation segments but
+/// one edge. Vertices are welded by position first (see [`weld`]); the
+/// returned points are canonical vertex indices.
+#[cfg(test)]
 pub(crate) fn brep_edges(mesh: &Mesh) -> Vec<BrepEdge> {
-    // Each undirected edge with the groups using it.
+    brep_edges_welded(mesh, &weld(mesh))
+}
+
+pub(crate) fn brep_edges_welded(mesh: &Mesh, canon: &[u32]) -> Vec<BrepEdge> {
+    // Each undirected (welded) edge with the groups using it.
     let mut sides: BTreeMap<(u32, u32), Vec<u32>> = BTreeMap::new();
     for (f, face) in mesh.faces.iter().enumerate() {
         let group = mesh.face_group(f).unwrap_or(f as u32);
         for k in 0..face.len() {
-            let (a, b) = (face[k], face[(k + 1) % face.len()]);
+            let (a, b) = (
+                canon[face[k] as usize],
+                canon[face[(k + 1) % face.len()] as usize],
+            );
             if a != b {
                 sides.entry((a.min(b), a.max(b))).or_default().push(group);
             }
         }
     }
-    let display: Vec<((u32, u32), (u32, u32))> = mesh
-        .display_edges()
-        .into_iter()
-        .filter_map(|[a, b]| {
-            let key = (a.min(b), a.max(b));
-            let groups = sides.get(&key)?;
+    // Edges between two groups, or open edges used once.
+    let display: Vec<((u32, u32), (u32, u32))> = sides
+        .iter()
+        .filter_map(|(key, groups)| {
             let g0 = groups[0];
             let g1 = groups.iter().copied().find(|g| *g != g0).unwrap_or(g0);
-            Some((key, (g0.min(g1), g0.max(g1))))
+            (g0 != g1 || groups.len() == 1).then_some((*key, (g0.min(g1), g0.max(g1))))
         })
         .collect();
     // Vertex → display edges, to walk chains through degree-two vertices.

@@ -57,14 +57,6 @@ impl Operation {
         }
     }
 
-    pub(crate) fn key(self) -> &'static str {
-        match self {
-            Self::NewPart => "N",
-            Self::Join => "J",
-            Self::Cut => "K",
-            Self::Intersect => "I",
-        }
-    }
 
     /// The feature operation: a new part starts its body with a join.
     pub(crate) fn feature(self) -> FeatureOperation {
@@ -95,7 +87,6 @@ impl Operation {
 #[derive(Debug)]
 pub(crate) struct Regions {
     pub object: u64,
-    pub name: String,
     /// The sketch in its object's local space.
     pub sketch: Sketch,
     /// The object's world transform.
@@ -114,7 +105,7 @@ pub(crate) struct Regions {
 }
 
 impl Regions {
-    pub(crate) fn build(object: u64, name: &str, sketch: &Sketch, matrix: Mat4) -> Option<Self> {
+    pub(crate) fn build(object: u64, sketch: &Sketch, matrix: Mat4) -> Option<Self> {
         if !matrix.is_finite() || matrix.determinant().abs() < 1.0e-12 {
             return None;
         }
@@ -157,7 +148,6 @@ impl Regions {
             .collect();
         Some(Self {
             object,
-            name: name.to_owned(),
             sketch: sketch.clone(),
             matrix,
             polygons,
@@ -262,15 +252,6 @@ pub(crate) enum AxisSource {
     SketchY,
 }
 
-impl AxisSource {
-    pub(crate) fn label(self) -> &'static str {
-        match self {
-            Self::Line(_) => "Line",
-            Self::SketchX => "X axis",
-            Self::SketchY => "Y axis",
-        }
-    }
-}
 
 /// An angle drag around the revolve axis.
 #[derive(Clone, Copy, Debug)]
@@ -340,6 +321,8 @@ pub(crate) struct SketchTool {
     pub manual_operation: Option<Operation>,
     pub target: Option<Target>,
     pub numeric: String,
+    /// The side typed values apply on (see `side_of`).
+    pub side: f32,
     pub drag: Option<ToolDrag>,
     press: Option<RegionPress>,
     pub prism: Rc<Prism>,
@@ -382,13 +365,6 @@ impl SketchTool {
         self.manual_operation.is_none() && self.target.as_ref().is_some_and(|t| t.outward.is_some())
     }
 
-    /// The value the numeric entry shows and edits: distance or angle.
-    pub(crate) fn value(&self) -> f32 {
-        match self.kind {
-            SketchToolKind::Extrude => self.distance,
-            SketchToolKind::Revolve => self.angle,
-        }
-    }
 
     /// The typed value, if the entry parses: `Err` marks invalid text.
     pub(crate) fn typed(&self) -> Result<Option<f32>, ()> {
@@ -750,8 +726,7 @@ impl Studio {
             .or_else(|| {
                 let sketch = self.scene.object_sketch(id)?;
                 let matrix = self.scene.world_transform(id)?;
-                let name = self.scene.object(id)?.name.clone();
-                Regions::build(id, &name, sketch, matrix).map(Rc::new)
+                Regions::build(id, sketch, matrix).map(Rc::new)
             });
         let Some(regions) = regions.filter(|r| !r.polygons.is_empty()) else {
             self.status = "The sketch has no closed regions · Close its outline first".into();
@@ -795,6 +770,7 @@ impl Studio {
             manual_operation: None,
             target: None,
             numeric: String::new(),
+            side: 1.0,
             drag: None,
             press: None,
             prism: Rc::default(),
@@ -911,7 +887,7 @@ impl Studio {
             }
             SketchToolKind::Revolve => format!(
                 "Revolve {} · {picked} · Drag the handle or type an angle · Return to apply",
-                crate::sketch::overlay::format_angle(tool.angle)
+                super::format_sweep(tool.angle)
             ),
         };
     }
@@ -976,7 +952,18 @@ impl Studio {
                 }
                 true
             }
-            _ if super::type_numeric(&mut tool.numeric, character) => {
+            _ if {
+                let starting = tool.numeric.is_empty();
+                let typed = super::type_numeric(&mut tool.numeric, character);
+                if typed && starting {
+                    tool.side = super::side_of(match tool.kind {
+                        SketchToolKind::Extrude => tool.distance,
+                        SketchToolKind::Revolve => tool.angle,
+                    });
+                }
+                typed
+            } =>
+            {
                 self.apply_typed_value();
                 self.sketch_tool_changed(false, cx);
                 true
@@ -1025,9 +1012,9 @@ impl Studio {
         if let Ok(Some(value)) = tool.typed() {
             match tool.kind {
                 SketchToolKind::Extrude => {
-                    tool.distance = super::typed_on_side(value, tool.distance)
+                    tool.distance = value * tool.side
                 }
-                SketchToolKind::Revolve => tool.angle = super::typed_on_side(value, tool.angle),
+                SketchToolKind::Revolve => tool.angle = value * tool.side,
             }
             tool.snapped_face = false;
         }
@@ -1475,7 +1462,7 @@ impl Studio {
             ),
             SketchToolKind::Revolve => format!(
                 "Revolved {} · Regenerating…",
-                crate::sketch::overlay::format_angle(tool.angle)
+                super::format_sweep(tool.angle)
             ),
         };
         self.invalidate(true, cx);
@@ -1585,7 +1572,7 @@ mod tests {
     fn tool_for(scene: &Scene, object: u64, kind: SketchToolKind) -> SketchTool {
         let sketch = scene.object_sketch(object).unwrap();
         let matrix = scene.world_transform(object).unwrap();
-        let regions = Rc::new(Regions::build(object, "Sketch", sketch, matrix).unwrap());
+        let regions = Rc::new(Regions::build(object, sketch, matrix).unwrap());
         let mut tool = SketchTool {
             kind,
             selected: regions.defaults.iter().copied().collect(),
@@ -1600,6 +1587,7 @@ mod tests {
             manual_operation: None,
             target: None,
             numeric: String::new(),
+            side: 1.0,
             drag: None,
             press: None,
             prism: Rc::default(),

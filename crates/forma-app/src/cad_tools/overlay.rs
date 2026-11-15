@@ -4,15 +4,15 @@
 //! projected in the canvas paint, so drags never wait on the kernel.
 use super::edit::EditHover;
 use super::geometry::{Lathe, Prism, rotate_about};
-use super::sketch_tool::{SketchToolKind, Target};
+use super::sketch_tool::SketchToolKind;
 use super::{Tool, operation_color};
 use crate::app::Studio;
 use crate::sketch::overlay::{
-    Projector, dot, fill_polygons, ink, label, ring, stroke_dashed, stroke_runs, to_point, to_vec,
+    Projector, dot, fill_polygons, ink, label, ring, stroke_dashed, stroke_runs, to_point,
 };
 use crate::theme::Colors;
 use forma_core::{Mat4, Vec2, Vec3};
-use gpui::{App, Bounds, FillOptions, FillRule, PathBuilder, PathStyle, Pixels, Point, Window, px};
+use gpui::{App, Bounds, FillOptions, FillRule, PathBuilder, PathStyle, Pixels, Point, Window};
 use std::rc::Rc;
 
 /// A highlighted region or face: polygons (outer loops and holes) in world space.
@@ -73,6 +73,14 @@ pub(crate) struct ArrowPaint {
     pub hot: bool,
 }
 
+/// A highlighted face group: fill triangles and outline segments.
+#[derive(Default)]
+pub(crate) struct FaceHighlight {
+    pub fill: Vec<Vec<Vec3>>,
+    pub visible: Vec<Vec<Vec3>>,
+    pub hidden: Vec<Vec<Vec3>>,
+}
+
 pub(crate) struct ToolOverlay {
     pub colors: Colors,
     /// Camera position (perspective) or backward view direction (orthographic).
@@ -85,6 +93,8 @@ pub(crate) struct ToolOverlay {
     pub lines: Vec<LinePaint>,
     pub arrows: Vec<ArrowPaint>,
     pub knobs: Vec<(Vec2, u32, bool)>,
+    /// Accent end points of selected edges.
+    pub dots: Vec<Vec3>,
     pub labels: Vec<LabelPaint>,
 }
 
@@ -105,6 +115,7 @@ impl ToolOverlay {
             && self.lines.is_empty()
             && self.arrows.is_empty()
             && self.knobs.is_empty()
+            && self.dots.is_empty()
             && self.labels.is_empty()
     }
 }
@@ -142,6 +153,7 @@ impl Studio {
             lines: Vec::new(),
             arrows: Vec::new(),
             knobs: Vec::new(),
+            dots: Vec::new(),
             labels: Vec::new(),
         };
         // Committed operations waiting for their kernel result.
@@ -286,7 +298,6 @@ impl Studio {
                     &tool.numeric,
                     tool.typed().is_err(),
                     tool.snapped_face,
-                    tool.target.as_ref(),
                     overlay,
                 );
             }
@@ -305,10 +316,20 @@ impl Studio {
                 let Some((origin, direction)) = tool.world_axis() else {
                     return;
                 };
-                // The axis, extended well past the profile.
-                let reach = self.world_per_pixel(origin) * 1600.0;
+                // The axis, a little past the profile at both ends.
+                let along: Vec<f32> = tool
+                    .prism
+                    .points
+                    .iter()
+                    .map(|p| (*p - origin).dot(direction))
+                    .collect();
+                let (low, high) = along.iter().fold((0.0_f32, 0.0_f32), |(lo, hi), t| (lo.min(*t), hi.max(*t)));
+                let margin = (high - low).max(self.world_per_pixel(origin) * 40.0) * 0.3;
                 overlay.lines.push(LinePaint {
-                    points: vec![origin - direction * reach, origin + direction * reach],
+                    points: vec![
+                        origin + direction * (low - margin),
+                        origin + direction * (high + margin),
+                    ],
                     color: t.accent,
                     alpha: 0.95,
                     width: 1.4,
@@ -359,7 +380,7 @@ impl Studio {
                         overlay.labels.push(LabelPaint {
                             at: at + away * 24.0,
                             text: if tool.numeric.is_empty() {
-                                crate::sketch::overlay::format_angle(tool.angle)
+                                super::format_sweep(tool.angle)
                             } else {
                                 format!("{}▏", tool.numeric)
                             },
@@ -381,7 +402,6 @@ impl Studio {
         numeric: &str,
         invalid: bool,
         snapped: bool,
-        target: Option<&Target>,
         overlay: &mut ToolOverlay,
     ) {
         let t = overlay.colors;
@@ -402,7 +422,6 @@ impl Studio {
         let side = Vec2::new(-along.y, along.x);
         let side = if side.x < 0.0 { -side } else { side };
         let text = numeric_text(numeric, offset, snapped);
-        let _ = target;
         overlay.labels.push(LabelPaint {
             at: (a + b) * 0.5 + side * 34.0,
             text,
@@ -429,7 +448,7 @@ impl Studio {
             return;
         };
         let distance = match active.typed() {
-            Ok(Some(value)) => super::typed_on_side(value, active.distance),
+            Ok(Some(value)) => value * active.side,
             _ => active.distance,
         };
         let color = if distance >= 0.0 { t.accent } else { t.danger };
@@ -467,7 +486,6 @@ impl Studio {
             &active.numeric,
             active.typed().is_err(),
             active.snapped_face,
-            None,
             overlay,
         );
     }
@@ -478,46 +496,36 @@ impl Studio {
             return;
         };
         let matrix = instance.world_transform;
-        let face_area = |group: u32, fill: f32, outline: f32| -> AreaPaint {
-            let faces = super::geometry::group_faces(instance.mesh, group);
-            let prism = super::push_pull::face_prism(instance.mesh, &faces, matrix, Vec3::ZERO);
-            // Triangles as separate polygons: groups may be curved.
-            let mut polygons: Vec<Vec<Vec3>> = Vec::new();
-            for triangle in &prism.triangles {
-                polygons.push(triangle.iter().map(|&i| prism.points[i as usize]).collect());
-            }
-            let _ = outline;
-            AreaPaint {
-                polygons,
+        let paint_face = |group: u32, fill: f32, width: f32, alpha: f32, overlay: &mut ToolOverlay| {
+            let face = self.face_highlight(id, group);
+            overlay.areas.push(AreaPaint {
+                polygons: face.fill.clone(),
                 color: t.accent,
                 fill,
                 outline: 0.0,
-            }
-        };
-        let outline = |group: u32| -> Vec<Vec<Vec3>> {
-            let faces = super::geometry::group_faces(instance.mesh, group);
-            let boundary = super::geometry::group_boundary(instance.mesh, &faces);
-            boundary
-                .iter()
-                .map(|e| {
-                    e.iter()
-                        .map(|&i| matrix.transform_point3(instance.mesh.positions[i as usize]))
-                        .collect()
-                })
-                .collect()
-        };
-        let selected_faces = self.selected_edit_faces(id);
-        for (group, _) in &selected_faces {
-            overlay.areas.push(face_area(*group, 0.3, 0.0));
-            for segment in outline(*group) {
+            });
+            for segment in &face.visible {
                 overlay.lines.push(LinePaint {
-                    points: segment,
+                    points: segment.clone(),
                     color: t.accent,
-                    alpha: 1.0,
-                    width: 2.2,
+                    alpha,
+                    width,
                     dashed: false,
                 });
             }
+            for segment in &face.hidden {
+                overlay.lines.push(LinePaint {
+                    points: segment.clone(),
+                    color: t.accent,
+                    alpha: alpha * 0.45,
+                    width: 1.0,
+                    dashed: true,
+                });
+            }
+        };
+        let selected_faces = self.selected_edit_faces(id);
+        for (group, _) in &selected_faces {
+            paint_face(*group, 0.36, 2.2, 1.0, overlay);
         }
         let topology = self.part_topology(id);
         let edge_points = |index: usize| -> Option<Vec<Vec3>> {
@@ -531,27 +539,19 @@ impl Studio {
         };
         for index in self.selected_edit_edges(id) {
             if let Some(points) = edge_points(index) {
+                overlay.dots.extend([points[0], *points.last().unwrap()]);
                 overlay.lines.push(LinePaint {
                     points,
                     color: t.accent,
                     alpha: 1.0,
-                    width: 3.2,
+                    width: 4.0,
                     dashed: false,
                 });
             }
         }
         match self.cad_tool.edit.hover {
             Some(EditHover::Face(group)) if !selected_faces.iter().any(|(g, _)| *g == group) => {
-                overlay.areas.push(face_area(group, 0.14, 0.0));
-                for segment in outline(group) {
-                    overlay.lines.push(LinePaint {
-                        points: segment,
-                        color: t.accent,
-                        alpha: 0.85,
-                        width: 1.6,
-                        dashed: false,
-                    });
-                }
+                paint_face(group, 0.16, 1.6, 0.85, overlay);
             }
             Some(EditHover::Edge(index)) => {
                 if let Some(points) = edge_points(index) {
@@ -562,15 +562,68 @@ impl Studio {
                     overlay.lines.push(LinePaint {
                         points,
                         color: if straight { t.accent } else { t.text },
-                        alpha: 0.85,
-                        width: 2.6,
+                        alpha: 0.8,
+                        width: 3.0,
                         dashed: false,
                     });
                 }
             }
             _ => {}
         }
-        let _ = Mat4::IDENTITY;
+    }
+
+    /// The visible part of a face group, for highlighting: front-facing,
+    /// unoccluded triangles and its outline split into visible and hidden
+    /// segments. Cached per scene revision and camera.
+    fn face_highlight(&self, object: u64, group: u32) -> Rc<FaceHighlight> {
+        let camera = self.scene.camera;
+        let key = (object, group);
+        if let Some((revision, cached_camera, face)) = self.cad_tool.faces.borrow().get(&key)
+            && *revision == self.scene_revision
+            && *cached_camera == camera
+        {
+            return face.clone();
+        }
+        let mut face = FaceHighlight::default();
+        if let Some(instance) = self.scene.mesh_instance(object) {
+            let matrix = instance.world_transform;
+            let mesh = instance.mesh;
+            let query = self.visibility_query();
+            let eye = camera.position();
+            let backward = camera.view_matrix().inverse().z_axis.truncate();
+            let facing = |normal: Vec3, point: Vec3| {
+                if camera.orthographic {
+                    normal.dot(backward) > 0.0
+                } else {
+                    normal.dot(eye - point) > 0.0
+                }
+            };
+            let visible = |p: Vec3| crate::viewport::visible_in_query(camera, query, p);
+            let faces = super::geometry::group_faces(mesh, group);
+            let prism = super::push_pull::face_prism(mesh, &faces, matrix, Vec3::ZERO);
+            for triangle in &prism.triangles {
+                let [a, b, c] = triangle.map(|i| prism.points[i as usize]);
+                let centroid = (a + b + c) / 3.0;
+                if facing((b - a).cross(c - a), centroid) && visible(centroid) {
+                    face.fill.push(vec![a, b, c]);
+                }
+            }
+            for edge in super::geometry::group_boundary(mesh, &faces) {
+                let [a, b] = edge.map(|i| matrix.transform_point3(mesh.positions[i as usize]));
+                if visible((a + b) * 0.5) {
+                    face.visible.push(vec![a, b]);
+                } else {
+                    face.hidden.push(vec![a, b]);
+                }
+            }
+        }
+        let face = Rc::new(face);
+        let mut cache = self.cad_tool.faces.borrow_mut();
+        cache.retain(|_, (revision, cached_camera, _)| {
+            *revision == self.scene_revision && *cached_camera == camera
+        });
+        cache.insert(key, (self.scene_revision, camera, face.clone()));
+        face
     }
 }
 
@@ -675,6 +728,12 @@ pub(crate) fn paint(
                 stroke_runs(window, &runs, line.width, ink(line.color, line.alpha));
             }
         }
+        for point in &overlay.dots {
+            if let Some(p) = projector.point(*point) {
+                dot(window, p, 9.0, ink(c.canvas, 0.6));
+                dot(window, p, 6.0, ink(c.accent, 1.0));
+            }
+        }
         for arrow in &overlay.arrows {
             paint_arrow(arrow, c, window);
         }
@@ -732,8 +791,13 @@ fn paint_prism(overlay: &ToolOverlay, paint: &PrismPaint, projector: &Projector,
             }
         }
     }
-    // Walls, with each corner's visibility for silhouette edges.
+    // Walls, with each corner's visibility for silhouette edges. Edges with
+    // no front face beside them are hidden lines: drawn faint and dashed.
+    let centroid = prism.centroid();
+    let top_facing = overlay.facing(n, centroid + n * hi);
+    let bottom_facing = overlay.facing(-n, centroid + n * lo);
     let mut edges: Vec<Vec<Vec3>> = Vec::new();
+    let mut hidden: Vec<Vec<Vec3>> = Vec::new();
     for lp in &prism.loops {
         let count = lp.len();
         let mut visible = Vec::with_capacity(count);
@@ -751,28 +815,47 @@ fn paint_prism(overlay: &ToolOverlay, paint: &PrismPaint, projector: &Projector,
                 front.push(projected);
             }
         }
-        // Cap outlines.
-        let top: Vec<Vec3> = lp.iter().chain(lp.first()).map(|&i| at(i, hi)).collect();
-        let bottom: Vec<Vec3> = lp.iter().chain(lp.first()).map(|&i| at(i, lo)).collect();
-        edges.push(top);
-        edges.push(bottom);
+        // Cap outlines, segment by segment.
+        for k in 0..count {
+            let (a, b) = (lp[k], lp[(k + 1) % count]);
+            for (height, cap) in [(hi, top_facing), (lo, bottom_facing)] {
+                let segment = vec![at(a, height), at(b, height)];
+                if cap || visible[k] {
+                    edges.push(segment);
+                } else {
+                    hidden.push(segment);
+                }
+            }
+        }
         // Vertical edges at creases and silhouettes.
         for k in 0..count {
             let previous = visible[(k + count - 1) % count];
-            if prism.sharp_corner(lp, k) || previous != visible[k] {
-                edges.push(vec![at(lp[k], lo), at(lp[k], hi)]);
+            let segment = vec![at(lp[k], lo), at(lp[k], hi)];
+            if previous != visible[k] {
+                edges.push(segment);
+            } else if prism.sharp_corner(lp, k) {
+                if visible[k] {
+                    edges.push(segment);
+                } else {
+                    hidden.push(segment);
+                }
             }
         }
     }
     let c = overlay.colors;
     if paint.fill > 0.0 {
-        fill_union(window, &front, ink(paint.color, 0.16 * paint.fill));
-        fill_union(window, &moving, ink(paint.color, 0.14 * paint.fill));
+        fill_union(window, &front, ink(paint.color, 0.2 * paint.fill));
+        fill_union(window, &moving, ink(paint.color, 0.16 * paint.fill));
+    }
+    let strength = 0.45 + 0.55 * paint.fill;
+    for segment in &hidden {
+        for run in projector.polyline(segment) {
+            stroke_dashed(window, &run, 1.0, ink(paint.color, 0.4 * strength), [3.0, 3.0]);
+        }
     }
     let runs: Vec<Vec<Point<Pixels>>> = edges.iter().flat_map(|e| projector.polyline(e)).collect();
-    let strength = 0.45 + 0.55 * paint.fill;
     stroke_runs(window, &runs, 3.2, ink(c.canvas, 0.35 * strength));
-    stroke_runs(window, &runs, 1.4, ink(paint.color, 0.95 * strength));
+    stroke_runs(window, &runs, 1.5, ink(paint.color, 0.95 * strength));
 }
 
 fn paint_lathe(overlay: &ToolOverlay, paint: &LathePaint, projector: &Projector, window: &mut Window) {
@@ -795,7 +878,6 @@ fn paint_lathe(overlay: &ToolOverlay, paint: &LathePaint, projector: &Projector,
                 let normal = (quad[1] - quad[0]).cross(quad[3] - quad[0]);
                 let center = (quad[0] + quad[2]) * 0.5;
                 // Either side may face the viewer: the surface is thin.
-                let _ = normal;
                 if let Some(projected) = quad.iter().map(|p| projector.point(*p)).collect::<Option<Vec<_>>>() {
                     let facing = overlay.facing(normal, center);
                     let mut projected = projected;
@@ -866,5 +948,4 @@ fn paint_arrow(arrow: &ArrowPaint, c: Colors, window: &mut Window) {
     dot(window, grip, if arrow.hot { 13.0 } else { 11.0 }, ink(c.canvas, 0.45));
     dot(window, grip, if arrow.hot { 9.0 } else { 7.0 }, ink(arrow.color, 1.0));
     dot(window, grip, 3.0, ink(c.overlay, 1.0));
-    let _ = to_vec;
 }

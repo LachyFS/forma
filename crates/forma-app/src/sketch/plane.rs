@@ -1,6 +1,6 @@
 //! Choosing the plane a new sketch is drawn on, and the camera that looks
 //! straight at it.
-use forma_core::{Camera, Ray, Scene, SketchCurve, SketchPlane, Vec2, Vec3};
+use forma_core::{Camera, Ray, Scene, SketchCurve, SketchPlane, Vec3};
 use std::f32::consts::FRAC_PI_2;
 use std::time::{Duration, Instant};
 
@@ -308,6 +308,7 @@ pub(crate) fn interpolate(from: Camera, to: Camera, t: f32) -> Camera {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use forma_core::Vec2;
 
     fn screen_axes(camera: Camera) -> (Vec3, Vec3) {
         let (right, up, _) = camera_axes(camera);

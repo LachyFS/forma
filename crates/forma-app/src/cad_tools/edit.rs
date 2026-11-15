@@ -36,10 +36,22 @@ pub(crate) struct EditState {
     pub hover: Option<EditHover>,
 }
 
-/// B-rep edges of one part tessellation.
+/// B-rep edges of one part tessellation, with the welded vertex of every
+/// tessellation vertex (see `geometry::weld`).
 #[derive(Debug)]
 pub(crate) struct Topology {
     pub edges: Vec<BrepEdge>,
+    pub canon: Vec<u32>,
+}
+
+impl Topology {
+    pub(crate) fn new(mesh: &forma_core::Mesh) -> Self {
+        let canon = geometry::weld(mesh);
+        Self {
+            edges: geometry::brep_edges_welded(mesh, &canon),
+            canon,
+        }
+    }
 }
 
 impl Topology {
@@ -133,9 +145,7 @@ impl Studio {
         if let Some((_, topology)) = entries.iter().find(|(id, _)| *id == object) {
             return Some(topology.clone());
         }
-        let topology = Rc::new(Topology {
-            edges: geometry::brep_edges(mesh),
-        });
+        let topology = Rc::new(Topology::new(mesh));
         entries.push((object, topology.clone()));
         Some(topology)
     }
@@ -373,6 +383,13 @@ impl Studio {
                 );
                 true
             }
+            "delete" | "backspace" => {
+                hint(
+                    self,
+                    "B-rep faces and edges can't be deleted · Push/pull (P), chamfer or Convert to mesh",
+                );
+                true
+            }
             "i" | "l" => {
                 hint(self, "Polygon tools apply to meshes · Convert to mesh to edit polygons");
                 true
@@ -604,7 +621,7 @@ impl Studio {
         let matrix = instance.world_transform;
         let mut edges = Vec::new();
         for index in indices {
-            match chamfer_edge(instance.mesh, &topology.edges[index], matrix) {
+            match chamfer_edge(instance.mesh, &topology.canon, &topology.edges[index], matrix) {
                 Ok(edge) => edges.push(edge),
                 Err(message) => {
                     self.status = format!("Chamfer · {message}");
@@ -780,6 +797,7 @@ fn same_face_ref(a: &FaceRef, b: &FaceRef) -> bool {
 /// The chamfer geometry of a straight B-rep edge between two flat faces.
 pub(crate) fn chamfer_edge(
     mesh: &forma_core::Mesh,
+    canon: &[u32],
     edge: &BrepEdge,
     matrix: Mat4,
 ) -> Result<ChamferEdge, &'static str> {
@@ -799,7 +817,10 @@ pub(crate) fn chamfer_edge(
             mesh.face_group(f) == Some(group) && {
                 let face = &mesh.faces[f];
                 (0..face.len()).any(|k| {
-                    let (x, y) = (face[k], face[(k + 1) % face.len()]);
+                    let (x, y) = (
+                        canon[face[k] as usize],
+                        canon[face[(k + 1) % face.len()] as usize],
+                    );
                     (x == s0 && y == s1) || (x == s1 && y == s0)
                 })
             }
@@ -850,7 +871,8 @@ mod tests {
         let mesh = grouped_cube();
         let edges = geometry::brep_edges(&mesh);
         let edge = &edges[0];
-        let chamfer = chamfer_edge(&mesh, edge, Mat4::IDENTITY).unwrap();
+        let canon = geometry::weld(&mesh);
+        let chamfer = chamfer_edge(&mesh, &canon, edge, Mat4::IDENTITY).unwrap();
         assert!(chamfer.into_a.dot(chamfer.into_b).abs() < 1.0e-5, "perpendicular faces");
         // Both directions point back toward the cube's centre.
         let middle = (chamfer.start + chamfer.end) * 0.5;
@@ -862,15 +884,51 @@ mod tests {
             straight: false,
             ..edge.clone()
         };
-        assert!(chamfer_edge(&mesh, &curved, Mat4::IDENTITY).is_err());
+        assert!(chamfer_edge(&mesh, &canon, &curved, Mat4::IDENTITY).is_err());
+    }
+
+    /// Part tessellations repeat edge points per face group; edges are
+    /// found by welding positions, as on the real bracket.
+    #[test]
+    fn unwelded_part_tessellations_still_give_shared_edges() {
+        let scene = crate::cad::demo_scene();
+        let part = scene.parts.iter().find(|p| p.name == "Bracket").unwrap();
+        let result = forma_cad::regenerate(
+            &forma_cad::RegenRequest {
+                part_id: part.id,
+                part: part.clone(),
+                skip: Vec::new(),
+            },
+            &mut forma_cad::RegenCache::default(),
+            &mut |_| {},
+        );
+        let mesh = result.mesh.unwrap();
+        let topology = Topology::new(&mesh);
+        let p = |i: u32| mesh.positions[i as usize];
+        // The plate's top front edge: straight, between two different faces.
+        let index = topology
+            .edges
+            .iter()
+            .position(|e| {
+                let (a, b) = (p(e.points[0]), p(*e.points.last().unwrap()));
+                (a.y - 0.3).abs() < 1.0e-3
+                    && (b.y - 0.3).abs() < 1.0e-3
+                    && a.z > 0.74
+                    && b.z > 0.74
+            })
+            .expect("top front edge");
+        let edge = &topology.edges[index];
+        assert!(edge.straight && edge.groups.0 != edge.groups.1, "{edge:?}");
+        let chamfer = chamfer_edge(&mesh, &topology.canon, edge, Mat4::IDENTITY).unwrap();
+        assert!(chamfer.into_a.dot(chamfer.into_b).abs() < 1.0e-3);
+        // Hole rims are single curved edges.
+        assert!(topology.edges.iter().any(|e| !e.straight && e.points.len() > 8));
     }
 
     #[test]
     fn edge_selections_resolve_in_either_direction() {
         let mesh = grouped_cube();
-        let topology = Topology {
-            edges: geometry::brep_edges(&mesh),
-        };
+        let topology = Topology::new(&mesh);
         let selection = topology.edge_selection(&mesh, 3).unwrap();
         assert_eq!(topology.resolve(&mesh, &selection), Some(3));
         let reversed = EdgeSelection {
@@ -886,3 +944,4 @@ mod tests {
         assert_eq!(topology.resolve(&mesh, &moved), None);
     }
 }
+

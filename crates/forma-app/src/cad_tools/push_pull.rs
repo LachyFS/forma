@@ -65,6 +65,8 @@ pub(crate) struct ActiveFaces {
     /// Signed world distance along the first face's normal.
     pub distance: f32,
     pub numeric: String,
+    /// The side typed values apply on (see `side_of`).
+    pub side: f32,
     pub drag: Option<AxisDrag>,
     /// Keyboard-started: the pointer drives the distance and a click applies.
     pub modal: bool,
@@ -230,6 +232,7 @@ impl Studio {
                 faces,
                 distance: 0.0,
                 numeric: String::new(),
+                side: 1.0,
                 drag: Some(drag),
                 modal: true,
                 heights,
@@ -346,7 +349,11 @@ impl Studio {
             }
             _ => match tool.active.as_mut() {
                 Some(active) => {
+                    let starting = active.numeric.is_empty();
                     let typed = super::type_numeric(&mut active.numeric, character);
+                    if typed && starting {
+                        active.side = super::side_of(active.distance);
+                    }
                     if typed {
                         apply_typed(active);
                     }
@@ -422,6 +429,7 @@ impl Studio {
                     faces: vec![pick],
                     distance: 0.0,
                     numeric: String::new(),
+                    side: 1.0,
                     drag: Some(drag),
                     modal: false,
                     heights,
@@ -682,7 +690,7 @@ impl Studio {
 /// Applies a valid typed distance on the current side.
 fn apply_typed(active: &mut ActiveFaces) {
     if let Ok(Some(value)) = active.typed() {
-        active.distance = super::typed_on_side(value, active.distance);
+        active.distance = value * active.side;
         active.snapped_face = false;
     }
 }

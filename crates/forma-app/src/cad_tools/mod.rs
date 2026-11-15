@@ -25,6 +25,7 @@ mod hud;
 pub(crate) mod overlay;
 mod push_pull;
 mod sketch_tool;
+pub(crate) mod smoke;
 
 pub(crate) use adjust::{AdjustParam, LastOperation};
 pub(crate) use hud::operation_icon as hud_operation_icon;
@@ -144,6 +145,11 @@ pub(crate) struct CadToolState {
     regions: Cached<(u64, u64), Vec<Rc<Regions>>>,
     /// B-rep edges and face data of part tessellations, per scene revision.
     pub(crate) topology: RefCell<Option<(u64, Vec<(u64, Rc<edit::Topology>)>)>>,
+    /// Visible triangles and outline of highlighted part faces.
+    #[allow(clippy::type_complexity)]
+    pub(crate) faces: RefCell<
+        std::collections::HashMap<(u64, u32), (u64, forma_core::Camera, Rc<overlay::FaceHighlight>)>,
+    >,
     /// Pointer position of the last hover update, to skip redundant picks.
     last_hover: Option<Vec2>,
 }
@@ -521,7 +527,7 @@ impl Studio {
                 sets.push(reused.clone());
                 continue;
             }
-            if let Some(regions) = Regions::build(object.id, &object.name, sketch, matrix) {
+            if let Some(regions) = Regions::build(object.id, sketch, matrix) {
                 sets.push(Rc::new(regions));
             }
         }
@@ -838,6 +844,12 @@ impl Studio {
     }
 }
 
+/// A revolve sweep in degrees, without wrapping: 270° stays 270°.
+pub(crate) fn format_sweep(radians: f32) -> String {
+    let text = format!("{:.1}", radians.to_degrees());
+    format!("{}°", text.trim_end_matches('0').trim_end_matches('.'))
+}
+
 /// Distance of `p` to the segment `a`–`b`.
 pub(crate) fn segment_distance(p: Vec2, a: Vec2, b: Vec2) -> f32 {
     let d = b - a;
@@ -880,11 +892,12 @@ pub(crate) fn erase_numeric(text: &mut String, key: &str, alt: bool) -> bool {
     crate::text_entry::erase(text, &mut replace, erase)
 }
 
-/// The typed magnitude applied on the current side, as Draw's locked values
-/// follow the pointer: `0.2` while pushing in gives −0.2; a typed sign
-/// reverses it.
-pub(crate) fn typed_on_side(typed: f32, current: f32) -> f32 {
-    if current < 0.0 { -typed } else { typed }
+/// The side a typed value applies on, captured when typing starts: as
+/// Draw's locked values follow the pointer, `0.2` while pushing in gives
+/// −0.2, and a typed sign reverses it. Capturing it once keeps re-applying
+/// the same text idempotent.
+pub(crate) fn side_of(current: f32) -> f32 {
+    if current < 0.0 { -1.0 } else { 1.0 }
 }
 
 #[cfg(test)]
@@ -903,9 +916,11 @@ mod tests {
         assert!((crate::transform::distance_value(&text).unwrap() - 0.025).abs() < 1.0e-6);
         assert!(erase_numeric(&mut text, "backspace", false));
         assert_eq!(text, "25m");
-        assert_eq!(typed_on_side(0.2, -0.5), -0.2);
-        assert_eq!(typed_on_side(-0.2, -0.5), 0.2);
-        assert_eq!(typed_on_side(0.2, 0.0), 0.2);
+        assert_eq!(0.2 * side_of(-0.5), -0.2);
+        assert_eq!(-0.2 * side_of(-0.5), 0.2);
+        assert_eq!(0.2 * side_of(0.0), 0.2);
+        assert_eq!(format_sweep(270f32.to_radians()), "270°");
+        assert_eq!(format_sweep(-std::f32::consts::FRAC_PI_4), "-45°");
     }
 
     #[test]

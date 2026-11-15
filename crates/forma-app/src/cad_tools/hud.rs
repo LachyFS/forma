@@ -157,7 +157,7 @@ impl Studio {
                 } else {
                     match tool.kind {
                         SketchToolKind::Extrude => crate::sketch::overlay::format_length(tool.distance),
-                        SketchToolKind::Revolve => crate::sketch::overlay::format_angle(tool.angle),
+                        SketchToolKind::Revolve => super::format_sweep(tool.angle),
                     }
                 };
                 let mut bar = bar
