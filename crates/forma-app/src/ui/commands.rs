@@ -325,6 +325,9 @@ fn draw_info(command: DrawCommand) -> CommandInfo {
             shortcut: Some("D"),
             detail: Some("On the face under the pointer, the view's plane, or the ground"),
         },
+        DrawCommand::NewGroundSketch => {
+            explained("Draw a sketch", "Start Draw on the ground plane")
+        }
         DrawCommand::EditSketch => keyed("Edit sketch", "Return"),
         DrawCommand::Finish => keyed("Finish sketch", "Return"),
         DrawCommand::Tool(DrawTool::Select) => explained_keyed(
@@ -443,7 +446,7 @@ pub(crate) fn command_icon(command: Command) -> Option<Icon> {
         Command::ToggleTheme => Icon::Theme,
         Command::TogglePreviewSettings => Icon::Lighting,
         Command::CheckForUpdates | Command::ToggleUpdates => Icon::Update,
-        Command::Draw(DrawCommand::NewSketch) => Icon::DrawMode,
+        Command::Draw(DrawCommand::NewSketch | DrawCommand::NewGroundSketch) => Icon::DrawMode,
         Command::Draw(DrawCommand::EditSketch) => Icon::Sketch,
         Command::Draw(DrawCommand::Finish) => Icon::Check,
         Command::Draw(DrawCommand::Tool(tool)) => crate::sketch::hud::tool_icon(tool),

@@ -2,11 +2,13 @@
 //! tools, filters and view controls float above it in translucent clusters,
 //! leaving the scene as large as possible.
 use super::assets::{Icon, icon};
-use super::commands::shading_icon;
+use super::commands::{command_icon as command_glyph, shading_icon};
 use super::components::*;
 use super::tokens::*;
 use super::{Anchor, MenuKind, VIEWPORT_MIN_WIDTH, slots};
 use crate::app::{Command, EditMode, Studio, Tool};
+use crate::cad::{CadCommand, PartShape};
+use crate::sketch::DrawCommand;
 use crate::theme::Colors;
 use forma_core::Primitive;
 use forma_render::RenderMode;
@@ -509,68 +511,87 @@ fn measurements_card(t: Colors, s: &Studio) -> Option<Div> {
     Some(card)
 }
 
-/// Guidance and quick starts when the scene has no objects.
+/// Guidance and quick starts when the scene has no objects: one row for each
+/// way of making geometry (mesh, part, sketch), then every import format.
 fn empty_scene(t: Colors, s: &Studio, cx: &mut Context<Studio>) -> Option<Div> {
     if !s.scene.objects.is_empty() || s.frame.is_none() {
         return None;
     }
+    let mut quick = |group: &str, label: &'static str, command: Command, tone: Tone| {
+        command_button(
+            t,
+            SharedString::from(format!("empty-{group}-{label}")),
+            label,
+            command_glyph(command),
+            command,
+            tone,
+            cx,
+        )
+    };
+    let mesh = [
+        ("Cube", Primitive::Cube),
+        ("Sphere", Primitive::Sphere),
+        ("Cylinder", Primitive::Cylinder),
+        ("Plane", Primitive::Plane),
+    ]
+    .map(|(label, primitive)| quick("mesh", label, Command::Add(primitive), Tone::Secondary));
+    let part = [
+        ("Box", PartShape::Box),
+        ("Cylinder", PartShape::Cylinder),
+        ("Sphere", PartShape::Sphere),
+    ]
+    .map(|(label, shape)| {
+        quick(
+            "part",
+            label,
+            Command::Cad(CadCommand::AddPart(shape)),
+            Tone::Secondary,
+        )
+    });
+    let sketch = quick(
+        "sketch",
+        "Draw a sketch",
+        Command::Draw(DrawCommand::NewGroundSketch),
+        Tone::Secondary,
+    );
+    let import = [
+        ("OBJ…", Command::ImportObj),
+        ("STL…", Command::ImportStl),
+        ("STEP…", Command::Cad(CadCommand::ImportStep)),
+    ]
+    .map(|(label, command)| quick("import", label, command, Tone::Ghost));
+    let line = |label: &'static str| {
+        row().gap(px(SP_3)).child(
+            div()
+                .w(px(52.))
+                .flex_shrink_0()
+                .text_size(px(TEXT_SM))
+                .text_color(rgb(t.text_faint))
+                .child(label),
+        )
+    };
     Some(
         hud(t)
             .flex_col()
             .items_center()
             .px(px(SP_6))
-            .py(px(SP_5))
+            .pt(px(SP_5))
+            .pb(px(SP_4))
             .gap(px(SP_3))
             .child(empty_state(
                 t,
                 Icon::Cube,
                 "Empty scene",
-                "Add a primitive to start modelling, or import an OBJ or STL mesh.",
+                "Start from a mesh, a parametric part or a sketch, or bring in a file.",
             ))
             .child(
-                row().gap(px(SP_1)).children(
-                    [
-                        (Primitive::Cube, Icon::Cube, "Cube"),
-                        (Primitive::Sphere, Icon::Sphere, "Sphere"),
-                        (Primitive::Cylinder, Icon::Cylinder, "Cylinder"),
-                        (Primitive::Plane, Icon::Plane, "Plane"),
-                    ]
-                    .into_iter()
-                    .map(|(primitive, glyph, label)| {
-                        command_button(
-                            t,
-                            SharedString::from(format!("empty-add-{label}")),
-                            label,
-                            Some(glyph),
-                            Command::Add(primitive),
-                            Tone::Secondary,
-                            cx,
-                        )
-                    }),
-                ),
-            )
-            .child(
-                row()
-                    .relative()
-                    .gap(px(SP_1))
-                    .child(command_button(
-                        t,
-                        "empty-import-obj",
-                        "Import OBJ…",
-                        Some(Icon::Import),
-                        Command::ImportObj,
-                        Tone::Ghost,
-                        cx,
-                    ))
-                    .child(command_button(
-                        t,
-                        "empty-import-stl",
-                        "Import STL…",
-                        Some(Icon::Import),
-                        Command::ImportStl,
-                        Tone::Ghost,
-                        cx,
-                    )),
+                col()
+                    .gap(px(SP_1_5))
+                    .child(line("Mesh").child(row().gap(px(SP_1)).children(mesh)))
+                    .child(line("Part").child(row().gap(px(SP_1)).children(part)))
+                    .child(line("Sketch").child(sketch))
+                    .child(div().my(px(SP_1)).child(hrule(t).bg(rgba(t.hud_border))))
+                    .child(line("Import").child(row().gap(px(SP_1)).children(import))),
             ),
     )
 }

@@ -685,7 +685,7 @@ fn object_page(t: Colors, s: &Studio, stacked: bool, cx: &mut Context<Studio>) -
         let message = if s.scene.objects.is_empty() {
             (
                 "Nothing to edit yet",
-                "Add a primitive or import a mesh, then select it to edit its properties.",
+                "Add a mesh, a part or a sketch, then select it to edit its properties.",
             )
         } else {
             (
