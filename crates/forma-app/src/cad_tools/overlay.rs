@@ -225,7 +225,10 @@ impl Studio {
             None => {
                 if let Some(id) = self.part_editing() {
                     self.part_edit_overlay(id, &mut overlay);
-                } else if let Some(hover) = self.cad_tool.region_hover
+                } else if let Some(hover) = self
+                    .cad_tool
+                    .region_hover
+                    .filter(|hover| hover.revision == self.scene_revision)
                     && let Some(regions) =
                         self.region_sets().iter().find(|r| r.object == hover.object)
                     && let Some(polygons) = regions.world.get(hover.profile)
@@ -266,10 +269,11 @@ impl Studio {
         let dragging = tool.drag.as_ref().is_some_and(|d| d.started());
         // Once the kernel's real result is on screen, the ghost recedes to an outline.
         let real = !dragging
-            && tool.session.preview.as_ref().is_some_and(|preview| {
-                self.scene
-                    .part(preview.part)
-                    .is_some_and(|part| part.is_evaluated() && part.issues().is_empty())
+            && tool.preview.as_ref().is_some_and(|preview| {
+                preview.key == tool.preview_key()
+                    && preview.outcome.as_ref().is_some_and(|outcome| {
+                        !outcome.failed && outcome.issues.iter().all(|issue| issue.warning)
+                    })
             });
         let fill = if real { 0.0 } else { 1.0 };
         match tool.kind {
@@ -561,7 +565,7 @@ impl Studio {
                 });
             }
         }
-        match self.cad_tool.edit.hover {
+        match self.cad_tool.edit.hover(self.scene_revision) {
             Some(EditHover::Face(group)) if !selected_faces.iter().any(|(g, _)| *g == group) => {
                 paint_face(group, 0.16, 1.6, 0.85, overlay);
             }

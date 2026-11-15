@@ -27,13 +27,31 @@ pub(crate) enum EditHover {
     Edge(usize),
 }
 
-/// Selection and hover of part edit mode.
+/// Selection and hover of part edit mode. Selections are geometric and
+/// survive regeneration; the hover is an index into one tessellation's
+/// topology, so it is only valid at the scene revision it was picked at.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct EditState {
     pub object: Option<u64>,
     pub faces: Vec<FaceRef>,
     pub edges: Vec<EdgeSelection>,
-    pub hover: Option<EditHover>,
+    hover: Option<(u64, EditHover)>,
+}
+
+impl EditState {
+    /// The hovered face group or edge, if it was picked at `revision`.
+    pub(crate) fn hover(&self, revision: u64) -> Option<EditHover> {
+        self.hover
+            .filter(|(at, _)| *at == revision)
+            .map(|(_, hover)| hover)
+    }
+
+    pub(crate) fn set_hover(&mut self, revision: u64, hover: Option<EditHover>) -> bool {
+        let next = hover.map(|hover| (revision, hover));
+        let changed = next != self.hover;
+        self.hover = next;
+        changed
+    }
 }
 
 /// B-rep edges of one part tessellation, with the welded vertex of every
@@ -195,21 +213,40 @@ impl Studio {
     }
 
     /// Selected faces of the edited part resolved against its tessellation.
+    /// Resolved once per scene revision and selection: the overlay and the
+    /// status bar ask every frame.
     pub(crate) fn selected_edit_faces(&self, id: u64) -> Vec<(u32, FaceRef)> {
         if self.cad_tool.edit.object != Some(id) {
             return Vec::new();
         }
+        let key = (self.scene_revision, id, self.cad_tool.edit.faces.clone());
+        if let Some((cached, groups)) = self.cad_tool.resolved_faces.borrow().as_ref()
+            && *cached == key
+        {
+            return groups.clone();
+        }
         let Some(mesh) = self.scene.object_mesh(id) else {
             return Vec::new();
         };
+        let references: Vec<(Vec3, Vec3)> = self
+            .cad_tool
+            .edit
+            .faces
+            .iter()
+            .map(|r| (r.point, r.normal))
+            .collect();
         let mut groups: Vec<(u32, FaceRef)> = Vec::new();
-        for reference in &self.cad_tool.edit.faces {
-            if let Some(group) = geometry::resolve_group(mesh, reference.point, reference.normal)
+        for (group, reference) in geometry::resolve_groups(mesh, &references)
+            .into_iter()
+            .zip(&self.cad_tool.edit.faces)
+        {
+            if let Some(group) = group
                 && !groups.iter().any(|(g, _)| *g == group)
             {
                 groups.push((group, *reference));
             }
         }
+        *self.cad_tool.resolved_faces.borrow_mut() = Some((key, groups.clone()));
         groups
     }
 
@@ -222,12 +259,21 @@ impl Studio {
         else {
             return Vec::new();
         };
-        self.cad_tool
+        let key = (self.scene_revision, id, self.cad_tool.edit.edges.clone());
+        if let Some((cached, indices)) = self.cad_tool.resolved_edges.borrow().as_ref()
+            && *cached == key
+        {
+            return indices.clone();
+        }
+        let indices: Vec<usize> = self
+            .cad_tool
             .edit
             .edges
             .iter()
             .filter_map(|selection| topology.resolve(mesh, selection))
-            .collect()
+            .collect();
+        *self.cad_tool.resolved_edges.borrow_mut() = Some((key, indices.clone()));
+        indices
     }
 
     /// Workspace commands while editing a part. Returns true when handled.
@@ -252,7 +298,7 @@ impl Studio {
             }
             Command::SetEditMode(mode) => {
                 self.edit_mode = mode;
-                self.edit_state_for(id).hover = None;
+                self.edit_state_for(id).set_hover(0, None);
                 self.status = format!(
                     "Edit part · {} · Click to select · Shift adds",
                     mode.label()
@@ -431,9 +477,8 @@ impl Studio {
     /// Hover over the edited part's faces or edges.
     pub(crate) fn part_edit_hover(&mut self, id: u64, position: Vec2, cx: &mut Context<Self>) {
         let hover = self.part_edit_pick(id, position).map(|(hover, _)| hover);
-        let state = self.edit_state_for(id);
-        if state.hover != hover {
-            state.hover = hover;
+        let revision = self.scene_revision;
+        if self.edit_state_for(id).set_hover(revision, hover) {
             cx.notify();
         }
     }
@@ -471,8 +516,14 @@ impl Studio {
             }
             _ => {
                 let ray = self.tool_ray(position)?;
-                let hit = self.scene.pick(ray)?;
-                if hit.object_id != id {
+                // The edited part's own index, then occlusion by everything
+                // else through the shared visibility hierarchy.
+                let hit = self.pick_index(Some(id)).pick(ray)?;
+                if !crate::viewport::visible_in_query(
+                    self.scene.camera,
+                    self.visibility_query(),
+                    hit.position,
+                ) {
                     return None;
                 }
                 let group = instance.mesh.face_group(hit.face)?;
@@ -603,9 +654,9 @@ impl Studio {
 
     /// Starts a sketch on the face under the pointer, else the selected face.
     pub(crate) fn sketch_on_selected_face(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
-        let under_pointer = self
-            .tool_ray(self.last_mouse)
-            .and_then(|ray| crate::sketch::plane::face_plane(&self.scene, self.scene.camera, ray));
+        let under_pointer = self.tool_ray(self.last_mouse).and_then(|ray| {
+            crate::sketch::plane::face_plane(&self.scene, self.scene.camera, ray, &self.cad.faces)
+        });
         if under_pointer.is_some() {
             self.enter_draw(DrawTarget::AtPointer, cx);
             return;
@@ -620,6 +671,7 @@ impl Studio {
                 id,
                 group,
                 None,
+                &self.cad.faces,
             )
         });
         match choice {
@@ -639,8 +691,10 @@ impl Studio {
             return;
         };
         let mut indices = self.selected_edit_edges(id);
+        // The hover refers to the current tessellation only (undo or a
+        // regeneration renumbers edges).
         if indices.is_empty()
-            && let Some(EditHover::Edge(index)) = self.cad_tool.edit.hover
+            && let Some(EditHover::Edge(index)) = self.cad_tool.edit.hover(self.scene_revision)
         {
             indices.push(index);
         }
@@ -657,12 +711,12 @@ impl Studio {
         let matrix = instance.world_transform;
         let mut edges = Vec::new();
         for index in indices {
-            match chamfer_edge(
-                instance.mesh,
-                &topology.canon,
-                &topology.edges[index],
-                matrix,
-            ) {
+            let Some(edge) = topology.edges.get(index) else {
+                self.status = "Chamfer · Select straight edges first (2 for Edge mode)".into();
+                cx.notify();
+                return;
+            };
+            match chamfer_edge(instance.mesh, &topology.canon, edge, matrix) {
                 Ok(edge) => edges.push(edge),
                 Err(message) => {
                     self.status = format!("Chamfer · {message}");
@@ -671,7 +725,13 @@ impl Studio {
                 }
             }
         }
-        let scale = matrix.x_axis.truncate().length().max(1.0e-9);
+        // Chamfer distances are measured along faces in part space; a part
+        // scaled unevenly would chamfer by different amounts on each side.
+        let Some(scale) = uniform_scale(matrix) else {
+            self.status = "Chamfer needs an evenly scaled part · Apply its scale first".into();
+            cx.notify();
+            return;
+        };
         let first = &edges[0];
         let middle = (first.start + first.end) * 0.5;
         let bisector = (first.into_a + first.into_b).normalize_or_zero();
@@ -825,6 +885,7 @@ impl Studio {
             edges,
             &self.scene,
             self.edit_mode,
+            self.history_version(),
         ));
         self.status = format!(
             "Chamfered {} edge{} by {} · Regenerating…",
@@ -838,6 +899,17 @@ impl Studio {
         );
         self.invalidate(true, cx);
     }
+}
+
+/// The scale of a transform that scales all axes equally (rotations and
+/// mirroring allowed), or `None` for uneven or skewing scales.
+pub(crate) fn uniform_scale(matrix: Mat4) -> Option<f32> {
+    let axes = [matrix.x_axis, matrix.y_axis, matrix.z_axis].map(|a| a.truncate());
+    let lengths = axes.map(|a| a.length());
+    let scale = lengths[0];
+    let even = lengths.iter().all(|l| (l - scale).abs() <= scale * 1.0e-4)
+        && (0..3).all(|i| axes[i].dot(axes[(i + 1) % 3]).abs() <= scale * scale * 1.0e-4);
+    (even && scale > 1.0e-9 && scale.is_finite()).then_some(scale)
 }
 
 fn same_face_ref(a: &FaceRef, b: &FaceRef) -> bool {
@@ -980,6 +1052,34 @@ mod tests {
                 .iter()
                 .any(|e| !e.straight && e.points.len() > 8)
         );
+    }
+
+    /// Regression (review): chamfers assumed uniform scale.
+    #[test]
+    fn chamfers_require_even_scale() {
+        use glam::{Quat, Vec3};
+        assert_eq!(uniform_scale(Mat4::IDENTITY), Some(1.0));
+        let even = Mat4::from_scale_rotation_translation(
+            Vec3::splat(2.0),
+            Quat::from_rotation_y(0.7),
+            Vec3::new(1.0, 2.0, 3.0),
+        );
+        assert!((uniform_scale(even).unwrap() - 2.0).abs() < 1.0e-5);
+        assert!(uniform_scale(Mat4::from_scale(Vec3::new(1.0, 2.0, 1.0))).is_none());
+        assert!(uniform_scale(Mat4::from_scale(Vec3::ZERO)).is_none());
+    }
+
+    /// Regression: Ctrl+B after Undo used an edge index hovered on the
+    /// pre-undo tessellation (15 edges) against the new one (12) and panicked.
+    #[test]
+    fn hovers_expire_with_the_tessellation_they_index() {
+        let mut state = EditState::default();
+        assert!(state.set_hover(7, Some(EditHover::Edge(14))));
+        assert_eq!(state.hover(7), Some(EditHover::Edge(14)));
+        assert_eq!(state.hover(8), None, "a new scene revision drops the index");
+        assert!(!state.set_hover(7, Some(EditHover::Edge(14))));
+        assert!(state.set_hover(8, None));
+        assert_eq!(state.hover(8), None);
     }
 
     #[test]

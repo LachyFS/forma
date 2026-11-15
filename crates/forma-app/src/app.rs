@@ -260,7 +260,7 @@ pub struct Studio {
     #[cfg(target_os = "macos")]
     _pinch_monitor: Option<crate::trackpad::PinchMonitor>,
     worker: RenderWorker,
-    path: Option<PathBuf>,
+    pub(crate) path: Option<PathBuf>,
     pub(crate) scene_revision: u64,
     pub(crate) surface_query: OnceCell<forma_core::SurfaceQuery>,
     generation: u64,
@@ -777,7 +777,8 @@ impl Studio {
 
     fn submit_render(&mut self) {
         if self.needs_snapshot {
-            self.scene_snapshot = Arc::new(self.scene.clone());
+            // The document, plus a modelling tool's display-only preview.
+            self.scene_snapshot = Arc::new(self.render_scene());
             self.needs_snapshot = false;
         }
         self.worker.request(self.request());
@@ -1594,6 +1595,7 @@ impl Studio {
         self.preview_load_id += 1;
         self.preview_loading = false;
         self.project_epoch += 1;
+        self.reset_cad_tools();
         self.scene = Scene::default();
         self.history = History::default();
         self.restore_render_preferences();
@@ -1787,6 +1789,7 @@ impl Studio {
                 }
                 match result {
                     Ok((scene, Some(id))) => {
+                        s.reset_cad_tools();
                         s.history.checkpoint(&s.scene);
                         s.scene = scene;
                         s.selected = Some(id);
@@ -1799,6 +1802,7 @@ impl Studio {
                     }
                     Ok((scene, None)) => {
                         s.project_epoch += 1;
+                        s.reset_cad_tools();
                         s.scene = scene;
                         s.restore_render_preferences();
                         s.history = History::default();
@@ -2880,12 +2884,10 @@ impl Studio {
             cx.stop_propagation();
             return;
         }
-        // A running tool (or B-rep part editing) owns the keyboard first;
-        // then the timeline (which only claims keys while a part is
-        // active), then the tools' entry keys.
-        if (self.cad_tool_active() || self.part_editing().is_some())
-            && self.cad_tool_key(event, window, cx)
-        {
+        // A running tool owns the keyboard first; then the timeline (its
+        // open menu, or ← → Esc Delete Return F2 with a feature selected),
+        // then part editing and the tools' entry keys.
+        if self.cad_tool_active() && self.cad_tool_key(event, window, cx) {
             cx.stop_propagation();
             return;
         }
