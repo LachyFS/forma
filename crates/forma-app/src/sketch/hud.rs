@@ -163,3 +163,105 @@ impl Studio {
         Some(bar.into_any_element())
     }
 }
+
+impl Studio {
+    /// Inspector page for a selected sketch object: what it contains and a
+    /// way back into Draw mode.
+    pub(crate) fn sketch_inspector(&self, t: Colors, cx: &mut Context<Self>) -> Option<gpui::Div> {
+        let id = self.selected?;
+        let sketch = self.scene.object_sketch(id)?;
+        let profiles = self
+            .sketch_displays()
+            .iter()
+            .find(|display| display.id == id)
+            .map_or(0, |display| display.fills.len());
+        let construction = sketch.entities.iter().filter(|e| e.construction).count();
+        let matrix = self.scene.world_transform(id).unwrap_or_default();
+        let normal = matrix
+            .transform_vector3(sketch.plane.normal())
+            .normalize_or_zero();
+        let orientation = if normal.y.abs() > 0.999 {
+            "Horizontal"
+        } else if normal.z.abs() > 0.999 {
+            "Front"
+        } else if normal.x.abs() > 0.999 {
+            "Side"
+        } else if normal.y.abs() < 1.0e-3 {
+            "Vertical"
+        } else {
+            "Tilted"
+        };
+        let drawing = self.session_object() == Some(id);
+        let contents = col()
+            .px(px(SP_3))
+            .pb(px(SP_3))
+            .gap(px(SP_1))
+            .child(readonly_row(
+                t,
+                "Curves",
+                "",
+                sketch.entities.len().to_string(),
+                "Lines, arcs and circles in this sketch",
+            ))
+            .child(readonly_row(
+                t,
+                "Profiles",
+                "",
+                profiles.to_string(),
+                "Closed regions that CAD features can extrude",
+            ))
+            .child(readonly_row(
+                t,
+                "Construction",
+                "",
+                construction.to_string(),
+                "Guide curves that never form profiles",
+            ))
+            .child(readonly_row(
+                t,
+                "Plane",
+                "",
+                orientation.into(),
+                "The sketch plane's orientation in the world",
+            ))
+            .child(
+                command_button(
+                    t,
+                    "sketch-edit",
+                    if drawing {
+                        "Finish sketch"
+                    } else {
+                        "Edit sketch"
+                    },
+                    Some(if drawing { Icon::Check } else { Icon::DrawMode }),
+                    Command::Draw(if drawing {
+                        DrawCommand::Finish
+                    } else {
+                        DrawCommand::EditSketch
+                    }),
+                    Tone::Primary,
+                    cx,
+                )
+                .mt(px(SP_2))
+                .w_full(),
+            );
+        Some(
+            col().child(section(
+                t,
+                self,
+                crate::ui::PanelSection::Sketch,
+                "Sketch",
+                Some(
+                    format!(
+                        "{} curve{}",
+                        sketch.entities.len(),
+                        if sketch.entities.len() == 1 { "" } else { "s" }
+                    )
+                    .into(),
+                ),
+                contents,
+                cx,
+            )),
+        )
+    }
+}

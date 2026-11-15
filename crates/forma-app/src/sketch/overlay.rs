@@ -93,7 +93,7 @@ pub(crate) fn format_angle(radians: f32) -> String {
 
 impl Studio {
     /// World-space display data for every visible sketch, cached per edit.
-    fn sketch_displays(&self) -> Rc<Vec<SketchDisplay>> {
+    pub(crate) fn sketch_displays(&self) -> Rc<Vec<SketchDisplay>> {
         let key = (self.scene_revision, self.sketch.revision);
         let mut cache = self.sketch.display.borrow_mut();
         if let Some((cached, displays)) = cache.as_ref()

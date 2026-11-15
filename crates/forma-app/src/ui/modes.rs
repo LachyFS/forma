@@ -33,7 +33,9 @@ pub(crate) const MODES: &[WorkspaceMode] = &[
         shortcut: Some("Tab"),
         hint: "Select, arrange and transform objects",
         state: |s| {
-            if s.edit_mode == EditMode::Object {
+            if s.is_drawing() {
+                ModeState::Available(Command::Draw(crate::sketch::DrawCommand::Finish))
+            } else if s.edit_mode == EditMode::Object {
                 ModeState::Active
             } else {
                 ModeState::Available(Command::SetEditMode(EditMode::Object))

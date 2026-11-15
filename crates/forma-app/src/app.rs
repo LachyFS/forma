@@ -2083,7 +2083,8 @@ impl Studio {
         }
         if field == Field::Name {
             return self
-                .selected_object()
+                .selected
+                .and_then(|id| self.scene.object(id))
                 .map(|o| o.name.clone())
                 .unwrap_or_default();
         }
@@ -2153,7 +2154,8 @@ impl Studio {
 
     pub(crate) fn field_edit_text(&self, field: Field) -> String {
         if field == Field::Name {
-            self.selected_object()
+            self.selected
+                .and_then(|id| self.scene.object(id))
                 .map(|object| object.name.clone())
                 .unwrap_or_default()
         } else {
