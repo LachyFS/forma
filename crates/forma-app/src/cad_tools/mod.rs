@@ -515,6 +515,10 @@ impl Studio {
             cx.notify();
             return true;
         }
+        // The tool ended itself so another can take the key.
+        if !self.cad_tool.active() {
+            return false;
+        }
         // View and shading keys keep working while a tool runs.
         if matches!(
             key,

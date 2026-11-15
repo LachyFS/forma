@@ -2884,12 +2884,10 @@ impl Studio {
             cx.stop_propagation();
             return;
         }
-        // A running tool (or B-rep part editing) owns the keyboard first;
-        // then the timeline (which only claims keys while a part is
-        // active), then the tools' entry keys.
-        if (self.cad_tool_active() || self.part_editing().is_some())
-            && self.cad_tool_key(event, window, cx)
-        {
+        // A running tool owns the keyboard first; then the timeline (its
+        // open menu, or ← → Esc Delete Return F2 with a feature selected),
+        // then part editing and the tools' entry keys.
+        if self.cad_tool_active() && self.cad_tool_key(event, window, cx) {
             cx.stop_propagation();
             return;
         }

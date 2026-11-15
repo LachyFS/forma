@@ -321,6 +321,20 @@ impl Studio {
         let Some(Tool::PushPull(tool)) = self.cad_tool.tool.as_mut() else {
             return false;
         };
+        // Numeric entry first: unit letters (2in, 5cm, 1ft, 30deg) must never
+        // reach the tool's own letter keys.
+        if let Some(active) = tool.active.as_mut()
+            && !matches!(key, "escape" | "enter" | "backspace" | "delete" | "tab")
+        {
+            let starting = active.numeric.is_empty();
+            if super::type_numeric(&mut active.numeric, character) {
+                if starting {
+                    active.side = super::side_of(active.distance);
+                }
+                apply_typed(active);
+                return true;
+            }
+        }
         match key {
             "escape" => {
                 if let Some(active) = tool.active.as_mut() {
@@ -362,25 +376,13 @@ impl Studio {
                 active.distance = -active.distance;
                 true
             }
-            "g" | "r" | "s" | "e" | "i" | "b" => {
-                // Other tools take over.
+            "g" | "r" | "s" | "e" | "i" | "b" if !event.is_held => {
+                // Another tool takes over: end this one and let the key
+                // through (see `tool_key`).
                 self.cancel_cad_tool(cx);
                 false
             }
-            _ => match tool.active.as_mut() {
-                Some(active) => {
-                    let starting = active.numeric.is_empty();
-                    let typed = super::type_numeric(&mut active.numeric, character);
-                    if typed && starting {
-                        active.side = super::side_of(active.distance);
-                    }
-                    if typed {
-                        apply_typed(active);
-                    }
-                    typed
-                }
-                None => false,
-            },
+            _ => false,
         }
     }
 
