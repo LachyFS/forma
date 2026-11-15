@@ -592,6 +592,7 @@ impl Studio {
         [a, b, c]: [Vec3; 3],
         depth: u32,
         visible: &impl Fn(Vec3) -> bool,
+        budget: &mut usize,
         out: &mut Vec<Vec<Vec3>>,
     ) {
         let span = match (
@@ -602,10 +603,13 @@ impl Studio {
             (Some(p), Some(q), Some(r)) => p.distance(q).max(q.distance(r)).max(r.distance(p)),
             _ => 0.0,
         };
-        if depth < 5 && span > 28.0 {
+        // Each split costs three more visibility rays; the budget keeps a
+        // huge, close face cheap while orbiting.
+        if depth < 4 && span > 32.0 && *budget >= 3 {
+            *budget -= 3;
             let (ab, bc, ca) = ((a + b) * 0.5, (b + c) * 0.5, (c + a) * 0.5);
             for piece in [[a, ab, ca], [ab, b, bc], [ca, bc, c], [ab, bc, ca]] {
-                self.visible_pieces(piece, depth + 1, visible, out);
+                self.visible_pieces(piece, depth + 1, visible, budget, out);
             }
         } else if visible((a + b + c) / 3.0) {
             out.push(vec![a, b, c]);
@@ -641,10 +645,11 @@ impl Studio {
             let visible = |p: Vec3| crate::viewport::visible_in_query(camera, query, p);
             let faces = super::geometry::group_faces(mesh, group);
             let prism = super::push_pull::face_prism(mesh, &faces, matrix, Vec3::ZERO);
+            let mut budget = 3000;
             for triangle in &prism.triangles {
                 let [a, b, c] = triangle.map(|i| prism.points[i as usize]);
                 if facing((b - a).cross(c - a), (a + b + c) / 3.0) {
-                    self.visible_pieces([a, b, c], 0, &visible, &mut face.fill);
+                    self.visible_pieces([a, b, c], 0, &visible, &mut budget, &mut face.fill);
                 }
             }
             for edge in super::geometry::group_boundary(mesh, &faces) {
