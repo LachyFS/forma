@@ -26,12 +26,30 @@ use truck_modeling::{Solid, Wire, builder};
 
 /// Most parts whose evaluated histories one worker keeps.
 const CACHED_PARTS: usize = 24;
+/// B-rep faces the cache may hold across parts before evicting the least
+/// recently used ones (roughly 1 KiB each); the part being regenerated is
+/// always kept whole.
+const CACHED_FACES: usize = 250_000;
+
+/// An issue from evaluating the active feature at `index`, labelled with the
+/// current feature id and name only when served, so a cached history never
+/// reports a deleted or renamed feature.
+#[derive(Clone)]
+struct CachedIssue {
+    index: usize,
+    message: String,
+    suggestion: String,
+    /// Prefix the message with the feature name (kernel failures do; issues
+    /// supplied by the host already name their feature).
+    named: bool,
+}
 
 #[derive(Clone)]
 struct State {
     hash: u64,
     body: Option<Body>,
-    issues: Vec<FeatureIssue>,
+    faces: usize,
+    issues: Vec<CachedIssue>,
 }
 
 /// Memoized feature-prefix states per part.
@@ -55,6 +73,33 @@ impl RegenCache {
         self.parts.entry(part).or_default()
     }
 
+    /// Evict least recently used parts other than `keep` until the cached
+    /// faces fit the budget.
+    fn trim(&mut self, keep: u64) {
+        let faces = |cache: &Self| -> usize {
+            cache
+                .parts
+                .values()
+                .flat_map(|states| states.iter().map(|state| state.faces))
+                .sum()
+        };
+        while faces(self) > CACHED_FACES {
+            let Some(position) = self.order.iter().position(|id| *id != keep) else {
+                break;
+            };
+            let evicted = self.order.remove(position).unwrap();
+            self.parts.remove(&evicted);
+        }
+    }
+
+    /// Cached B-rep faces across all parts.
+    pub fn cached_faces(&self) -> usize {
+        self.parts
+            .values()
+            .flat_map(|states| states.iter().map(|state| state.faces))
+            .sum()
+    }
+
     pub fn clear(&mut self) {
         self.parts.clear();
         self.order.clear();
@@ -65,12 +110,12 @@ fn hash_step(previous: u64, feature: &Feature, skipped: bool) -> u64 {
     #[derive(serde::Serialize)]
     struct Key<'a> {
         previous: u64,
-        kind: &'a FeatureKind,
+        feature: forma_core::FeatureGeometry<'a>,
         skipped: bool,
     }
     let json = serde_json::to_vec(&Key {
         previous,
-        kind: &feature.kind,
+        feature: forma_core::FeatureGeometry(feature),
         skipped,
     })
     .unwrap_or_default();
@@ -95,7 +140,7 @@ pub(crate) fn evaluate_part(
     let states = cache.states(part_id);
     let mut hash = 0x5eed_u64;
     let mut body: Option<Body> = None;
-    let mut issues: Vec<FeatureIssue> = Vec::new();
+    let mut issues: Vec<CachedIssue> = Vec::new();
     for (index, feature) in active.iter().enumerate() {
         let skipped = skip.iter().find(|issue| issue.feature == feature.id);
         hash = hash_step(hash, feature, skipped.is_some());
@@ -109,25 +154,48 @@ pub(crate) fn evaluate_part(
         }
         states.truncate(index);
         if let Some(issue) = skipped {
-            issues.push(issue.clone());
+            issues.push(CachedIssue {
+                index,
+                message: issue.message.clone(),
+                suggestion: issue.suggestion.clone(),
+                named: false,
+            });
         } else {
             progress(feature.id);
             stats.evaluated_features += 1;
             match guard(|| evaluate(feature, body.as_ref())) {
                 Ok(next) => body = Some(next),
-                Err(error) => issues.push(FeatureIssue {
-                    feature: feature.id,
-                    message: format!("{}: {}", feature.name, error.message),
+                Err(error) => issues.push(CachedIssue {
+                    index,
+                    message: error.message,
                     suggestion: error.suggestion,
+                    named: true,
                 }),
             }
         }
         states.push(State {
             hash,
+            faces: body.as_ref().map_or(0, Body::face_count),
             body: body.clone(),
             issues: issues.clone(),
         });
     }
+    cache.trim(part_id);
+    let issues = issues
+        .into_iter()
+        .map(|issue| {
+            let feature = active[issue.index];
+            FeatureIssue {
+                feature: feature.id,
+                message: if issue.named {
+                    format!("{}: {}", feature.name, issue.message)
+                } else {
+                    issue.message
+                },
+                suggestion: issue.suggestion,
+            }
+        })
+        .collect();
     (body, issues)
 }
 
@@ -825,6 +893,62 @@ mod tests {
         assert_eq!(second.stats.evaluated_features, 1);
         assert!(second.mesh.as_ref().unwrap().has_groups());
         let _ = cut;
+    }
+
+    #[test]
+    fn cached_issues_follow_renamed_features() {
+        // Review case: cache keys ignored names, but cached issues carried
+        // them, so a renamed (or replaced) feature kept the old label.
+        let mut part = PartData::new(5, "Part");
+        part.push_feature(
+            "Base",
+            box_kind(Vec3::splat(2.0), Vec3::ZERO, FeatureOperation::Join),
+        );
+        let lost = part.push_feature(
+            "Lost face",
+            FeatureKind::PushPull(PushPullFeature {
+                face: FaceRef {
+                    point: Vec3::new(50.0, 50.0, 50.0),
+                    normal: Vec3::Y,
+                },
+                distance: 0.1,
+            }),
+        );
+        let mut cache = RegenCache::default();
+        let first = regen(&part, &mut cache);
+        assert!(first.issues[0].message.starts_with("Lost face:"));
+        part.edit_feature(lost, |feature| feature.name = "Renamed".into());
+        let second = regen(&part, &mut cache);
+        assert_eq!(second.stats.reused_features, 2, "a rename reuses the cache");
+        assert_eq!(second.issues[0].feature, lost);
+        assert!(
+            second.issues[0].message.starts_with("Renamed:"),
+            "{}",
+            second.issues[0].message
+        );
+    }
+
+    #[test]
+    fn the_cache_evicts_other_parts_beyond_its_face_budget() {
+        let mut cache = RegenCache::default();
+        let mut part = PartData::new(1, "Box");
+        part.push_feature(
+            "Base",
+            box_kind(Vec3::ONE, Vec3::ZERO, FeatureOperation::Join),
+        );
+        for id in 1..=3 {
+            part.id = id;
+            regen(&part, &mut cache);
+        }
+        assert_eq!(cache.cached_faces(), 18);
+        // Pretend part 1 is huge: the next regeneration evicts it first.
+        for state in cache.parts.get_mut(&1).unwrap() {
+            state.faces = CACHED_FACES;
+        }
+        part.id = 4;
+        regen(&part, &mut cache);
+        assert!(!cache.parts.contains_key(&1));
+        assert!(cache.parts.contains_key(&4) && cache.parts.contains_key(&2));
     }
 
     #[test]
