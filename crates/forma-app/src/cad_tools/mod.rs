@@ -227,20 +227,23 @@ impl Studio {
     ) {
         // Commands of the running tool keep it; anything else (another tool,
         // Sketch on face) ends it first.
-        let keeps = match (self.cad_tool.tool.as_ref(), command) {
-            (None, _) => true,
-            (
-                Some(Tool::Sketch(_)),
-                ToolCommand::Extrude
-                | ToolCommand::Revolve
-                | ToolCommand::SetOperation(_)
-                | ToolCommand::ToggleSymmetric
-                | ToolCommand::SketchAxis(_),
-            ) => true,
-            (Some(Tool::PushPull(_)), ToolCommand::PushPull) => true,
-            (_, ToolCommand::Done | ToolCommand::Cancel | ToolCommand::Flip) => true,
-            _ => false,
-        };
+        let keeps = matches!(
+            (self.cad_tool.tool.as_ref(), command),
+            (None, _)
+                | (
+                    Some(Tool::Sketch(_)),
+                    ToolCommand::Extrude
+                        | ToolCommand::Revolve
+                        | ToolCommand::SetOperation(_)
+                        | ToolCommand::ToggleSymmetric
+                        | ToolCommand::SketchAxis(_),
+                )
+                | (Some(Tool::PushPull(_)), ToolCommand::PushPull)
+                | (
+                    _,
+                    ToolCommand::Done | ToolCommand::Cancel | ToolCommand::Flip
+                )
+        );
         if !keeps {
             self.cancel_cad_tool(cx);
         }
