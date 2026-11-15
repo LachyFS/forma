@@ -584,6 +584,34 @@ impl Studio {
         }
     }
 
+    /// Splits a triangle until its pieces are small on screen, keeping the
+    /// pieces whose centre is unoccluded: large planar facets partly behind
+    /// other geometry are tinted only where they show.
+    fn visible_pieces(
+        &self,
+        [a, b, c]: [Vec3; 3],
+        depth: u32,
+        visible: &impl Fn(Vec3) -> bool,
+        out: &mut Vec<Vec<Vec3>>,
+    ) {
+        let span = match (
+            self.world_to_screen(a),
+            self.world_to_screen(b),
+            self.world_to_screen(c),
+        ) {
+            (Some(p), Some(q), Some(r)) => p.distance(q).max(q.distance(r)).max(r.distance(p)),
+            _ => 0.0,
+        };
+        if depth < 5 && span > 28.0 {
+            let (ab, bc, ca) = ((a + b) * 0.5, (b + c) * 0.5, (c + a) * 0.5);
+            for piece in [[a, ab, ca], [ab, b, bc], [ca, bc, c], [ab, bc, ca]] {
+                self.visible_pieces(piece, depth + 1, visible, out);
+            }
+        } else if visible((a + b + c) / 3.0) {
+            out.push(vec![a, b, c]);
+        }
+    }
+
     /// The visible part of a face group, for highlighting: front-facing,
     /// unoccluded triangles and its outline split into visible and hidden
     /// segments. Cached per scene revision and camera.
@@ -615,9 +643,8 @@ impl Studio {
             let prism = super::push_pull::face_prism(mesh, &faces, matrix, Vec3::ZERO);
             for triangle in &prism.triangles {
                 let [a, b, c] = triangle.map(|i| prism.points[i as usize]);
-                let centroid = (a + b + c) / 3.0;
-                if facing((b - a).cross(c - a), centroid) && visible(centroid) {
-                    face.fill.push(vec![a, b, c]);
+                if facing((b - a).cross(c - a), (a + b + c) / 3.0) {
+                    self.visible_pieces([a, b, c], 0, &visible, &mut face.fill);
                 }
             }
             for edge in super::geometry::group_boundary(mesh, &faces) {
