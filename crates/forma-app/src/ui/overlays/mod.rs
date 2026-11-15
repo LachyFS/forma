@@ -114,6 +114,9 @@ pub(super) fn overlays(
     if s.panels.menu.is_some() {
         layers.push(menu::overlay(t, s, cx));
     }
+    if let Some(menu) = super::timeline::context_menu(t, s, cx) {
+        layers.push(menu);
+    }
     if s.updates.open || s.updates.restart_pending {
         layers.push(updates::overlay(t, s, cx));
     }

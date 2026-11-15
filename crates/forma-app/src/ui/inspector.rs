@@ -598,7 +598,12 @@ fn textures(
         )
 }
 
-fn geometry(t: Colors, object: &forma_core::MeshInstance, cx: &mut Context<Studio>) -> Div {
+fn geometry(
+    t: Colors,
+    s: &Studio,
+    object: &forma_core::MeshInstance,
+    cx: &mut Context<Studio>,
+) -> Div {
     let stat = |label: &'static str, value: usize| {
         col()
             .flex_1()
@@ -663,6 +668,13 @@ fn geometry(t: Colors, object: &forma_core::MeshInstance, cx: &mut Context<Studi
                         .min_w(px(0.))
                 })),
         )
+        .children(super::feature_inspector::convert_to_part(
+            t,
+            s,
+            object.object.id,
+            cx,
+        ))
+        .children(super::feature_inspector::combine_row(t, s, cx))
 }
 
 fn object_page(t: Colors, s: &Studio, stacked: bool, cx: &mut Context<Studio>) -> Div {
@@ -684,7 +696,16 @@ fn object_page(t: Colors, s: &Studio, stacked: bool, cx: &mut Context<Studio>) -
         return col().child(empty_state(t, Icon::Select, message.0, message.1));
     };
     let material = object.material;
+    // Parts lead with their history: the selected feature's values belong
+    // at the top, where selecting it in the timeline can be seen.
+    let part = s.scene.object_part(object.id).map(|part| {
+        let (contents, detail) =
+            super::feature_inspector::part_section(t, s, object.id, part, stacked, cx);
+        section(t, s, PanelSection::Part, "Part", Some(detail), contents, cx)
+    });
+    let is_part = part.is_some();
     col()
+        .children(part)
         .child(section(
             t,
             s,
@@ -715,103 +736,16 @@ fn object_page(t: Colors, s: &Studio, stacked: bool, cx: &mut Context<Studio>) -
             textures(t, s, material, cx),
             cx,
         ))
-        .map(|page| match s.scene.object_part(object.id) {
-            // Parts show their feature history instead of polygon tools.
-            Some(part) => page.child(section(
-                t,
-                s,
-                PanelSection::Part,
-                "Part",
-                Some(format!("{} features", part.features.len()).into()),
-                part_history(t, s, part),
-                cx,
-            )),
-            None => page.child(section(
+        // Parts show their feature history instead of polygon tools.
+        .when(!is_part, |page| {
+            page.child(section(
                 t,
                 s,
                 PanelSection::Geometry,
                 "Geometry",
                 Some(format!("{} faces", object.mesh.faces.len()).into()),
-                geometry(t, &object, cx),
+                geometry(t, s, &object, cx),
                 cx,
-            )),
-        })
-}
-
-/// Read-only feature list and regeneration status of a CAD part.
-fn part_history(t: Colors, s: &Studio, part: &forma_core::PartData) -> Div {
-    let issues = part.issues();
-    let (status, tone) = if !part.is_evaluated() {
-        ("Regenerating…".to_owned(), BadgeTone::Accent)
-    } else if issues.is_empty() {
-        ("Up to date".to_owned(), BadgeTone::Neutral)
-    } else {
-        (
-            format!(
-                "{} issue{}",
-                issues.len(),
-                if issues.len() == 1 { "" } else { "s" }
-            ),
-            BadgeTone::Danger,
-        )
-    };
-    let active = part.rollback.unwrap_or(part.features.len());
-    let stats = s
-        .cad
-        .last_stats
-        .as_ref()
-        .filter(|(id, _)| *id == part.id)
-        .map(|(_, stats)| stats.clone());
-    col()
-        .gap(px(SP_1))
-        .child(property_row(t, "Status", badge(t, status, tone)))
-        .children(part.features.iter().enumerate().map(|(index, feature)| {
-            let failed = issues.iter().any(|issue| issue.feature == feature.id);
-            let state = if failed {
-                Some(("Failed", BadgeTone::Danger))
-            } else if feature.suppressed {
-                Some(("Suppressed", BadgeTone::Neutral))
-            } else if index >= active {
-                Some(("Rolled back", BadgeTone::Neutral))
-            } else {
-                None
-            };
-            property_row(
-                t,
-                feature.name.clone(),
-                row()
-                    .min_w(px(0.))
-                    .gap(px(SP_1))
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w(px(0.))
-                            .overflow_hidden()
-                            .text_ellipsis()
-                            .whitespace_nowrap()
-                            .child(crate::cad::feature_summary(feature)),
-                    )
-                    .when_some(state, |d, (label, tone)| d.child(badge(t, label, tone))),
-            )
-        }))
-        .children(issues.iter().map(|issue| {
-            let text = if issue.suggestion.is_empty() {
-                issue.message.clone()
-            } else {
-                format!("{} · {}", issue.message, issue.suggestion)
-            };
-            div()
-                .text_size(px(TEXT_XS))
-                .text_color(rgb(t.danger))
-                .child(text)
-        }))
-        .when_some(stats, |d, stats| {
-            d.child(caption(
-                t,
-                format!(
-                    "Regenerated in {:.0} ms · {} B-rep faces · {} triangles",
-                    stats.total_ms, stats.brep_faces, stats.triangles
-                ),
             ))
         })
 }
