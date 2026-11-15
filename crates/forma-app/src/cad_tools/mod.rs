@@ -19,6 +19,7 @@
 //! - `Studio::cad_tool_hints` / `cad_tool_summary` from the status bar.
 mod adjust;
 pub(crate) mod demo;
+mod earcut;
 mod edit;
 pub(crate) mod geometry;
 mod hud;
