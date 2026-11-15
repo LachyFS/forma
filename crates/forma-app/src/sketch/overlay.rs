@@ -71,6 +71,16 @@ pub(crate) struct ActiveOverlay {
 /// Per sketch, per curve, per point: whether geometry hides the point.
 pub(crate) type Visibility = Vec<Vec<Vec<bool>>>;
 
+/// Hidden-line flags and what they were computed for. Holding the displays
+/// keeps their identities from being reused while cached.
+pub(crate) struct VisibilityCache {
+    scene_revision: u64,
+    camera: forma_core::Camera,
+    size: gpui::Size<Pixels>,
+    displays: Vec<Rc<SketchDisplay>>,
+    value: Rc<Visibility>,
+}
+
 pub(crate) struct SketchOverlay {
     pub colors: Colors,
     pub others: Rc<Vec<Rc<SketchDisplay>>>,
@@ -178,17 +188,26 @@ impl Studio {
         if displays.is_empty() || self.scene.mesh_instances().next().is_none() {
             return None;
         }
-        let key = (
+        // Keyed by the inactive sketches themselves (unchanged ones keep their
+        // display), so editing another sketch does not recast every ray.
+        let (revision, camera, size) = (
             self.scene_revision,
-            self.sketch.revision,
             self.scene.camera,
             self.bounds.get().size,
         );
         let mut cache = self.sketch.visibility.borrow_mut();
-        if let Some((cached, visibility)) = cache.as_ref()
-            && *cached == key
+        if let Some(cached) = cache.as_ref()
+            && cached.scene_revision == revision
+            && cached.camera == camera
+            && cached.size == size
+            && cached.displays.len() == displays.len()
+            && cached
+                .displays
+                .iter()
+                .zip(displays.iter())
+                .all(|(a, b)| Rc::ptr_eq(a, b))
         {
-            return Some(visibility.clone());
+            return Some(cached.value.clone());
         }
         let query = self.visibility_query();
         let camera = self.scene.camera;
@@ -231,7 +250,13 @@ impl Studio {
             })
             .collect();
         let visibility = Rc::new(visibility);
-        *cache = Some((key, visibility.clone()));
+        *cache = Some(VisibilityCache {
+            scene_revision: revision,
+            camera,
+            size,
+            displays: displays.iter().cloned().collect(),
+            value: visibility.clone(),
+        });
         Some(visibility)
     }
 
@@ -244,24 +269,37 @@ impl Studio {
             matrix: self.view_projection(),
             bounds,
         };
-        let mut best: Option<(f32, u64)> = None;
+        // Every curve passing near the pointer, with the world point there.
+        let mut candidates: Vec<(f32, u64, Vec3)> = Vec::new();
         for display in displays.iter() {
             if !self.scene.object(display.id).is_some_and(|o| o.selectable) {
                 continue;
             }
             for (points, _) in &display.curves {
-                for run in projector.polyline(points) {
-                    for pair in run.windows(2) {
-                        let (a, b) = (to_vec(pair[0]), to_vec(pair[1]));
-                        let distance = segment_distance(screen, a, b);
-                        if distance <= radius && best.is_none_or(|(d, _)| distance < d) {
-                            best = Some((distance, display.id));
-                        }
+                for pair in points.windows(2) {
+                    let (Some(a), Some(b)) = (projector.point(pair[0]), projector.point(pair[1]))
+                    else {
+                        continue;
+                    };
+                    let (a, b) = (to_vec(a), to_vec(b));
+                    let d = b - a;
+                    let t = ((screen - a).dot(d) / d.length_squared().max(1.0e-6)).clamp(0.0, 1.0);
+                    let distance = screen.distance(a + d * t);
+                    if distance <= radius {
+                        candidates.push((distance, display.id, pair[0].lerp(pair[1], t)));
                     }
                 }
             }
         }
-        best.map(|(_, id)| id)
+        candidates.sort_by(|a, b| a.0.total_cmp(&b.0));
+        // Curves hidden behind geometry are not clickable: the surface in
+        // front of them is what the pointer is on.
+        let camera = self.scene.camera;
+        let query = self.visibility_query();
+        candidates
+            .into_iter()
+            .find(|(_, _, world)| crate::viewport::visible_in_query(camera, query, *world))
+            .map(|(_, id, _)| id)
     }
 
     /// Everything the viewport needs to paint sketches this frame.
@@ -339,12 +377,6 @@ fn to_vec(p: Point<Pixels>) -> Vec2 {
 
 fn to_point(v: Vec2) -> Point<Pixels> {
     point(px(v.x), px(v.y))
-}
-
-fn segment_distance(p: Vec2, a: Vec2, b: Vec2) -> f32 {
-    let d = b - a;
-    let t = ((p - a).dot(d) / d.length_squared().max(1.0e-6)).clamp(0.0, 1.0);
-    p.distance(a + d * t)
 }
 
 /// Projects world geometry to window pixels, clipping at the near plane.

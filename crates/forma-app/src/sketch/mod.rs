@@ -184,7 +184,7 @@ pub(crate) struct SketchState {
     pub animation: Option<CameraAnimation>,
     animation_running: bool,
     display: Cached<(u64, u64, Option<u64>), Vec<Rc<overlay::SketchDisplay>>>,
-    visibility: Cached<(u64, u64, Camera, gpui::Size<gpui::Pixels>), overlay::Visibility>,
+    visibility: RefCell<Option<overlay::VisibilityCache>>,
 }
 
 impl SketchState {

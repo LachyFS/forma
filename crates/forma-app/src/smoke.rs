@@ -3680,6 +3680,61 @@ async fn check_draw_workflow(window: WindowHandle<Studio>, cx: &mut AsyncApp) ->
         Ok(id)
     })??;
 
+    // A sketch line passing behind the cube: its hidden part is not
+    // clickable (the cube in front is picked), its visible end is.
+    wait_for(window, cx, |s| !s.sketch.animating()).await?;
+    let (hidden, visible_end, behind) = window.update(cx, |s, _, cx| -> Result<_> {
+        let camera = s.scene.camera;
+        let toward = (camera.position() - camera.target).with_y(0.0).normalize();
+        let point = -toward * 1.6;
+        let plane = forma_core::SketchPlane::from_point_normal(point, toward).unwrap();
+        let mut sketch = forma_core::Sketch::new(plane);
+        sketch.entities.push(
+            SketchCurve::Line {
+                start: Vec2::new(-5.0, 0.0),
+                end: Vec2::new(5.0, 0.0),
+            }
+            .into(),
+        );
+        let id = s.scene.add_sketch("Behind", sketch).unwrap();
+        s.sketch.revision += 1;
+        s.invalidate(true, cx);
+        let project = |p: glam::Vec3| {
+            crate::viewport::project(p, s.view_projection(), s.bounds.get())
+                .ok_or_else(|| anyhow::anyhow!("{p} is off screen"))
+        };
+        ensure!(
+            !crate::viewport::visible_in_query(camera, s.visibility_query(), point),
+            "the test line is not actually hidden by the cube"
+        );
+        Ok((
+            project(point)?,
+            project(plane.to_world(Vec2::new(4.5, 0.0)))?,
+            id,
+        ))
+    })??;
+    window.update(cx, |s, w, cx| s.execute(Command::DeselectAll, w, cx))?;
+    pointer(window, Pointer::Move, hidden, none, cx).await?;
+    pointer(window, Pointer::Down(1), hidden, none, cx).await?;
+    pointer(window, Pointer::Up, hidden, none, cx).await?;
+    window.update(cx, |s, _, _| -> Result<()> {
+        ensure!(
+            s.selected == Some(cube),
+            "clicking a sketch curve hidden behind the cube picked {:?} instead of the cube",
+            s.selected
+        );
+        Ok(())
+    })??;
+    pointer(window, Pointer::Down(1), visible_end, none, cx).await?;
+    pointer(window, Pointer::Up, visible_end, none, cx).await?;
+    window.update(cx, |s, _, _| -> Result<()> {
+        ensure!(
+            s.selected == Some(behind),
+            "clicking the visible end of the sketch line did not pick the sketch"
+        );
+        Ok(())
+    })??;
+
     // The palette entry; leaving without drawing creates nothing.
     let count = window.update(cx, |s, _, _| s.scene.objects.len())?;
     let palette = platform_shortcut("cmd-k", "ctrl-k");
@@ -3724,7 +3779,7 @@ async fn check_draw_workflow(window: WindowHandle<Studio>, cx: &mut AsyncApp) ->
         Ok(())
     })??;
     println!(
-        "draw_workflow=ground,numeric_rectangle,inference_polyline,snap_close,circle,trim,undo_redo,select_delete,corner_drag,tangent_arc,polygon,esc,edit,object_pick,face,palette PASS"
+        "draw_workflow=ground,numeric_rectangle,inference_polyline,snap_close,circle,trim,undo_redo,select_delete,corner_drag,tangent_arc,polygon,esc,edit,object_pick,face,hidden_pick,palette PASS"
     );
     Ok(())
 }
