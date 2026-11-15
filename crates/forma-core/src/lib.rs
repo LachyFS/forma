@@ -23,7 +23,7 @@ pub use part::{
 };
 pub use sketch::{
     MAX_SKETCH_COORDINATE, MAX_SKETCH_ENTITIES, Profile, ProfileLoop, SKETCH_TOLERANCE, Sketch,
-    SketchCurve, SketchEntity, SketchPlane,
+    SketchCurve, SketchEntity, SketchPlane, TrimPiece,
 };
 pub use surface_query::SurfaceQuery;
 

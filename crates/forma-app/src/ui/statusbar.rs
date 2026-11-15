@@ -12,6 +12,9 @@ use gpui::{prelude::*, *};
 
 /// Input hints for what the pointer and keyboard do right now.
 pub(crate) fn input_hints(s: &Studio) -> Vec<(&'static str, &'static str)> {
+    if let Some(hints) = s.draw_input_hints() {
+        return hints;
+    }
     if let Some(drag) = &s.transform_drag {
         if drag.mesh_tool.is_some() {
             return vec![
@@ -88,12 +91,19 @@ fn selection_summary(s: &Studio) -> Option<String> {
             _ => format!("{count} {plural} selected"),
         });
     }
+    if let Some(summary) = s.draw_summary() {
+        return Some(summary);
+    }
     let objects = s.selected_ids().len();
     match objects {
         0 => None,
         1 => s
             .selected_object()
-            .map(|object| format!("{} faces", object.mesh.faces.len())),
+            .map(|object| format!("{} faces", object.mesh.faces.len()))
+            .or_else(|| {
+                let sketch = s.scene.object_sketch(s.selected?)?;
+                Some(format!("{} curves", sketch.entities.len()))
+            }),
         count => Some(format!("{count} objects selected")),
     }
 }

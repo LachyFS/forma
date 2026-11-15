@@ -1383,6 +1383,7 @@ async fn run(window: WindowHandle<Studio>, output: PathBuf, cx: &mut AsyncApp) -
     check_precision_finishing_workflow(window, cx).await?;
     check_exchange_object_workflow(window, &output, cx).await?;
     check_numeric_entry_workflow(window, cx).await?;
+    check_draw_workflow(window, cx).await?;
     keys(window, &["0"], cx).await?;
     let (id, before_x) = window.update(cx, |s, w, cx| {
         s.execute(Command::Add(Primitive::Cube), w, cx);
@@ -3154,6 +3155,576 @@ async fn check_modelling_workflow(window: WindowHandle<Studio>, cx: &mut AsyncAp
     })??;
     println!(
         "modelling_workflow=multi_select,box,mode_conversion,arithmetic,local_axes,plane_constraints,extrude,inset,duplicate,cancel,undo PASS"
+    );
+    Ok(())
+}
+
+/// Pointer input through the viewport's own handlers (and the window's
+/// left-button release handler), as the other checks drive input.
+#[derive(Clone, Copy)]
+enum Pointer {
+    Move,
+    Drag,
+    Down(usize),
+    Up,
+}
+
+async fn pointer(
+    window: WindowHandle<Studio>,
+    kind: Pointer,
+    position: gpui::Point<gpui::Pixels>,
+    modifiers: gpui::Modifiers,
+    cx: &mut AsyncApp,
+) -> Result<()> {
+    window.update(cx, |s, w, cx| match kind {
+        Pointer::Move | Pointer::Drag => s.mouse_move(
+            &MouseMoveEvent {
+                position,
+                modifiers,
+                pressed_button: matches!(kind, Pointer::Drag).then_some(MouseButton::Left),
+            },
+            w,
+            cx,
+        ),
+        Pointer::Down(click_count) => s.mouse_down(
+            &MouseDownEvent {
+                button: MouseButton::Left,
+                position,
+                modifiers,
+                click_count,
+                ..Default::default()
+            },
+            w,
+            cx,
+        ),
+        Pointer::Up => {
+            s.draw_mouse_up(
+                &MouseUpEvent {
+                    button: MouseButton::Left,
+                    position,
+                    modifiers,
+                    click_count: 1,
+                },
+                cx,
+            );
+            s.navigation = None;
+        }
+    })?;
+    Timer::after(Duration::from_millis(16)).await;
+    Ok(())
+}
+
+/// Window position of a point on the active sketch plane.
+fn sketch_screen(s: &Studio, p: Vec2) -> Result<gpui::Point<gpui::Pixels>> {
+    let frame = s
+        .sketch_frame()
+        .ok_or_else(|| anyhow::anyhow!("Draw mode is not active"))?;
+    let v = s
+        .plane_to_screen(&frame, p)
+        .ok_or_else(|| anyhow::anyhow!("sketch point {p} is behind the camera"))?;
+    Ok(point(px(v.x), px(v.y)))
+}
+
+/// Hovers, presses and releases at a sketch point, like a mouse click.
+async fn sketch_click(
+    window: WindowHandle<Studio>,
+    p: Vec2,
+    click_count: usize,
+    cx: &mut AsyncApp,
+) -> Result<()> {
+    let position = window.update(cx, |s, _, _| sketch_screen(s, p))??;
+    let none = gpui::Modifiers::default();
+    pointer(window, Pointer::Move, position, none, cx).await?;
+    pointer(window, Pointer::Down(click_count), position, none, cx).await?;
+    pointer(window, Pointer::Up, position, none, cx).await
+}
+
+fn sketch_entities(s: &Studio) -> Vec<forma_core::SketchEntity> {
+    s.active_sketch()
+        .map(|active| active.sketch.entities)
+        .unwrap_or_default()
+}
+
+/// Drives Draw mode through real keys and pointer events: entering on the
+/// ground and on a face, numeric rectangles and circles, a polyline closed by
+/// endpoint snapping with horizontal inference, trim, selection and delete,
+/// undo inside Draw, Esc semantics, editing an existing sketch, Object mode
+/// picking and the command palette entry.
+async fn check_draw_workflow(window: WindowHandle<Studio>, cx: &mut AsyncApp) -> Result<()> {
+    use crate::sketch::DrawTool;
+    use forma_core::SketchCurve;
+    let saved = window.update(cx, |s, _, cx| {
+        let saved = (
+            s.scene.clone(),
+            std::mem::take(&mut s.history),
+            s.selected,
+            s.objects_selected.clone(),
+            s.settings.clone(),
+            s.tool,
+            s.dirty,
+            s.edit_mode,
+        );
+        s.scene = Scene::empty();
+        let cube = s.scene.add(Primitive::Cube);
+        s.select_objects(Default::default(), None);
+        s.edit_mode = EditMode::Object;
+        s.settings.mode = RenderMode::Solid;
+        s.scene.camera = forma_core::Camera {
+            target: glam::Vec3::ZERO,
+            distance: 12.,
+            ..Default::default()
+        };
+        s.invalidate(true, cx);
+        (saved, cube)
+    })?;
+    let (saved, cube) = saved;
+    settle(window, cx).await?;
+    let none = gpui::Modifiers::default();
+    // Point at empty ground near the viewport's top-left corner and press D.
+    let corner = window.update(cx, |s, _, _| {
+        s.bounds.get().origin + point(px(30.), px(30.))
+    })?;
+    pointer(window, Pointer::Move, corner, none, cx).await?;
+    keys(window, &["d"], cx).await?;
+    wait_for(window, cx, |s| s.is_drawing() && !s.sketch.animating()).await?;
+    window.update(cx, |s, _, _| -> Result<()> {
+        let session = s.sketch.session.as_ref().unwrap();
+        ensure!(session.label == "Ground plane", "D chose {}", session.label);
+        ensure!(
+            crate::sketch::plane::view_angle(s.scene.camera, &forma_core::SketchPlane::ground())
+                < 1.0e-3,
+            "entering Draw did not turn the camera to face the ground"
+        );
+        ensure!(
+            !s.settings.show_grid,
+            "the renderer's ground grid stayed visible under the sketch grid"
+        );
+        ensure!(
+            session.tool == DrawTool::Line && s.active_sketch().unwrap().object.is_none(),
+            "a new sketch should start with the Line tool and no scene object"
+        );
+        Ok(())
+    })??;
+    let objects_before = window.update(cx, |s, _, _| s.scene.objects.len())?;
+
+    // Rectangle: first corner by click, size typed with units and Tab.
+    keys(window, &["r"], cx).await?;
+    sketch_click(window, Vec2::new(2.0, -1.0), 1, cx).await?;
+    let quadrant = window.update(cx, |s, _, _| sketch_screen(s, Vec2::new(3.0, 0.0)))??;
+    pointer(window, Pointer::Move, quadrant, none, cx).await?;
+    let first = window.update(cx, |s, _, _| -> Result<Vec2> {
+        match s.sketch.session.as_ref().unwrap().step {
+            crate::sketch::tools::Step::Rectangle { first } => Ok(first),
+            step => anyhow::bail!("rectangle click left the tool at {step:?}"),
+        }
+    })??;
+    keys(
+        window,
+        &["1", "5", "0", "c", "m", "tab", "8", "0", "c", "m", "enter"],
+        cx,
+    )
+    .await?;
+    window.update(cx, |s, _, _| -> Result<()> {
+        let entities = sketch_entities(s);
+        ensure!(
+            entities.len() == 4,
+            "rectangle made {} curves",
+            entities.len()
+        );
+        let (min, max) = entities
+            .iter()
+            .map(|e| e.curve.bounds())
+            .reduce(|(a, b), (c, d)| (a.min(c), b.max(d)))
+            .unwrap();
+        ensure!(
+            min.distance(first) < 1.0e-5 && max.distance(first + Vec2::new(1.5, 0.8)) < 1.0e-5,
+            "typed 150cm × 80cm gave {min}..{max} from {first}"
+        );
+        ensure!(
+            s.active_sketch().unwrap().object.is_some()
+                && s.scene.objects.len() == objects_before + 1,
+            "the first curve did not create one sketch object"
+        );
+        Ok(())
+    })??;
+
+    // Polyline: horizontal inference straightens a slightly-off second point;
+    // clicking the chain start snaps to it and closes the loop.
+    keys(window, &["l"], cx).await?;
+    let wobble = window.update(cx, |s, _, _| {
+        let frame = s.sketch_frame().unwrap();
+        4.0 / s.pixels_per_unit(&frame, Vec2::new(-2.0, 1.0))
+    })?;
+    let start = Vec2::new(-3.0, 1.0);
+    sketch_click(window, start, 1, cx).await?;
+    let start = window.update(cx, |s, _, _| {
+        match s.sketch.session.as_ref().unwrap().step {
+            crate::sketch::tools::Step::Line { start, .. } => Some(start),
+            _ => None,
+        }
+    })?;
+    let start = start.ok_or_else(|| anyhow::anyhow!("line click did not start a chain"))?;
+    sketch_click(window, start + Vec2::new(1.5, wobble), 1, cx).await?;
+    sketch_click(window, start + Vec2::new(0.0, 1.5), 1, cx).await?;
+    sketch_click(window, start, 1, cx).await?;
+    window.update(cx, |s, _, _| -> Result<()> {
+        let entities = sketch_entities(s);
+        ensure!(
+            entities.len() == 7,
+            "triangle chain made {} curves",
+            entities.len() - 4
+        );
+        let second = entities[4].curve;
+        ensure!(
+            (second.end().y - start.y).abs() < 1.0e-6,
+            "horizontal inference did not level the second point: {second:?}"
+        );
+        ensure!(
+            entities[6].curve.end() == start,
+            "clicking the chain start did not snap exactly onto it"
+        );
+        ensure!(
+            !s.sketch.session.as_ref().unwrap().step.is_active(),
+            "closing the loop did not end the chain"
+        );
+        let profiles = s
+            .active_sketch()
+            .unwrap()
+            .sketch
+            .profiles(forma_core::SKETCH_TOLERANCE);
+        ensure!(
+            profiles.len() == 2,
+            "expected rectangle + triangle profiles, got {}",
+            profiles.len()
+        );
+        Ok(())
+    })??;
+
+    // Circle with a typed radius.
+    keys(window, &["c"], cx).await?;
+    sketch_click(window, Vec2::new(-2.0, -2.0), 1, cx).await?;
+    keys(window, &["2", "5", "c", "m", "enter"], cx).await?;
+    window.update(cx, |s, _, _| -> Result<()> {
+        match sketch_entities(s).last().map(|e| e.curve) {
+            Some(SketchCurve::Circle { radius, .. }) if (radius - 0.25).abs() < 1.0e-6 => Ok(()),
+            other => anyhow::bail!("typed circle radius gave {other:?}"),
+        }
+    })??;
+
+    // A line across the rectangle, then trim its overshoot on the left.
+    keys(window, &["l"], cx).await?;
+    let y = first.y + 0.4;
+    sketch_click(window, Vec2::new(first.x - 0.5, y), 1, cx).await?;
+    sketch_click(window, Vec2::new(first.x + 2.0, y), 1, cx).await?;
+    keys(window, &["escape"], cx).await?;
+    let chord_before = window.update(cx, |s, _, _| {
+        ensure!(s.is_drawing(), "Esc during a step left Draw mode");
+        ensure!(sketch_entities(s).len() == 9, "chord line missing");
+        ensure!(s.history.can_undo(), "drawing created no undo steps");
+        Ok::<_, anyhow::Error>(sketch_entities(s)[8].curve)
+    })??;
+    keys(window, &["t"], cx).await?;
+    sketch_click(window, Vec2::new(first.x - 0.25, y), 1, cx).await?;
+    window.update(cx, |s, _, _| -> Result<()> {
+        let chord = sketch_entities(s)[8].curve;
+        ensure!(
+            chord.start().distance(Vec2::new(first.x, y)) < 1.0e-5,
+            "trim did not cut the chord back to the rectangle: {chord:?}"
+        );
+        let profiles = s
+            .active_sketch()
+            .unwrap()
+            .sketch
+            .profiles(forma_core::SKETCH_TOLERANCE);
+        // Rectangle split in two by the chord, the triangle and the circle.
+        ensure!(
+            profiles.len() == 4,
+            "expected 4 regions after trim, got {}",
+            profiles.len()
+        );
+        Ok(())
+    })??;
+    // Undo and redo inside Draw.
+    keys(window, &["cmd-z"], cx).await?;
+    window.update(cx, |s, _, _| -> Result<()> {
+        ensure!(
+            sketch_entities(s)[8].curve == chord_before && s.is_drawing(),
+            "undo did not restore the untrimmed chord inside Draw mode"
+        );
+        Ok(())
+    })??;
+    keys(
+        window,
+        &[platform_shortcut("cmd-shift-z", "ctrl-shift-z")],
+        cx,
+    )
+    .await?;
+
+    // Select a triangle edge and delete it; undo brings it back.
+    keys(window, &["q"], cx).await?;
+    sketch_click(window, start + Vec2::new(0.0, 0.75), 1, cx).await?;
+    window.update(cx, |s, _, _| -> Result<()> {
+        let selection = &s.sketch.session.as_ref().unwrap().selection;
+        ensure!(
+            selection.len() == 1 && selection.contains(&6),
+            "clicking the triangle's vertical edge selected {selection:?}"
+        );
+        Ok(())
+    })??;
+    keys(window, &["delete"], cx).await?;
+    window.update(cx, |s, _, _| -> Result<()> {
+        ensure!(
+            sketch_entities(s).len() == 8,
+            "Delete did not remove the selected curve"
+        );
+        Ok(())
+    })??;
+    keys(window, &["cmd-z"], cx).await?;
+    // Drag the rectangle's far corner: both edges follow it.
+    let corner = first + Vec2::new(1.5, 0.8);
+    let target = corner + Vec2::new(0.5, 0.5);
+    let (from, to, step_pixels) = window.update(cx, |s, _, _| -> Result<_> {
+        Ok((sketch_screen(s, corner)?, sketch_screen(s, target)?, {
+            let frame = s.sketch_frame().unwrap();
+            s.pixels_per_unit(&frame, corner)
+        }))
+    })??;
+    pointer(window, Pointer::Move, from, none, cx).await?;
+    pointer(window, Pointer::Down(1), from, none, cx).await?;
+    for i in 1..=6 {
+        let t = i as f32 / 6.0;
+        let position = point(from.x + (to.x - from.x) * t, from.y + (to.y - from.y) * t);
+        pointer(window, Pointer::Drag, position, none, cx).await?;
+    }
+    pointer(window, Pointer::Up, to, none, cx).await?;
+    window.update(cx, |s, _, _| -> Result<()> {
+        let entities = sketch_entities(s);
+        let ends: Vec<Vec2> = entities
+            .iter()
+            .filter(|e| !e.curve.is_closed())
+            .flat_map(|e| [e.curve.start(), e.curve.end()])
+            .collect();
+        ensure!(
+            !ends.contains(&corner),
+            "a rectangle edge stayed at the old corner"
+        );
+        // Both edges follow the grabbed corner to the (snapped) drop point.
+        let dropped = ends
+            .iter()
+            .copied()
+            .filter(|p| p.distance(target) < 14.0 / step_pixels)
+            .collect::<Vec<_>>();
+        ensure!(
+            dropped.len() == 2 && dropped[0] == dropped[1],
+            "dragging the corner moved {dropped:?}, expected two shared ends near {target}"
+        );
+        Ok(())
+    })??;
+    keys(window, &["cmd-z"], cx).await?;
+
+    // A line continued by a tangent arc (A inside a chain), then a heptagon.
+    keys(window, &["l"], cx).await?;
+    let base = Vec2::new(-3.0, -3.0);
+    sketch_click(window, base, 1, cx).await?;
+    sketch_click(window, base + Vec2::new(1.0, 0.0), 1, cx).await?;
+    keys(window, &["a"], cx).await?;
+    sketch_click(window, base + Vec2::new(2.0, 1.0), 1, cx).await?;
+    keys(window, &["escape", "p", "+"], cx).await?;
+    sketch_click(window, Vec2::new(3.0, 3.0), 1, cx).await?;
+    keys(window, &["0", ".", "3", "enter"], cx).await?;
+    window.update(cx, |s, _, _| -> Result<()> {
+        let entities = sketch_entities(s);
+        ensure!(
+            entities.len() == 18,
+            "line, arc and heptagon made {} curves",
+            entities.len() - 9
+        );
+        let (line, arc) = (entities[9].curve, entities[10].curve);
+        ensure!(
+            matches!(arc, SketchCurve::Arc { .. })
+                && arc.start().distance(line.end()) < 1.0e-5
+                && arc.tangent_at(0.0).distance(line.tangent_at(1.0)) < 1.0e-3,
+            "A did not continue the line with a tangent arc: {line:?} {arc:?}"
+        );
+        let sides = &entities[11..];
+        ensure!(
+            sides.len() == 7
+                && sides
+                    .iter()
+                    .all(|e| (e.curve.start().distance(Vec2::new(3.0, 3.0)) - 0.3).abs() < 1.0e-4),
+            "+ and a typed radius did not make a 0.3 m heptagon"
+        );
+        Ok(())
+    })??;
+
+    // Esc: cancels a step, then (with nothing selected) finishes the sketch.
+    keys(window, &["l"], cx).await?;
+    sketch_click(window, Vec2::new(4.0, 4.0), 1, cx).await?;
+    keys(window, &["escape"], cx).await?;
+    let sketch_id = window.update(cx, |s, _, _| -> Result<u64> {
+        ensure!(
+            s.is_drawing() && !s.sketch.session.as_ref().unwrap().step.is_active(),
+            "Esc did not cancel only the active step"
+        );
+        Ok(s.active_sketch().unwrap().object.unwrap())
+    })??;
+    keys(window, &["escape"], cx).await?;
+    wait_for(window, cx, |s| !s.is_drawing() && !s.sketch.animating()).await?;
+    window.update(cx, |s, _, _| -> Result<()> {
+        ensure!(
+            s.selected == Some(sketch_id),
+            "finishing did not select the sketch"
+        );
+        ensure!(
+            s.settings.show_grid,
+            "finishing did not restore the ground grid"
+        );
+        ensure!(
+            s.scene.object_sketch(sketch_id).unwrap().entities.len() == 18,
+            "finishing changed the committed curves"
+        );
+        Ok(())
+    })??;
+
+    // Object mode: Return edits the selected sketch; clicking its curves picks it.
+    keys(window, &["enter"], cx).await?;
+    wait_for(window, cx, |s| s.is_drawing() && !s.sketch.animating()).await?;
+    window.update(cx, |s, _, _| -> Result<()> {
+        ensure!(
+            s.active_sketch().unwrap().object == Some(sketch_id),
+            "Return did not re-enter the selected sketch"
+        );
+        ensure!(
+            s.sketch.session.as_ref().unwrap().tool == DrawTool::Select,
+            "editing should start with the Select tool"
+        );
+        Ok(())
+    })??;
+    let edge = window.update(cx, |s, _, _| sketch_screen(s, first + Vec2::new(0.75, 0.0)))??;
+    keys(window, &["enter"], cx).await?;
+    wait_for(window, cx, |s| !s.is_drawing() && !s.sketch.animating()).await?;
+    window.update(cx, |s, w, cx| s.execute(Command::DeselectAll, w, cx))?;
+    let edge = window.update(cx, |s, _, _| -> Result<_> {
+        // The camera returned to its earlier view; re-project the edge.
+        let display = s
+            .scene
+            .object_sketch(sketch_id)
+            .map(|sketch| sketch.plane.to_world(first + Vec2::new(0.75, 0.0)))
+            .unwrap();
+        crate::viewport::project(display, s.view_projection(), s.bounds.get())
+            .ok_or_else(|| anyhow::anyhow!("sketch edge is off screen ({edge:?})"))
+    })??;
+    pointer(window, Pointer::Move, edge, none, cx).await?;
+    pointer(window, Pointer::Down(1), edge, none, cx).await?;
+    pointer(window, Pointer::Up, edge, none, cx).await?;
+    window.update(cx, |s, _, _| -> Result<()> {
+        ensure!(
+            s.selected == Some(sketch_id) && !s.is_drawing(),
+            "clicking a sketch curve in Object mode did not select the sketch"
+        );
+        Ok(())
+    })??;
+    pointer(window, Pointer::Down(2), edge, none, cx).await?;
+    pointer(window, Pointer::Up, edge, none, cx).await?;
+    wait_for(window, cx, |s| s.is_drawing() && !s.sketch.animating()).await?;
+    keys(window, &["d"], cx).await?;
+    wait_for(window, cx, |s| !s.is_drawing() && !s.sketch.animating()).await?;
+
+    // A sketch on the cube's top face.
+    let top = window.update(cx, |s, _, _| {
+        crate::viewport::project(
+            glam::Vec3::new(0.3, 1.0, 0.2),
+            s.view_projection(),
+            s.bounds.get(),
+        )
+    })?;
+    let top = top.ok_or_else(|| anyhow::anyhow!("cube top is off screen"))?;
+    pointer(window, Pointer::Move, top, none, cx).await?;
+    keys(window, &["d"], cx).await?;
+    wait_for(window, cx, |s| s.is_drawing() && !s.sketch.animating()).await?;
+    window.update(cx, |s, _, _| -> Result<()> {
+        let active = s.active_sketch().unwrap();
+        let session = s.sketch.session.as_ref().unwrap();
+        ensure!(
+            session.label.starts_with("Face of"),
+            "D over the cube chose {}",
+            session.label
+        );
+        let plane = active.sketch.plane;
+        ensure!(
+            plane.normal().distance(glam::Vec3::Y) < 1.0e-4
+                && (plane.origin.y - 1.0).abs() < 1.0e-4,
+            "face plane is wrong: {plane:?}"
+        );
+        ensure!(session.reference.len() == 4, "face outline missing");
+        Ok(())
+    })??;
+    keys(window, &["c"], cx).await?;
+    sketch_click(window, Vec2::new(1.0, 1.0), 1, cx).await?;
+    keys(window, &["0", ".", "5", "enter", "enter"], cx).await?;
+    wait_for(window, cx, |s| !s.is_drawing()).await?;
+    let face_sketch = window.update(cx, |s, _, _| -> Result<u64> {
+        let id = s.selected.unwrap();
+        let sketch = s.scene.object_sketch(id).unwrap();
+        ensure!(
+            id != sketch_id && sketch.entities.len() == 1 && s.scene.object(cube).is_some(),
+            "face sketch was not committed as its own object"
+        );
+        let world = sketch
+            .plane
+            .to_world(sketch.entities[0].curve.center().unwrap());
+        ensure!(
+            (world.y - 1.0).abs() < 1.0e-4,
+            "face circle is not on the face"
+        );
+        Ok(id)
+    })??;
+
+    // The palette entry; leaving without drawing creates nothing.
+    let count = window.update(cx, |s, _, _| s.scene.objects.len())?;
+    let palette = platform_shortcut("cmd-k", "ctrl-k");
+    keys(
+        window,
+        &[palette, "d", "r", "a", "w", " ", "n", "e", "w", "enter"],
+        cx,
+    )
+    .await?;
+    wait_for(window, cx, |s| s.is_drawing() && !s.sketch.animating()).await?;
+    keys(window, &["escape"], cx).await?;
+    wait_for(window, cx, |s| !s.is_drawing()).await?;
+    window.update(cx, |s, w, cx| -> Result<()> {
+        ensure!(
+            s.scene.objects.len() == count,
+            "an empty Draw session left an object"
+        );
+        ensure!(
+            s.scene.object_sketch(face_sketch).is_some(),
+            "palette Draw lost the face sketch"
+        );
+        // Every committed edit is undoable back to the empty stage.
+        while s.history.can_undo() {
+            s.execute(Command::Undo, w, cx);
+        }
+        ensure!(
+            s.scene
+                .objects
+                .iter()
+                .all(|o| s.scene.object_sketch(o.id).is_none()),
+            "undo history did not cover every sketch edit"
+        );
+        s.scene = saved.0;
+        s.history = saved.1;
+        s.objects_selected = saved.3;
+        s.selected = saved.2;
+        s.settings = saved.4;
+        s.tool = saved.5;
+        s.dirty = saved.6;
+        s.edit_mode = saved.7;
+        s.invalidate(true, cx);
+        Ok(())
+    })??;
+    println!(
+        "draw_workflow=ground,numeric_rectangle,inference_polyline,snap_close,circle,trim,undo_redo,select_delete,corner_drag,tangent_arc,polygon,esc,edit,object_pick,face,palette PASS"
     );
     Ok(())
 }

@@ -4,6 +4,7 @@
 use super::assets::Icon;
 use crate::app::{Command, EditMode, Tool};
 use crate::platform_shortcut;
+use crate::sketch::{DrawCommand, DrawTool};
 use forma_core::Primitive;
 use forma_render::RenderMode;
 
@@ -162,6 +163,70 @@ pub(crate) fn command_info(command: Command) -> CommandInfo {
         Command::TogglePreviewAo => info("Ambient occlusion for grounded contact shading"),
         Command::LoadPreviewHdri => info("Load a Radiance HDR environment"),
         Command::ResetPreview => info("Reset preview lighting"),
+        Command::Draw(command) => draw_info(command),
+    }
+}
+
+fn draw_info(command: DrawCommand) -> CommandInfo {
+    match command {
+        DrawCommand::NewSketch => CommandInfo {
+            label: "New sketch",
+            shortcut: Some("D"),
+            detail: Some("On the face under the pointer, the view's plane, or the ground"),
+        },
+        DrawCommand::EditSketch => keyed("Edit sketch", "Return"),
+        DrawCommand::Finish => keyed("Finish sketch", "Return"),
+        DrawCommand::Tool(DrawTool::Select) => explained_keyed(
+            "Select",
+            "Click or drag a box · drag points and curves",
+            "Q",
+        ),
+        DrawCommand::Tool(DrawTool::Line) => explained_keyed(
+            "Line",
+            "Click points; type a length, Tab for angle · A for a tangent arc",
+            "L",
+        ),
+        DrawCommand::Tool(DrawTool::Rectangle) => explained_keyed(
+            "Rectangle",
+            "Type width, Tab for height · R for centre",
+            "R",
+        ),
+        DrawCommand::Tool(DrawTool::Circle) => {
+            explained_keyed("Circle", "Centre, then radius · type a radius", "C")
+        }
+        DrawCommand::Tool(DrawTool::Arc) => {
+            explained_keyed("Arc", "Start, end, then a point on the arc", "A")
+        }
+        DrawCommand::Tool(DrawTool::Polygon) => explained_keyed(
+            "Polygon",
+            "Centre, then a corner · + and − change sides",
+            "P",
+        ),
+        DrawCommand::Tool(DrawTool::Trim) => explained_keyed(
+            "Trim",
+            "Remove the piece of a curve between its nearest crossings",
+            "T",
+        ),
+        DrawCommand::ToggleConstruction => explained_keyed(
+            "Construction",
+            "Guides that never form profiles · toggles selected curves",
+            "X",
+        ),
+        DrawCommand::ToggleRectangleMode => keyed("Corner or centre rectangle", "R"),
+        DrawCommand::PolygonSides(delta) if delta < 0 => keyed("Fewer sides", "−"),
+        DrawCommand::PolygonSides(_) => keyed("More sides", "+"),
+    }
+}
+
+const fn explained_keyed(
+    label: &'static str,
+    detail: &'static str,
+    shortcut: &'static str,
+) -> CommandInfo {
+    CommandInfo {
+        label,
+        shortcut: Some(shortcut),
+        detail: Some(detail),
     }
 }
 
@@ -227,6 +292,13 @@ pub(crate) fn command_icon(command: Command) -> Option<Icon> {
         Command::ToggleTheme => Icon::Theme,
         Command::TogglePreviewSettings => Icon::Lighting,
         Command::CheckForUpdates | Command::ToggleUpdates => Icon::Update,
+        Command::Draw(DrawCommand::NewSketch) => Icon::DrawMode,
+        Command::Draw(DrawCommand::EditSketch) => Icon::Sketch,
+        Command::Draw(DrawCommand::Finish) => Icon::Check,
+        Command::Draw(DrawCommand::Tool(tool)) => crate::sketch::hud::tool_icon(tool),
+        Command::Draw(DrawCommand::ToggleConstruction) => Icon::DrawConstruction,
+        Command::Draw(DrawCommand::ToggleRectangleMode) => Icon::DrawCenterRectangle,
+        Command::Draw(DrawCommand::PolygonSides(_)) => Icon::DrawPolygon,
         _ => return None,
     })
 }
@@ -254,6 +326,7 @@ pub(crate) fn command_group(command: Command) -> &'static str {
         | Command::ExportStl
         | Command::ExportImage => "File",
         Command::Add(_) => "Add",
+        Command::Draw(_) => "Draw",
         Command::Duplicate
         | Command::Delete
         | Command::ApplyScale

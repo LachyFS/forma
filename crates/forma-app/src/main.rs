@@ -6,6 +6,7 @@ mod mesh_commands;
 mod modelling;
 mod render_worker;
 mod shading_pie;
+mod sketch;
 mod smoke;
 mod text_entry;
 mod theme;

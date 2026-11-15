@@ -94,6 +94,9 @@ cargo run --locked --release -p forma
 - Interactively extrude face regions or inset coplanar regions with exact thickness. Apply Catmull–Clark
   subdivision, or bevel every edge of a closed convex mesh with one segment. Triangulate selected
   faces or objects, reverse face winding, and recalculate consistent normals from the Geometry panel.
+- Sketch precise 2D geometry in [Draw mode](#draw-mode) on a face, a view plane or the ground:
+  lines, tangent arcs, rectangles, circles, arcs and polygons with snapping, inference and typed
+  dimensions. Closed regions are shaded as profiles for CAD features.
 - Frame the selection or all visible geometry, and choose any of six orthographic views
   through the clickable axis gizmo, command panel or keyboard shortcuts.
 - Choose PBR, Glass or Custom surface shaders, select PNG/JPEG image textures,
@@ -146,6 +149,67 @@ exports preserve an existing destination file.
 Open the chevron beside **Export** in the title bar to choose PNG, OBJ or STL.
 **Export** itself exports a PNG image directly; at narrower window widths it
 shows only its icon.
+
+## Draw mode
+
+Draw mode sketches 2D curves on a plane. Closed regions become **profiles**,
+which CAD features extrude or revolve.
+
+**Start a sketch** with `D`, the **Draw** button in the title bar, or **Draw: New
+sketch** in the command panel. The sketch goes on the planar face under the
+pointer (aligned to that face's longest edge, with its origin on a face corner),
+else on the plane of the current orthographic view (Front, Top, …), else on the
+ground. The camera eases round to look straight at the plane (and zooms in on a
+small face); if you leave the view alone, finishing eases it back. To **edit**
+a sketch, double-click its curves, or select it and press `Return`, or use
+**Edit sketch** in the inspector.
+
+**Finish** with `Return`, the **Finish** button, `D`, or `Esc` when no tool step
+is in progress. Every completed operation — a segment, a rectangle, a trim, a
+drag — is committed as it happens and is one undo step, so finishing never
+discards work and `⌘Z` works while drawing. `Esc` during a step cancels only
+that step. A sketch with no curves is not kept.
+
+| Tool | Key | Use |
+| --- | --- | --- |
+| Select | `Q` | Click curves, `Shift`-click to add, drag a box (left to right selects curves inside, right to left anything it touches), double-click a chain or a region to select it. Drag an endpoint to move every curve that meets there; drag a curve to move it while connected curves stretch; drag a circle to change its radius. `Delete` removes, `⌘A` selects all. |
+| Line | `L` | Click to chain segments; clicking the first point closes the loop. Double-click, `Return` or `Esc` ends the chain. Press `A` mid-chain for a **tangent arc**, `L` to go back to lines. |
+| Rectangle | `R` | Two corners; press `R` again (or the toolbar toggle) for a centre rectangle. |
+| Circle | `C` | Centre, then radius. |
+| Arc | `A` | Start, end, then a point on the arc. |
+| Polygon | `P` | Centre, then a corner; `+` / `−` change the number of sides (3–64). |
+| Trim | `T` | Click the piece of a curve between its nearest crossings to remove it. |
+| Construction | `X` | Draw construction curves (dashed); with curves selected, toggles them. Construction curves guide snapping but never form profiles. |
+
+Press and drag also draws: release where a click would go. `F` frames the sketch.
+
+**Snapping and inference.** The pointer snaps to endpoints, intersections,
+centres, midpoints, quadrants, the sketch origin and points on curves, each with
+its own marker and label. Moving away from the current point infers horizontal
+and vertical directions; hovering a straight curve lets the next segment be
+parallel or perpendicular to it, and hovering any key point lets you line up
+with its x or y. Dashed guides show each inference, and two inferences meeting
+(for example the corner that closes a rectangle) snap to their crossing.
+Otherwise points snap to the grid, whose spacing adapts to the zoom
+(1–2–5 steps, with stronger lines every decade) and fades with distance. Hold
+`Ctrl` (or `⌘`) to place a point freely.
+
+**Numeric entry.** Once a tool has its first point, type a value to lock it:
+length then angle for lines, width then height for rectangles, radius for
+circles and arcs, radius then angle for polygons, radius then sweep for tangent
+arcs. `Tab` moves to the next value; `Return` places the point. Values use the
+same expressions as transforms: `25mm`, `(2+3)*10cm`, `1ft+6in`; bare numbers
+are metres, and angles are degrees unless given in `rad`. A locked value
+follows the pointer's side, so `150cm Tab 80cm` sizes a rectangle toward the
+pointer. Live labels beside the geometry show every dimension as you draw.
+
+**Profiles.** Curves are split wherever they cross, touch or overlap, so
+overlapping shapes form one profile per region (a circle overlapping a rectangle
+gives three), lines that overshoot a corner still close it, and islands inside
+a region become its holes. Open endpoints are marked with rings. Hovering a
+region highlights it. In Object mode, sketches stay visible in every render
+mode; parts hidden behind geometry are drawn faintly, and clicking a sketch's
+curves selects it.
 
 ## Render modes
 
@@ -226,6 +290,7 @@ The in-app command panel opens with
 | Focus selection | Backtick (`` ` ``), `.` / numpad decimal, or `F`; focuses the entire selection |
 | Frame all visible geometry | `Home` |
 | Shading pie | `Z`; hold and flick, or tap then select |
+| New sketch / edit sketch / finish | `D` / select a sketch then `Return` (or double-click it) / `Return`; see [Draw mode](#draw-mode) for its tools |
 | Move / rotate / scale | `G` / `R` / `S` |
 | Constrain transform | `X`, `Y` or `Z`; repeat the same key for global → local → free |
 | Plane constraint | `Shift+X`, `Shift+Y` or `Shift+Z` excludes that axis |

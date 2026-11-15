@@ -153,6 +153,7 @@ pub enum Command {
     TogglePreviewAo,
     LoadPreviewHdri,
     ResetPreview,
+    Draw(crate::sketch::DrawCommand),
 }
 
 pub(crate) struct TransformDrag {
@@ -238,11 +239,12 @@ pub struct Studio {
     pub(crate) navigation: Option<(MouseButton, crate::viewport::NavigationMode)>,
     pub(crate) trackpad_gesture: crate::viewport::TrackpadGesture,
     pub(crate) transform_drag: Option<TransformDrag>,
+    pub(crate) sketch: crate::sketch::SketchState,
     #[cfg(target_os = "macos")]
     _pinch_monitor: Option<crate::trackpad::PinchMonitor>,
     worker: RenderWorker,
     path: Option<PathBuf>,
-    scene_revision: u64,
+    pub(crate) scene_revision: u64,
     pub(crate) surface_query: OnceCell<forma_core::SurfaceQuery>,
     generation: u64,
     field_replace: bool,
@@ -450,6 +452,7 @@ impl Studio {
             navigation: None,
             trackpad_gesture: Default::default(),
             transform_drag: None,
+            sketch: Default::default(),
             #[cfg(target_os = "macos")]
             _pinch_monitor: crate::trackpad::PinchMonitor::install(window, cx),
             worker,
@@ -919,6 +922,10 @@ impl Studio {
             self.palette_open = false;
             self.help_open = false;
         }
+        if self.draw_before_command(command, cx) {
+            cx.notify();
+            return;
+        }
         match command {
             Command::CheckForUpdates
             | Command::ToggleUpdates
@@ -1106,6 +1113,12 @@ impl Studio {
                         drag.changed = true;
                         self.status =
                             "Duplicate · Move the copy · Enter confirm · Esc cancel".into();
+                        self.invalidate(true, cx);
+                    } else if self.scene != before {
+                        // Objects without a mesh (sketches) duplicate in place.
+                        self.history.checkpoint(&before);
+                        self.dirty = true;
+                        self.status = "Duplicated".into();
                         self.invalidate(true, cx);
                     }
                 }
@@ -1373,7 +1386,10 @@ impl Studio {
                 self.apply_object_command(command, cx);
             }
             Command::Subdivide => {
-                if let Some(id) = self.selected {
+                if let Some(id) = self
+                    .selected
+                    .filter(|id| self.scene.object_mesh(*id).is_some())
+                {
                     if self.scene.object_mesh(id).unwrap().faces.len() > 100_000 {
                         self.status = "Subdivision limit reached (100k input faces)".into();
                     } else {
@@ -1533,6 +1549,7 @@ impl Studio {
                 self.invalidate(false, cx);
             }
             Command::LoadPreviewHdri => self.choose_preview_hdri(cx),
+            Command::Draw(_) => {}
         }
         cx.notify();
     }
@@ -2066,7 +2083,8 @@ impl Studio {
         }
         if field == Field::Name {
             return self
-                .selected_object()
+                .selected
+                .and_then(|id| self.scene.object(id))
                 .map(|o| o.name.clone())
                 .unwrap_or_default();
         }
@@ -2136,7 +2154,8 @@ impl Studio {
 
     pub(crate) fn field_edit_text(&self, field: Field) -> String {
         if field == Field::Name {
-            self.selected_object()
+            self.selected
+                .and_then(|id| self.scene.object(id))
                 .map(|object| object.name.clone())
                 .unwrap_or_default()
         } else {
@@ -2802,6 +2821,10 @@ impl Studio {
             cx.stop_propagation();
             return;
         }
+        if self.draw_key(event, window, cx) {
+            cx.stop_propagation();
+            return;
+        }
         let command = if command_modifier(mods) {
             match key {
                 "s" if mods.shift => Some(Command::SaveAs),
@@ -2908,7 +2931,8 @@ impl Render for Studio {
             .on_key_up(cx.listener(Self::on_key_up))
             .on_mouse_up(
                 MouseButton::Left,
-                cx.listener(|s, _, _, cx| {
+                cx.listener(|s, event: &MouseUpEvent, _, cx| {
+                    s.draw_mouse_up(event, cx);
                     if s.transform_drag.as_ref().is_some_and(|d| !d.modal) {
                         s.finish_transform(false, cx);
                     }
@@ -2981,6 +3005,22 @@ pub(crate) fn palette_commands(query: &str) -> Vec<(&'static str, &'static str, 
         ("Add cylinder", "", Command::Add(Primitive::Cylinder)),
         ("Add torus", "", Command::Add(Primitive::Torus)),
         ("Add plane", "", Command::Add(Primitive::Plane)),
+        // Draw
+        (
+            "Draw: New sketch",
+            "D",
+            Command::Draw(crate::sketch::DrawCommand::NewSketch),
+        ),
+        (
+            "Draw: Edit sketch",
+            "Return",
+            Command::Draw(crate::sketch::DrawCommand::EditSketch),
+        ),
+        (
+            "Draw: Finish sketch",
+            "Return",
+            Command::Draw(crate::sketch::DrawCommand::Finish),
+        ),
         // Object
         ("Duplicate selection", "⇧ D", Command::Duplicate),
         ("Delete selection", "Delete", Command::Delete),

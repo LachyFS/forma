@@ -9,6 +9,7 @@
 //! `WAYLAND_DISPLAY`, for example under Xwayland or Xvfb). macOS uses the smoke
 //! test's CoreGraphics capture. Other platforms save the viewport frame only.
 use crate::app::{Command, EditMode, Field, Studio};
+use crate::sketch::demo;
 use crate::smoke::{capture_window, prepare_capture};
 use crate::theme::Theme;
 use crate::ui::{Anchor, InspectorTab, MenuKind};
@@ -355,6 +356,36 @@ pub(crate) fn scenarios() -> Vec<Scenario> {
             name: "theme-synthwave",
             enter: |s, _, cx| theme(s, Theme::Synthwave, cx),
             leave: default_theme,
+        },
+        Scenario {
+            name: "draw-empty",
+            enter: demo::empty_plane,
+            leave: demo::restore,
+        },
+        Scenario {
+            name: "draw-line-inference",
+            enter: demo::line_inference,
+            leave: demo::restore,
+        },
+        Scenario {
+            name: "draw-numeric",
+            enter: demo::numeric_entry,
+            leave: demo::restore,
+        },
+        Scenario {
+            name: "draw-profiles",
+            enter: demo::profiles,
+            leave: demo::restore,
+        },
+        Scenario {
+            name: "draw-tilted-face",
+            enter: demo::tilted_face,
+            leave: demo::restore,
+        },
+        Scenario {
+            name: "draw-objects",
+            enter: demo::finished_objects,
+            leave: demo::restore,
         },
     ]
 }

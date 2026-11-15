@@ -666,6 +666,9 @@ fn geometry(t: Colors, object: &forma_core::MeshInstance, cx: &mut Context<Studi
 }
 
 fn object_page(t: Colors, s: &Studio, stacked: bool, cx: &mut Context<Studio>) -> Div {
+    if let Some(page) = s.sketch_inspector(t, cx) {
+        return page;
+    }
     let Some(object) = s.selected_object() else {
         let message = if s.scene.objects.is_empty() {
             (
