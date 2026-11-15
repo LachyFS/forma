@@ -146,7 +146,16 @@ Export still shares the physical GPU and can reduce viewport throughput.
 
 ## Editor appearance
 
-The app's `theme` module defines semantic chrome colors and five built-in presets.
+The workspace chrome lives in `crates/forma-app/src/ui/`. `tokens` holds the
+spacing, radius, control-height, type and motion scales; `assets` embeds the
+Lucide-based SVG icons and the Inter font; `components` builds every control from
+those tokens. Shell regions (`titlebar`, `hud`, `outliner`, `inspector`,
+`statusbar`) and `overlays` compose components and never use literal colors.
+`modes` lists the title bar's workspace modes as data, and `slots` provides the
+reserved viewport dock and adjust-last-operation hooks that features fill.
+
+The app's `theme` module defines semantic color tokens (surfaces, lines, ink tiers,
+accent, status and axis colors) and five built-in presets that map onto them.
 The theme picker previews a candidate without changing the saved choice. Escape,
 clicking outside, or opening another editor command discards the preview; click or
 Return commits it. Theme changes notify GPUI without invalidating the renderer or

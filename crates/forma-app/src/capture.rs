@@ -8,9 +8,12 @@
 //! On Linux, captures read the window through X11 (`DISPLAY` without
 //! `WAYLAND_DISPLAY`, for example under Xwayland or Xvfb). macOS uses the smoke
 //! test's CoreGraphics capture. Other platforms save the viewport frame only.
-use crate::app::{Command, Studio};
+use crate::app::{Command, EditMode, Field, Studio};
 use crate::smoke::{capture_window, prepare_capture};
+use crate::theme::Theme;
+use crate::ui::{Anchor, InspectorTab, MenuKind};
 use anyhow::{Result, ensure};
+use forma_render::RenderMode;
 use gpui::{App, AsyncApp, Timer, WindowHandle};
 use std::{
     path::{Path, PathBuf},
@@ -27,6 +30,43 @@ pub(crate) struct Scenario {
 
 fn nothing(_: &mut Studio, _: &mut gpui::Window, _: &mut gpui::Context<Studio>) {}
 
+fn theme(s: &mut Studio, theme: Theme, cx: &mut gpui::Context<Studio>) {
+    s.apply_theme(theme, cx);
+}
+fn default_theme(s: &mut Studio, _: &mut gpui::Window, cx: &mut gpui::Context<Studio>) {
+    theme(s, Theme::Forma, cx);
+}
+fn end_field(s: &mut Studio, _: &mut gpui::Window, cx: &mut gpui::Context<Studio>) {
+    s.active_field = None;
+    s.panels.rename_in_outliner = false;
+    cx.notify();
+}
+fn resize(window: &mut gpui::Window, width: f32, height: f32) {
+    window.resize(gpui::size(gpui::px(width), gpui::px(height)));
+}
+fn restore_size(s: &mut Studio, w: &mut gpui::Window, cx: &mut gpui::Context<Studio>) {
+    resize(w, 1512., 960.);
+    s.invalidate(false, cx);
+}
+
+thread_local! {
+    /// Scenes replaced by a scenario, restored when it leaves.
+    static SAVED_SCENE: std::cell::RefCell<Option<forma_core::Scene>> = const {
+        std::cell::RefCell::new(None)
+    };
+}
+
+fn stash_scene(s: &mut Studio) {
+    SAVED_SCENE.with(|saved| *saved.borrow_mut() = Some(s.scene.clone()));
+}
+fn restore_scene(s: &mut Studio, cx: &mut gpui::Context<Studio>) {
+    if let Some(scene) = SAVED_SCENE.with(|saved| saved.borrow_mut().take()) {
+        s.scene = scene;
+        s.dirty = false;
+        s.invalidate(true, cx);
+    }
+}
+
 /// Workspace states captured by `--ui-capture`. Add a scenario here whenever a
 /// new panel, overlay or mode lands so its appearance can be reviewed.
 pub(crate) fn scenarios() -> Vec<Scenario> {
@@ -37,8 +77,35 @@ pub(crate) fn scenarios() -> Vec<Scenario> {
             leave: nothing,
         },
         Scenario {
+            name: "unsaved",
+            enter: |s, _, cx| {
+                s.dirty = true;
+                cx.notify();
+            },
+            leave: |s, _, cx| {
+                s.dirty = false;
+                cx.notify();
+            },
+        },
+        Scenario {
             name: "commands",
             enter: |s, w, cx| s.execute(Command::TogglePalette, w, cx),
+            leave: |s, w, cx| s.execute(Command::TogglePalette, w, cx),
+        },
+        Scenario {
+            name: "commands-search",
+            enter: |s, w, cx| {
+                s.execute(Command::TogglePalette, w, cx);
+                s.palette_query = "view".into();
+            },
+            leave: |s, w, cx| s.execute(Command::TogglePalette, w, cx),
+        },
+        Scenario {
+            name: "export-formats",
+            enter: |s, w, cx| {
+                s.execute(Command::TogglePalette, w, cx);
+                s.palette_exports_only = true;
+            },
             leave: |s, w, cx| s.execute(Command::TogglePalette, w, cx),
         },
         Scenario {
@@ -50,6 +117,244 @@ pub(crate) fn scenarios() -> Vec<Scenario> {
             name: "theme-picker",
             enter: |s, w, cx| s.execute(Command::ToggleTheme, w, cx),
             leave: |s, w, cx| s.execute(Command::ToggleTheme, w, cx),
+        },
+        Scenario {
+            name: "add-menu",
+            enter: |s, _, cx| s.open_menu(MenuKind::Add, Anchor::ToolRail, cx),
+            leave: |s, _, _| s.panels.close_menu(),
+        },
+        Scenario {
+            name: "view-menu",
+            enter: |s, _, cx| s.open_menu(MenuKind::View, Anchor::ViewHud, cx),
+            leave: |s, _, _| s.panels.close_menu(),
+        },
+        Scenario {
+            name: "preview-lighting",
+            enter: |s, w, cx| s.execute(Command::TogglePreviewSettings, w, cx),
+            leave: |s, w, cx| s.execute(Command::TogglePreviewSettings, w, cx),
+        },
+        Scenario {
+            name: "edit-mode",
+            enter: |s, w, cx| {
+                s.execute(Command::SetEditMode(EditMode::Face), w, cx);
+                s.execute(Command::SelectAll, w, cx);
+            },
+            leave: |s, w, cx| s.execute(Command::SetEditMode(EditMode::Object), w, cx),
+        },
+        Scenario {
+            name: "transform",
+            enter: |s, _, cx| {
+                s.start_transform(crate::app::Tool::Move, Some(0), true, cx);
+                if let Some(drag) = s.transform_drag.as_mut() {
+                    drag.numeric = "0.25".into();
+                }
+                cx.notify();
+            },
+            leave: |s, _, cx| {
+                s.finish_transform(true, cx);
+                s.tool = crate::app::Tool::Select;
+            },
+        },
+        Scenario {
+            name: "measurements",
+            enter: |s, w, cx| s.execute(Command::ToggleMeasurements, w, cx),
+            leave: |s, w, cx| s.execute(Command::ToggleMeasurements, w, cx),
+        },
+        Scenario {
+            name: "field-editing",
+            enter: |s, w, cx| s.begin_field(Field::Translation(1), w, cx),
+            leave: end_field,
+        },
+        Scenario {
+            name: "outliner-rename",
+            enter: |s, w, cx| {
+                s.begin_field(Field::Name, w, cx);
+                s.panels.rename_in_outliner = true;
+            },
+            leave: end_field,
+        },
+        Scenario {
+            name: "inspector-scrolled",
+            enter: |s, _, cx| {
+                s.panels.scroll_inspector_to(500.);
+                cx.notify();
+            },
+            leave: |s, _, cx| {
+                s.panels.scroll_inspector_to(0.);
+                cx.notify();
+            },
+        },
+        Scenario {
+            name: "render-tab",
+            enter: |s, _, cx| s.set_inspector_tab(InspectorTab::Render, cx),
+            leave: |s, _, cx| s.set_inspector_tab(InspectorTab::Object, cx),
+        },
+        Scenario {
+            name: "rendered-mode",
+            enter: |s, w, cx| {
+                s.execute(Command::SetMode(RenderMode::Rendered), w, cx);
+                s.set_inspector_tab(InspectorTab::Render, cx);
+            },
+            leave: |s, w, cx| {
+                s.execute(Command::SetMode(RenderMode::MaterialPreview), w, cx);
+                s.set_inspector_tab(InspectorTab::Object, cx);
+            },
+        },
+        Scenario {
+            name: "no-selection",
+            enter: |s, _, cx| {
+                s.select_objects(Default::default(), None);
+                s.invalidate(false, cx);
+            },
+            leave: |s, w, cx| {
+                if let Some(id) = s.scene.objects.first().map(|object| object.id) {
+                    s.execute(Command::Select(id), w, cx);
+                }
+            },
+        },
+        Scenario {
+            name: "empty-scene",
+            enter: |s, _, cx| {
+                stash_scene(s);
+                let ids: Vec<u64> = s.scene.objects.iter().map(|object| object.id).collect();
+                s.select_objects(Default::default(), None);
+                for id in ids {
+                    s.scene.remove(id);
+                }
+                s.invalidate(true, cx);
+            },
+            leave: |s, w, cx| {
+                restore_scene(s, cx);
+                if let Some(id) = s.scene.objects.first().map(|object| object.id) {
+                    s.execute(Command::Select(id), w, cx);
+                }
+            },
+        },
+        Scenario {
+            name: "stl-export",
+            enter: |s, w, cx| s.execute(Command::ExportStl, w, cx),
+            leave: |s, _, cx| {
+                s.stl_dialog = None;
+                cx.notify();
+            },
+        },
+        Scenario {
+            name: "updates",
+            enter: |s, w, cx| s.execute(Command::ToggleUpdates, w, cx),
+            leave: |s, w, cx| s.execute(Command::ToggleUpdates, w, cx),
+        },
+        Scenario {
+            name: "update-ready",
+            enter: |s, _, cx| {
+                s.updates.state = crate::updater::State::Ready("0.3.0".into());
+                cx.notify();
+            },
+            leave: |s, _, cx| {
+                s.updates.state = crate::updater::State::Idle;
+                cx.notify();
+            },
+        },
+        Scenario {
+            name: "shader-editor",
+            enter: |s, w, cx| s.execute(Command::EditShader, w, cx),
+            leave: |s, w, cx| s.execute(Command::CloseShader, w, cx),
+        },
+        Scenario {
+            name: "shading-pie",
+            enter: |s, _, cx| {
+                let center = s.bounds.get().center();
+                s.open_shading_pie(glam::Vec2::new(center.x.into(), center.y.into()), cx);
+                if let Some(pie) = s.shading_pie.as_mut() {
+                    pie.hovered = Some(RenderMode::Rendered);
+                }
+            },
+            leave: |s, _, cx| s.close_shading_pie(cx),
+        },
+        Scenario {
+            name: "narrow",
+            enter: |_, w, _| resize(w, 1000., 650.),
+            leave: restore_size,
+        },
+        Scenario {
+            name: "narrow-wide-sidebar",
+            enter: |s, w, cx| {
+                resize(w, 1000., 650.);
+                s.panels.set_sidebar_width(560.);
+                s.execute(Command::SetEditMode(EditMode::Edge), w, cx);
+            },
+            leave: |s, w, cx| {
+                s.execute(Command::SetEditMode(EditMode::Object), w, cx);
+                s.panels.set_sidebar_width(crate::ui::SIDEBAR_DEFAULT_WIDTH);
+                restore_size(s, w, cx);
+            },
+        },
+        Scenario {
+            name: "narrow-edit",
+            enter: |s, w, cx| {
+                resize(w, 1000., 650.);
+                s.execute(Command::SetEditMode(EditMode::Vertex), w, cx);
+            },
+            leave: |s, w, cx| {
+                s.execute(Command::SetEditMode(EditMode::Object), w, cx);
+                restore_size(s, w, cx);
+            },
+        },
+        Scenario {
+            name: "theme-paper",
+            enter: |s, _, cx| theme(s, Theme::Paper, cx),
+            leave: default_theme,
+        },
+        Scenario {
+            name: "theme-paper-commands",
+            enter: |s, w, cx| {
+                theme(s, Theme::Paper, cx);
+                s.execute(Command::TogglePalette, w, cx);
+            },
+            leave: |s, w, cx| {
+                s.execute(Command::TogglePalette, w, cx);
+                theme(s, Theme::Forma, cx);
+            },
+        },
+        Scenario {
+            name: "theme-paper-render",
+            enter: |s, w, cx| {
+                theme(s, Theme::Paper, cx);
+                s.execute(Command::SetMode(RenderMode::Rendered), w, cx);
+                s.set_inspector_tab(InspectorTab::Render, cx);
+            },
+            leave: |s, w, cx| {
+                s.execute(Command::SetMode(RenderMode::MaterialPreview), w, cx);
+                s.set_inspector_tab(InspectorTab::Object, cx);
+                theme(s, Theme::Forma, cx);
+            },
+        },
+        Scenario {
+            name: "theme-matcha",
+            enter: |s, _, cx| theme(s, Theme::Matcha, cx),
+            leave: default_theme,
+        },
+        Scenario {
+            name: "theme-matcha-edit",
+            enter: |s, w, cx| {
+                theme(s, Theme::Matcha, cx);
+                s.execute(Command::SetEditMode(EditMode::Edge), w, cx);
+                s.execute(Command::ToggleMeasurements, w, cx);
+            },
+            leave: |s, w, cx| {
+                s.execute(Command::ToggleMeasurements, w, cx);
+                s.execute(Command::SetEditMode(EditMode::Object), w, cx);
+                theme(s, Theme::Forma, cx);
+            },
+        },
+        Scenario {
+            name: "theme-midnight",
+            enter: |s, _, cx| theme(s, Theme::Midnight, cx),
+            leave: default_theme,
+        },
+        Scenario {
+            name: "theme-synthwave",
+            enter: |s, _, cx| theme(s, Theme::Synthwave, cx),
+            leave: default_theme,
         },
     ]
 }

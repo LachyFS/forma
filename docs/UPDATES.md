@@ -4,7 +4,7 @@ Packaged Forma releases check GitHub Releases 30 seconds after launch and roughl
 every six hours. A worker downloads a full update in the background. The footer
 shows **Update ready**; installation starts only when the user chooses
 **Restart to update**. The application menu and command palette also expose
-**Check for Updates** and update preferences. Automatic checks and downloads can
+**Check for updates** and update preferences. Automatic checks and downloads can
 be disabled independently, and a version can be skipped. A manual check overrides
 the skipped version. Preferences live in `updates.json` beside the theme setting.
 
