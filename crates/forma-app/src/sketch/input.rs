@@ -283,7 +283,8 @@ impl Studio {
                 }
                 true
             }
-            Command::Save
+            Command::ToggleVisible(_)
+            | Command::Save
             | Command::SaveAs
             | Command::ExportImage
             | Command::ExportObj

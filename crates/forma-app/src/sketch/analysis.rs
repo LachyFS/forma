@@ -143,15 +143,14 @@ pub(crate) fn analyze(entities: &[SketchEntity], reference: &[SketchCurve]) -> A
 }
 
 impl Analysis {
-    /// The profile containing `point`, smallest first, so islands win over
-    /// the region around them.
+    /// The profile region containing `point`. Regions never overlap, so the
+    /// first hit is the only one.
     pub(crate) fn profile_at(&self, point: Vec2) -> Option<usize> {
-        self.profiles
-            .iter()
-            .enumerate()
-            .filter(|(_, profile)| profile.contains(point))
-            .min_by(|a, b| a.1.area().total_cmp(&b.1.area()))
-            .map(|(index, _)| index)
+        self.profile_polygons.iter().position(|loops| {
+            let mut loops = loops.iter();
+            loops.next().is_some_and(|outer| inside(point, outer))
+                && !loops.any(|hole| inside(point, hole))
+        })
     }
 
     /// The entity nearest `point` within `radius` plane units.
@@ -163,5 +162,64 @@ impl Analysis {
             .filter(|(_, distance)| *distance <= radius)
             .min_by(|a, b| a.1.total_cmp(&b.1))
             .map(|(index, _)| index)
+    }
+}
+
+fn inside(point: Vec2, polygon: &[Vec2]) -> bool {
+    let mut inside = false;
+    let mut j = polygon.len().wrapping_sub(1);
+    for i in 0..polygon.len() {
+        let (a, b) = (polygon[i], polygon[j]);
+        if (a.y > point.y) != (b.y > point.y)
+            && point.x < (b.x - a.x) * (point.y - a.y) / (b.y - a.y) + a.x
+        {
+            inside = !inside;
+        }
+        j = i;
+    }
+    inside
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn regions_are_found_from_cached_polygons() {
+        let line = |a: (f32, f32), b: (f32, f32)| -> SketchEntity {
+            SketchCurve::Line {
+                start: Vec2::new(a.0, a.1),
+                end: Vec2::new(b.0, b.1),
+            }
+            .into()
+        };
+        let mut entities = vec![
+            line((0.0, 0.0), (4.0, 0.0)),
+            line((4.0, 0.0), (4.0, 4.0)),
+            line((4.0, 4.0), (0.0, 4.0)),
+            line((0.0, 4.0), (0.0, 0.0)),
+        ];
+        entities.push(
+            SketchCurve::Circle {
+                center: Vec2::splat(2.0),
+                radius: 1.0,
+            }
+            .into(),
+        );
+        let analysis = analyze(&entities, &[]);
+        let ring = analysis.profile_at(Vec2::new(0.5, 0.5)).unwrap();
+        let disc = analysis.profile_at(Vec2::splat(2.0)).unwrap();
+        assert_ne!(ring, disc);
+        assert!(analysis.profiles[disc].holes.is_empty());
+        assert_eq!(analysis.profile_at(Vec2::splat(9.0)), None);
+        assert_eq!(analysis.entity_at(Vec2::new(2.0, 0.05), 0.1), Some(0));
+        // Endpoints shared by two lines count as connected.
+        assert!(analysis.endpoints.iter().all(|(_, count)| *count == 2));
+        assert!(
+            analysis
+                .snap_points
+                .iter()
+                .any(|p| p.kind == SnapKind::Center && p.point == Vec2::splat(2.0))
+        );
     }
 }
