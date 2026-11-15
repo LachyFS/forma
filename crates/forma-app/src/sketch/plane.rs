@@ -80,32 +80,66 @@ pub(crate) fn named_view_plane(camera: Camera) -> Option<(SketchPlane, &'static 
     plane.is_valid().then_some((plane, label))
 }
 
-/// The plane of a planar mesh face hit by `ray`. Axes follow the face's
-/// longest edge, choosing the orientation the camera can show upright; the
-/// origin sits on a face corner so the grid lines up with the face's edges.
+/// The plane of a planar face hit by `ray`: one polygon of a mesh, or a
+/// whole B-rep face group of a part. Axes follow the face's longest straight
+/// edge, choosing the orientation the camera can show upright; the origin
+/// sits on a face corner so the grid lines up with the face's edges.
 pub(crate) fn face_plane(scene: &Scene, camera: Camera, ray: Ray) -> Option<PlaneChoice> {
     let hit = scene.pick(ray)?;
     let instance = scene.mesh_instance(hit.object_id)?;
-    let face = instance.mesh.faces.get(hit.face)?;
-    let world: Vec<Vec3> = face
-        .iter()
-        .filter_map(|&i| instance.mesh.positions.get(i as usize))
-        .map(|p| instance.world_transform.transform_point3(*p))
-        .collect();
+    let group = instance.mesh.face_group(hit.face)?;
+    group_plane_choice(
+        scene,
+        camera,
+        hit.object_id,
+        group,
+        Some((ray.direction, hit.position)),
+    )
+}
+
+/// The plane of face group `group` of `object` (a polygon index for meshes
+/// without groups), if every vertex of every polygon in it is coplanar —
+/// tested across the whole group, so a curved B-rep face whose facets are
+/// each flat is rejected. `pick` is the viewing ray direction and hit point.
+pub(crate) fn group_plane_choice(
+    scene: &Scene,
+    camera: Camera,
+    object: u64,
+    group: u32,
+    pick: Option<(Vec3, Vec3)>,
+) -> Option<PlaneChoice> {
+    use crate::cad_tools::geometry;
+    let instance = scene.mesh_instance(object)?;
+    let mesh = instance.mesh;
+    let faces = geometry::group_faces(mesh, group);
+    let to_world = |i: u32| {
+        mesh.positions
+            .get(i as usize)
+            .map(|p| instance.world_transform.transform_point3(*p))
+    };
+    let mut normal = Vec3::ZERO;
+    let mut world: Vec<Vec3> = Vec::new();
+    for &f in &faces {
+        let polygon: Vec<Vec3> = mesh.faces[f].iter().filter_map(|&i| to_world(i)).collect();
+        for (i, a) in polygon.iter().enumerate() {
+            let b = polygon[(i + 1) % polygon.len()];
+            normal += Vec3::new(
+                (a.y - b.y) * (a.z + b.z),
+                (a.z - b.z) * (a.x + b.x),
+                (a.x - b.x) * (a.y + b.y),
+            );
+        }
+        world.extend(polygon);
+    }
     if world.len() < 3 {
         return None;
     }
-    let mut normal = Vec3::ZERO;
-    for (i, a) in world.iter().enumerate() {
-        let b = world[(i + 1) % world.len()];
-        normal += Vec3::new(
-            (a.y - b.y) * (a.z + b.z),
-            (a.z - b.z) * (a.x + b.x),
-            (a.x - b.x) * (a.y + b.y),
-        );
-    }
     let mut normal = normal.try_normalize()?;
-    if normal.dot(ray.direction) > 0.0 {
+    let toward_viewer = match pick {
+        Some((direction, _)) => -direction,
+        None => camera.position() - world[0],
+    };
+    if normal.dot(toward_viewer) < 0.0 {
         normal = -normal;
     }
     let centroid = world.iter().sum::<Vec3>() / world.len() as f32;
@@ -120,9 +154,20 @@ pub(crate) fn face_plane(scene: &Scene, camera: Camera, ray: Ray) -> Option<Plan
     if deviation > extent * 2.0e-3 + 1.0e-6 {
         return None;
     }
-    let (start, end) = (0..world.len())
-        .map(|i| (world[i], world[(i + 1) % world.len()]))
+    // The group's outline, with collinear tessellation segments merged.
+    let boundary = geometry::group_boundary(mesh, &faces);
+    let edges: Vec<(Vec3, Vec3)> = geometry::chain_loops(&boundary)
+        .iter()
+        .flat_map(|lp| {
+            let points: Vec<Vec3> = lp.iter().filter_map(|&i| to_world(i)).collect();
+            geometry::straight_edges(&points)
+        })
+        .collect();
+    let (start, end) = edges
+        .iter()
+        .copied()
         .max_by(|a, b| a.0.distance(a.1).total_cmp(&b.0.distance(b.1)))?;
+    let world: Vec<Vec3> = edges.iter().map(|e| e.0).collect();
     let edge = (end - start - normal * (end - start).dot(normal)).try_normalize()?;
     let candidates = [edge, -edge, normal.cross(edge), -normal.cross(edge)];
     let desired = if normal.y.abs() > 0.9999 {
@@ -151,11 +196,11 @@ pub(crate) fn face_plane(scene: &Scene, camera: Camera, ray: Ray) -> Option<Plan
     if !plane.is_valid() {
         return None;
     }
-    let local: Vec<Vec2> = world.iter().map(|p| plane.to_local(*p)).collect();
-    let reference = (0..local.len())
-        .map(|i| SketchCurve::Line {
-            start: local[i],
-            end: local[(i + 1) % local.len()],
+    let reference = edges
+        .iter()
+        .map(|(a, b)| SketchCurve::Line {
+            start: plane.to_local(*a),
+            end: plane.to_local(*b),
         })
         .filter(SketchCurve::is_valid)
         .collect();
@@ -163,7 +208,7 @@ pub(crate) fn face_plane(scene: &Scene, camera: Camera, ray: Ray) -> Option<Plan
         plane,
         label: format!("Face of {}", instance.object.name),
         reference,
-        focus: project_onto(&plane, hit.position),
+        focus: project_onto(&plane, pick.map_or(centroid, |(_, hit)| hit)),
     })
 }
 

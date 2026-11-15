@@ -15,6 +15,9 @@ pub(crate) fn input_hints(s: &Studio) -> Vec<(&'static str, &'static str)> {
     if let Some(hints) = s.draw_input_hints() {
         return hints;
     }
+    if let Some(hints) = s.cad_tool_hints() {
+        return hints;
+    }
     if let Some(drag) = &s.transform_drag {
         if drag.mesh_tool.is_some() {
             return vec![
@@ -73,6 +76,9 @@ pub(crate) fn input_hints(s: &Studio) -> Vec<(&'static str, &'static str)> {
 }
 
 fn selection_summary(s: &Studio) -> Option<String> {
+    if let Some(summary) = s.cad_tool_summary() {
+        return Some(summary);
+    }
     if s.edit_mode.is_component() {
         let count = s.component_elements().len();
         let kind = match s.edit_mode {

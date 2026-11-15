@@ -71,6 +71,8 @@ pub(crate) enum DrawTarget {
     Object(u64),
     /// An explicit world plane.
     Plane(SketchPlane, String),
+    /// A chosen face plane, with its outline as reference geometry.
+    Choice(plane::PlaneChoice),
 }
 
 /// What other code can read about the sketch being drawn.
@@ -310,6 +312,13 @@ impl Studio {
             self.finish_draw(cx);
         }
         let camera = self.scene.camera;
+        let target = match target {
+            DrawTarget::AtPointer => {
+                let ray = self.pointer_ray(self.last_mouse);
+                DrawTarget::Choice(plane::choose(&self.scene, camera, ray))
+            }
+            other => other,
+        };
         let (object, plane, label, reference, focus, world_plane) = match target {
             DrawTarget::Object(id) => {
                 let Some(sketch) = self.scene.object_sketch(id) else {
@@ -331,9 +340,8 @@ impl Studio {
                 let focus = plane.to_world(plane.to_local(camera.target));
                 (None, plane, label, Vec::new(), focus, plane)
             }
-            DrawTarget::AtPointer => {
-                let ray = self.pointer_ray(self.last_mouse);
-                let choice = plane::choose(&self.scene, camera, ray);
+            DrawTarget::AtPointer => unreachable!("resolved to a plane choice above"),
+            DrawTarget::Choice(choice) => {
                 // Centre a picked face rather than the exact point clicked.
                 let focus = choice
                     .reference

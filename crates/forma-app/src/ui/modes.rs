@@ -47,7 +47,7 @@ pub(crate) const MODES: &[WorkspaceMode] = &[
         label: "Edit",
         icon: Icon::EditMode,
         shortcut: Some("Tab"),
-        hint: "Edit vertices, edges and faces of the active mesh",
+        hint: "Edit vertices, edges and faces of a mesh, or faces and edges of a part",
         state: |s| {
             if s.edit_mode.is_component() {
                 ModeState::Active

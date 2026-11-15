@@ -84,7 +84,7 @@ pub(crate) struct CadState {
     /// Parts whose regeneration is running or queued.
     pub(crate) busy: usize,
     /// Show the next regeneration's outcome in the status line.
-    announce: bool,
+    pub(crate) announce: bool,
 }
 
 impl CadState {

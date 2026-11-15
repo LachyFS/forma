@@ -23,14 +23,18 @@ pub(crate) fn viewport_dock(
     t: Colors,
     cx: &mut Context<Studio>,
 ) -> Option<AnyElement> {
-    studio.draw_toolbar(t, cx)
+    // Precedence: the Draw toolbar, then a running modelling tool's HUD,
+    // then the feature timeline.
+    studio
+        .draw_toolbar(t, cx)
+        .or_else(|| studio.cad_tool_hud(t, cx))
 }
 
 /// Bottom-left "adjust last operation" panel.
 pub(crate) fn adjust_last_operation(
-    _studio: &Studio,
-    _t: Colors,
-    _cx: &mut Context<Studio>,
+    studio: &Studio,
+    t: Colors,
+    cx: &mut Context<Studio>,
 ) -> Option<AnyElement> {
-    None
+    studio.adjust_panel(t, cx)
 }

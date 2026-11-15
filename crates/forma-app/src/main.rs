@@ -1,5 +1,6 @@
 mod app;
 mod cad;
+mod cad_tools;
 mod capture;
 mod code_editor;
 mod exchange;

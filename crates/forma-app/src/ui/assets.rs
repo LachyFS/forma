@@ -75,6 +75,15 @@ icons! {
     Collection => "folder",
     CollectionOpen => "folder-open",
     Scene => "layers",
+    // CAD tools.
+    PushPull => "move-vertical",
+    Revolve => "rotate-ccw-square",
+    Symmetric => "unfold-vertical",
+    FlipDirection => "flip-horizontal-2",
+    OpNew => "square-plus",
+    OpJoin => "squares-unite",
+    OpCut => "squares-subtract",
+    OpIntersect => "squares-intersect",
     // Mesh operations.
     Extrude => "arrow-up-from-line",
     Inset => "square-square",

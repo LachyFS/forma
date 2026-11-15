@@ -127,6 +127,10 @@ pub(crate) fn next_field(
         Samples | Bounces | Exposure | WorldStrength | DenoiseStart => {
             &[Samples, Bounces, Exposure, WorldStrength, DenoiseStart]
         }
+        CadAdjust(_) => &[
+            CadAdjust(crate::cad_tools::AdjustParam::Distance),
+            CadAdjust(crate::cad_tools::AdjustParam::Angle),
+        ],
         PreviewRotation | PreviewStrength | PreviewOpacity | PreviewBlur => &[
             PreviewRotation,
             PreviewStrength,
