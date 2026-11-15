@@ -127,7 +127,7 @@ fn object_row(
         .pl(px(SP_3 + depth as f32 * INDENT))
         .pr(px(SP_1))
         .mx(px(SP_1))
-        .gap(px(SP_1 + 2.))
+        .gap(px(SP_1_5))
         .rounded(px(R_SM))
         .group(group.clone())
         .bg(if selected {
@@ -253,7 +253,7 @@ fn collection_rows(
             .pl(px(SP_1 + depth as f32 * INDENT))
             .pr(px(SP_2))
             .mx(px(SP_1))
-            .gap(px(SP_1 + 2.))
+            .gap(px(SP_1_5))
             .rounded(px(R_SM))
             .cursor_pointer()
             .hover(move |d| d.bg(rgb(t.control_hover)))
@@ -348,7 +348,7 @@ pub(super) fn outliner(t: Colors, s: &Studio, cx: &mut Context<Studio>) -> Div {
                 .h(px(HEADER))
                 .flex_shrink_0()
                 .pl(px(SP_3))
-                .pr(px(SP_1 + 2.))
+                .pr(px(SP_1_5))
                 .gap(px(SP_2))
                 .child(
                     div()

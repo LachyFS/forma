@@ -139,7 +139,10 @@ pub(crate) fn scenarios() -> Vec<Scenario> {
                 }
                 cx.notify();
             },
-            leave: |s, _, cx| s.finish_transform(true, cx),
+            leave: |s, _, cx| {
+                s.finish_transform(true, cx);
+                s.tool = crate::app::Tool::Select;
+            },
         },
         Scenario {
             name: "measurements",

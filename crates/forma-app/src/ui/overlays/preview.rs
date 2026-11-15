@@ -122,7 +122,7 @@ pub(super) fn overlay(t: Colors, s: &Studio, cx: &mut Context<Studio>) -> AnyEle
     let max_height = (f32::from(bounds.bottom()) - top - HUD_INSET).max(260.);
     let preview = &s.settings.preview;
     let studio_enabled = !preview.use_scene_world;
-    let environments = row().gap(px(SP_1 + 2.)).children(
+    let environments = row().gap(px(SP_1_5)).children(
         [
             StudioLight::Studio,
             StudioLight::Courtyard,

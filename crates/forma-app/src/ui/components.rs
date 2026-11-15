@@ -277,7 +277,7 @@ pub(crate) fn button_base(
         .h(px(height))
         .flex_shrink_0()
         .justify_center()
-        .gap(px(SP_1 + 2.))
+        .gap(px(SP_1_5))
         .rounded(px(R_SM + 1.))
         .bg(fill)
         .when_some(border, |d, border| d.border_1().border_color(rgb(border)))
@@ -482,7 +482,6 @@ pub(crate) fn switch_row(
 pub(crate) enum BadgeTone {
     Neutral,
     Accent,
-    Warning,
     Danger,
 }
 
@@ -491,12 +490,11 @@ pub(crate) fn badge(t: Colors, text: impl Into<SharedString>, tone: BadgeTone) -
     let (ink, fill) = match tone {
         BadgeTone::Neutral => (t.text_muted, hex(t.control)),
         BadgeTone::Accent => (t.accent_text, hex(t.accent_soft)),
-        BadgeTone::Warning => (t.warning, tint(t.warning, 0.14)),
         BadgeTone::Danger => (t.danger, tint(t.danger, 0.14)),
     };
     row()
         .h(px(18.))
-        .px(px(SP_1 + 2.))
+        .px(px(SP_1_5))
         .flex_shrink_0()
         .rounded(px(R_XS + 1.))
         .bg(fill)
@@ -574,7 +572,7 @@ pub(crate) fn section(
                 .h(px(32.))
                 .flex_shrink_0()
                 .px(px(SP_3))
-                .gap(px(SP_1 + 2.))
+                .gap(px(SP_1_5))
                 .cursor_pointer()
                 .group("section-header")
                 .child(

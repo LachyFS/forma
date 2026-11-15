@@ -77,19 +77,15 @@ fn selection_summary(s: &Studio) -> Option<String> {
             EditMode::Edge => "edge",
             _ => "face",
         };
-        return Some(if count == 0 {
-            format!("No {kind} selected")
-        } else {
-            format!(
-                "{count} {}{} selected",
-                kind,
-                match (count, s.edit_mode) {
-                    (1, _) => "",
-                    (_, EditMode::Vertex) => "ices",
-                    _ => "s",
-                }
-            )
-            .replace("vertexices", "vertices")
+        let plural = match s.edit_mode {
+            EditMode::Vertex => "vertices",
+            EditMode::Edge => "edges",
+            _ => "faces",
+        };
+        return Some(match count {
+            0 => format!("No {kind} selected"),
+            1 => format!("1 {kind} selected"),
+            _ => format!("{count} {plural} selected"),
         });
     }
     let objects = s.selected_ids().len();
@@ -100,6 +96,15 @@ fn selection_summary(s: &Studio) -> Option<String> {
             .map(|object| format!("{} faces", object.mesh.faces.len())),
         count => Some(format!("{count} objects selected")),
     }
+}
+
+/// Approximate drawn width of a hint pair, for whole-pair truncation.
+fn hint_width(keys: &str, label: &str) -> f32 {
+    let caps: f32 = keys
+        .split_whitespace()
+        .map(|key| 10. + key.chars().count() as f32 * 6.5)
+        .sum();
+    caps + label.chars().count() as f32 * 6. + 18.
 }
 
 fn segment_text(t: Colors, text: impl Into<SharedString>) -> Div {
@@ -126,7 +131,16 @@ pub(super) fn statusbar(
     } else {
         t.success
     };
-    let hints = input_hints(s);
+    // Keep whole hint pairs that fit beside the right-hand readouts.
+    let width = f32::from(window.viewport_size().width);
+    let mut budget = width - if wide { 760. } else { 600. };
+    let hints: Vec<_> = input_hints(s)
+        .into_iter()
+        .take_while(|(keys, label)| {
+            budget -= hint_width(keys, label);
+            budget >= 0.
+        })
+        .collect();
     let update = match &s.updates.state {
         State::Ready(_) => Some(("Restart to update", BadgeTone::Accent)),
         State::Downloading(_) => Some(("Downloading update…", BadgeTone::Neutral)),
@@ -154,12 +168,15 @@ pub(super) fn statusbar(
                 .overflow_hidden()
                 .children(hints.into_iter().map(|(keys, label)| hint(t, keys, label))),
         )
+        .when(s.render_error.is_some(), |d| {
+            d.child(badge(t, "Renderer error", BadgeTone::Danger))
+        })
         .child(
             row()
                 .id("status-message")
                 .max_w(px(if wide { 420. } else { 260. }))
                 .min_w(px(0.))
-                .gap(px(SP_1 + 2.))
+                .gap(px(SP_1_5))
                 .child(dot(health, 6.))
                 .child(
                     div()
@@ -183,7 +200,7 @@ pub(super) fn statusbar(
         .when(rendered, |d| {
             d.child(
                 row()
-                    .gap(px(SP_1 + 2.))
+                    .gap(px(SP_1_5))
                     .flex_shrink_0()
                     .child(
                         div()

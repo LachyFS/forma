@@ -90,14 +90,14 @@ pub(super) fn overlay(t: Colors, s: &Studio, cx: &mut Context<Studio>) -> AnyEle
         .id("theme-list")
         .min_h(px(0.))
         .overflow_y_scroll()
-        .p(px(SP_1 + 2.))
+        .p(px(SP_1_5))
         .gap(px(2.))
         .when(themes.is_empty(), |d| {
             d.child(
                 col()
                     .items_center()
                     .py(px(SP_6))
-                    .gap(px(SP_1 + 2.))
+                    .gap(px(SP_1_5))
                     .child(icon(Icon::Theme, ICON_LG, t.text_faint))
                     .child(div().text_color(rgb(t.text)).child("No matching themes"))
                     .child(caption(t, "Try light, dark, pink or green")),

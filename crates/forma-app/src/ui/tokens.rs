@@ -6,8 +6,7 @@ use std::{sync::LazyLock, time::Duration};
 
 use crate::theme::Colors;
 
-/// 4-pixel spacing scale. `SP_0_5` is the hairline gap inside dense groups.
-pub(crate) const SP_0_5: f32 = 2.;
+/// 4-pixel spacing scale; `SP_1_5` is the gap between an icon and its label.
 pub(crate) const SP_1: f32 = 4.;
 pub(crate) const SP_1_5: f32 = 6.;
 pub(crate) const SP_2: f32 = 8.;

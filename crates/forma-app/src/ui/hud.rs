@@ -24,7 +24,7 @@ fn tool_palette(t: Colors, s: &Studio, cx: &mut Context<Studio>) -> Div {
         .is_some_and(|menu| menu.kind == MenuKind::Add);
     let separator = || {
         div()
-            .mx(px(SP_1 + 2.))
+            .mx(px(SP_1_5))
             .my(px(3.))
             .h(px(1.))
             .bg(rgba(t.hud_border))
@@ -269,7 +269,7 @@ fn view_controls(t: Colors, s: &Studio, cx: &mut Context<Studio>) -> Div {
                 ))
         });
     row()
-        .gap(px(SP_1 + 2.))
+        .gap(px(SP_1_5))
         .child(views)
         .child(display)
         .child(shading)
@@ -302,7 +302,7 @@ fn operation_hud(t: Colors, s: &Studio) -> Option<Div> {
             .child(
                 row()
                     .h(px(H_MD))
-                    .px(px(SP_1 + 2.))
+                    .px(px(SP_1_5))
                     .gap(px(SP_2))
                     .child(icon(glyph, ICON_MD, t.accent_text))
                     .child(
@@ -344,9 +344,9 @@ fn operation_hud(t: Colors, s: &Studio) -> Option<Div> {
             .when_some(drag.error.clone(), |d: Div, error: String| {
                 d.child(
                     row()
-                        .px(px(SP_1 + 2.))
+                        .px(px(SP_1_5))
                         .pb(px(SP_1))
-                        .gap(px(SP_1 + 2.))
+                        .gap(px(SP_1_5))
                         .text_size(px(TEXT_SM))
                         .text_color(rgb(t.danger))
                         .child(icon(Icon::Error, ICON_SM, t.danger))
@@ -368,10 +368,10 @@ fn measurements_card(t: Colors, s: &Studio) -> Option<Div> {
         .min_w(px(176.))
         .px(px(SP_3))
         .py(px(SP_2 + 2.))
-        .gap(px(SP_1 + 2.))
+        .gap(px(SP_1_5))
         .child(
             row()
-                .gap(px(SP_1 + 2.))
+                .gap(px(SP_1_5))
                 .child(icon(Icon::Measure, ICON_SM, t.text_muted))
                 .child(
                     div()

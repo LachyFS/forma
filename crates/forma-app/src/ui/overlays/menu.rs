@@ -119,12 +119,8 @@ pub(super) fn overlay(t: Colors, s: &Studio, cx: &mut Context<Studio>) -> AnyEle
             point(anchor.right() + px(SP_2 + 2.), anchor.top() - px(SP_1)),
             Corner::TopLeft,
         ),
-        Anchor::EmptyState => (
-            point(anchor.left(), anchor.bottom() + px(SP_1 + 2.)),
-            Corner::TopLeft,
-        ),
         Anchor::Outliner | Anchor::ViewHud => (
-            point(anchor.right(), anchor.bottom() + px(SP_1 + 2.)),
+            point(anchor.right(), anchor.bottom() + px(SP_1_5)),
             Corner::TopRight,
         ),
     };
@@ -211,7 +207,9 @@ pub(super) fn overlay(t: Colors, s: &Studio, cx: &mut Context<Studio>) -> AnyEle
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{MenuKind, first_item, items, step};
+    use crate::app::Command;
+    use forma_core::Primitive;
 
     #[test]
     fn keyboard_steps_skip_headings_and_wrap() {

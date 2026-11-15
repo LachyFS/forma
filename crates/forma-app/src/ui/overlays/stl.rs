@@ -56,7 +56,7 @@ pub(super) fn overlay(t: Colors, studio: &Studio, cx: &mut Context<Studio>) -> A
         .mesh_instances()
         .filter(|mesh| studio.scene.is_effectively_visible(mesh.id))
         .count();
-    let units = div().grid().grid_cols(2).gap(px(SP_1 + 2.)).children(
+    let units = div().grid().grid_cols(2).gap(px(SP_1_5)).children(
         StlUnit::ALL
             .iter()
             .copied()
@@ -79,7 +79,7 @@ pub(super) fn overlay(t: Colors, studio: &Studio, cx: &mut Context<Studio>) -> A
             }),
     );
     let plural = |count: usize| if count == 1 { "object" } else { "objects" };
-    let scopes = col().gap(px(SP_1 + 2.)).children(
+    let scopes = col().gap(px(SP_1_5)).children(
         [
             (
                 true,

@@ -107,7 +107,7 @@ pub(super) fn overlay(t: Colors, cx: &mut Context<Studio>) -> AnyElement {
                 col()
                     .child(
                         div()
-                            .pb(px(SP_1 + 2.))
+                            .pb(px(SP_1_5))
                             .text_size(px(TEXT_SM))
                             .font_weight(WEIGHT_SEMIBOLD)
                             .text_color(rgb(t.accent_text))

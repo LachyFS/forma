@@ -230,7 +230,7 @@ fn transform(t: Colors, s: &Studio, stacked: bool, cx: &mut Context<Studio>) -> 
                     command_button(t, id, label, None, command, Tone::Secondary, cx)
                         .flex_1()
                         .min_w(px(0.))
-                        .px(px(SP_1 + 2.))
+                        .px(px(SP_1_5))
                 })),
         ))
         .child(property_row(
@@ -250,7 +250,7 @@ fn transform(t: Colors, s: &Studio, stacked: bool, cx: &mut Context<Studio>) -> 
         ))
         .child(
             div()
-                .pt(px(SP_1 + 2.))
+                .pt(px(SP_1_5))
                 .text_size(px(TEXT_SM))
                 .text_color(rgb(t.text_faint))
                 .child("Type exact values: 25mm · 1/8in · (2+3)*10cm"),
@@ -265,7 +265,7 @@ fn surface(
 ) -> Div {
     let base = material.base_color;
     let presets = row()
-        .gap(px(SP_1 + 2.))
+        .gap(px(SP_1_5))
         .children(
             PRESETS
                 .into_iter()
@@ -364,7 +364,7 @@ fn surface(
                     row()
                         .w(px(LABEL_W))
                         .flex_shrink_0()
-                        .gap(px(SP_1 + 2.))
+                        .gap(px(SP_1_5))
                         .text_color(rgb(t.text_muted))
                         .child("Color")
                         .child(
@@ -454,7 +454,7 @@ fn textures(
                     .min_w(px(0.))
                     .h(px(H_SM))
                     .px(px(SP_2))
-                    .gap(px(SP_1 + 2.))
+                    .gap(px(SP_1_5))
                     .rounded(px(R_SM))
                     .bg(rgb(t.field))
                     .cursor_pointer()
@@ -616,7 +616,7 @@ fn geometry(t: Colors, object: &forma_core::MeshInstance, cx: &mut Context<Studi
         col()
             .flex_1()
             .px(px(SP_2 + 2.))
-            .py(px(SP_1 + 2.))
+            .py(px(SP_1_5))
             .gap(px(1.))
             .rounded(px(R_SM))
             .bg(rgb(t.field))
@@ -840,11 +840,15 @@ fn denoise(t: Colors, s: &Studio, cx: &mut Context<Studio>) -> Div {
         .child(
             row()
                 .pt(px(SP_1))
-                .gap(px(SP_1 + 2.))
+                .gap(px(SP_1_5))
                 .child(dot(tone, 6.))
-                .child(caption(t, status).text_color(rgb(tone)))
-                .child(spacer())
-                .child(caption(t, "Open Image Denoise").text_color(rgb(t.text_faint))),
+                .child(
+                    caption(t, status)
+                        .flex_shrink()
+                        .min_w(px(0.))
+                        .truncate()
+                        .text_color(rgb(tone)),
+                ),
         )
 }
 
@@ -930,7 +934,7 @@ fn render_page(t: Colors, s: &Studio, cx: &mut Context<Studio>) -> Div {
                 .child(
                     col()
                         .pt(px(SP_2))
-                        .gap(px(SP_1 + 2.))
+                        .gap(px(SP_1_5))
                         .child(
                             row().child(caption(t, "Progress")).child(spacer()).child(
                                 caption(t, format!("{} / {}", s.samples, s.settings.max_samples))
@@ -962,7 +966,7 @@ fn render_page(t: Colors, s: &Studio, cx: &mut Context<Studio>) -> Div {
                     s,
                     PanelSection::Denoise,
                     "AI denoising",
-                    None,
+                    Some("Open Image Denoise".into()),
                     denoise(t, s, cx),
                     cx,
                 ));
@@ -979,7 +983,7 @@ fn render_page(t: Colors, s: &Studio, cx: &mut Context<Studio>) -> Div {
                             .min_w(px(0.))
                             .h(px(H_SM))
                             .px(px(SP_2))
-                            .gap(px(SP_1 + 2.))
+                            .gap(px(SP_1_5))
                             .rounded(px(R_SM))
                             .bg(rgb(if s.preview_open {
                                 t.accent_soft

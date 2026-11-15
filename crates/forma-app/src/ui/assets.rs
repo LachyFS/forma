@@ -4,7 +4,7 @@
 //! Icons are Lucide (ISC, `assets/icons/LICENSE-lucide.txt`) plus `forma-*`
 //! icons drawn on the same 24-unit grid and stroke. Inter is licensed under
 //! the SIL Open Font License 1.1 (`assets/fonts/LICENSE-Inter.txt`).
-use gpui::{App, AssetSource, IntoElement, Result, SharedString, Styled, Svg, px, rgb, svg};
+use gpui::{App, AssetSource, Result, SharedString, Styled, Svg, px, rgb, svg};
 use std::borrow::Cow;
 
 macro_rules! icons {
@@ -139,11 +139,6 @@ pub(crate) fn icon(icon: Icon, size: f32, color: u32) -> Svg {
         .size(px(size))
         .flex_shrink_0()
         .text_color(rgb(color))
-}
-
-/// Same as [`icon`], as a type-erased child.
-pub(crate) fn icon_any(kind: Icon, size: f32, color: u32) -> gpui::AnyElement {
-    icon(kind, size, color).into_any_element()
 }
 
 pub(crate) struct Assets;

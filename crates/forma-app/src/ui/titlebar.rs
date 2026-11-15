@@ -202,7 +202,7 @@ pub(super) fn titlebar(
                     row()
                         .id("document-title")
                         .min_w(px(0.))
-                        .gap(px(SP_1 + 2.))
+                        .gap(px(SP_1_5))
                         .child(
                             div()
                                 .min_w(px(0.))

@@ -26,7 +26,7 @@ pub(super) fn overlay(
     let top = (f32::from(window.viewport_size().height) * 0.12).clamp(56., 140.);
     let exports = s.palette_exports_only;
 
-    let mut list = col().p(px(SP_1 + 2.)).gap(px(1.));
+    let mut list = col().p(px(SP_1_5)).gap(px(1.));
     let mut previous_group = None;
     for (index, (label, shortcut, command)) in commands
         .iter()
@@ -89,7 +89,7 @@ pub(super) fn overlay(
             col()
                 .items_center()
                 .py(px(SP_6))
-                .gap(px(SP_1 + 2.))
+                .gap(px(SP_1_5))
                 .child(icon(Icon::Search, ICON_LG, t.text_faint))
                 .child(div().text_color(rgb(t.text)).child(if exports {
                     "No matching export formats"

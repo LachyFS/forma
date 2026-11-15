@@ -136,9 +136,8 @@ pub(crate) enum Anchor {
     ToolRail,
     Outliner,
     ViewHud,
-    EmptyState,
 }
-const ANCHOR_COUNT: usize = 4;
+const ANCHOR_COUNT: usize = 3;
 
 pub(crate) struct OpenMenu {
     pub kind: MenuKind,
@@ -491,7 +490,11 @@ mod field_scroll_tests {
 
 #[cfg(test)]
 mod panel_tests {
-    use super::*;
+    use super::{
+        Field, INSPECTOR_MIN_HEIGHT, InspectorTab, OUTLINER_MIN_HEIGHT, PanelSection, PanelState,
+        SIDEBAR_MAX_WIDTH, SIDEBAR_MIN_WIDTH, VIEWPORT_MIN_WIDTH, scrub_step,
+    };
+    use crate::app::Command;
 
     #[test]
     fn revealing_a_field_opens_its_section_and_page() {
