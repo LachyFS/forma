@@ -2744,6 +2744,12 @@ impl Studio {
                 }
                 "enter" => {
                     if let Some((_, _, command)) = commands.get(self.palette_index) {
+                        if let Some(reason) = self.command_unavailable(*command) {
+                            self.status = reason.into();
+                            cx.notify();
+                            cx.stop_propagation();
+                            return;
+                        }
                         self.palette_open = false;
                         self.panels.remember_command(*command);
                         self.execute(*command, window, cx);
@@ -3109,6 +3115,16 @@ pub(crate) fn palette_commands(query: &str) -> Vec<(&'static str, &'static str, 
         ("Export image (PNG)…", "", Command::ExportImage),
         ("Export Wavefront OBJ…", "", Command::ExportObj),
         ("Export STL with units and scope…", "", Command::ExportStl),
+        (
+            "Import STEP as a part…",
+            "",
+            Command::Cad(CadCommand::ImportStep),
+        ),
+        (
+            "Export parts as STEP…",
+            "",
+            Command::Cad(CadCommand::ExportStep),
+        ),
         // Add
         ("Add cube", "", Command::Add(Primitive::Cube)),
         ("Add sphere", "", Command::Add(Primitive::Sphere)),
@@ -3202,8 +3218,6 @@ pub(crate) fn palette_commands(query: &str) -> Vec<(&'static str, &'static str, 
             "D",
             Command::CadTool(crate::cad_tools::ToolCommand::SketchOnFace),
         ),
-        ("Import STEP…", "", Command::Cad(CadCommand::ImportStep)),
-        ("Export STEP…", "", Command::Cad(CadCommand::ExportStep)),
         // Timeline (the selected part's history)
         (
             "Timeline: Edit feature sketch",
@@ -3421,7 +3435,10 @@ impl Studio {
                 !self.palette_exports_only
                     || matches!(
                         command,
-                        Command::ExportObj | Command::ExportStl | Command::ExportImage
+                        Command::ExportObj
+                            | Command::ExportStl
+                            | Command::ExportImage
+                            | Command::Cad(crate::cad::CadCommand::ExportStep)
                     )
             })
             .collect();
@@ -3437,6 +3454,11 @@ impl Studio {
             items = front;
         }
         items
+    }
+
+    /// Why a palette command cannot run now (shown on its row), if so.
+    pub(crate) fn command_unavailable(&self, command: Command) -> Option<&'static str> {
+        crate::exchange::export_unavailable(&self.scene, command)
     }
 
     /// How many leading palette items are recent commands.

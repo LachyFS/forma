@@ -48,6 +48,10 @@ pub(super) fn overlay(
             previous_group = Some(group);
         }
         let active = index == selected;
+        // Unavailable commands stay listed, dimmed, with the reason in place
+        // of their shortcut: a format never silently disappears.
+        let unavailable = s.command_unavailable(command);
+        let enabled = unavailable.is_none();
         list = list.child(
             row()
                 .id(("palette-command", index))
@@ -56,14 +60,30 @@ pub(super) fn overlay(
                 .px(px(SP_2 + 2.))
                 .gap(px(SP_2 + 2.))
                 .rounded(px(R_MD))
-                .cursor_pointer()
-                .bg(if active { hex(t.accent_soft) } else { clear() })
-                .when(!active, |d| d.hover(move |d| d.bg(rgb(t.control_hover))))
+                .when(enabled, |d| d.cursor_pointer())
+                .bg(if active {
+                    hex(if enabled {
+                        t.accent_soft
+                    } else {
+                        t.control_hover
+                    })
+                } else {
+                    clear()
+                })
+                .when(!active && enabled, |d| {
+                    d.hover(move |d| d.bg(rgb(t.control_hover)))
+                })
                 .child(match command_icon(command) {
                     Some(glyph) => icon(
                         glyph,
                         ICON_MD,
-                        if active { t.accent_text } else { t.text_muted },
+                        if !enabled {
+                            t.text_faint
+                        } else if active {
+                            t.accent_text
+                        } else {
+                            t.text_muted
+                        },
                     )
                     .into_any_element(),
                     None => div().w(px(ICON_MD)).into_any_element(),
@@ -73,15 +93,22 @@ pub(super) fn overlay(
                         .flex_1()
                         .min_w(px(0.))
                         .truncate()
-                        .text_color(rgb(t.text))
+                        .text_color(rgb(if enabled { t.text } else { t.text_faint }))
                         .child(label),
                 )
-                .when(!shortcut.is_empty(), |d| d.child(keycaps(t, shortcut)))
-                .on_click(cx.listener(move |s, _, w, cx| {
-                    s.palette_open = false;
-                    s.panels.remember_command(command);
-                    s.execute(command, w, cx);
-                })),
+                .when_some(unavailable, |d, reason| {
+                    d.child(caption(t, reason).text_color(rgb(t.text_faint)))
+                })
+                .when(enabled && !shortcut.is_empty(), |d| {
+                    d.child(keycaps(t, shortcut))
+                })
+                .when(enabled, |d| {
+                    d.on_click(cx.listener(move |s, _, w, cx| {
+                        s.palette_open = false;
+                        s.panels.remember_command(command);
+                        s.execute(command, w, cx);
+                    }))
+                }),
         );
     }
     if commands.is_empty() {

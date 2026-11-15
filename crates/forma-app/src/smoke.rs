@@ -1,5 +1,6 @@
 //! Opt-in runtime regression: exercises the real GPUI window, input dispatch and GPU worker.
 use crate::app::{Command, EditMode, Field, Studio};
+use crate::cad::CadCommand;
 use crate::platform_shortcut;
 use anyhow::{Result, ensure};
 use forma_core::{Primitive, Scene};
@@ -1101,11 +1102,22 @@ async fn check_export_formats(window: WindowHandle<Studio>, cx: &mut AsyncApp) -
         ensure!(
             s.palette_open
                 && s.palette_query.is_empty()
-                && items.len() == 3
-                && [Command::ExportObj, Command::ExportStl, Command::ExportImage]
-                    .iter()
-                    .all(|expected| items.iter().any(|(_, _, command)| command == expected)),
-            "Formats did not show exactly OBJ, STL and image export"
+                && items.len() == 4
+                && [
+                    Command::ExportObj,
+                    Command::ExportStl,
+                    Command::ExportImage,
+                    Command::Cad(CadCommand::ExportStep),
+                ]
+                .iter()
+                .all(|expected| items.iter().any(|(_, _, command)| command == expected)),
+            "Formats did not show exactly OBJ, STL, STEP and image export"
+        );
+        ensure!(
+            items
+                .iter()
+                .all(|(_, _, command)| s.command_unavailable(*command).is_none()),
+            "the startup scene could not export every format"
         );
         cx.notify();
         Ok(())
@@ -1121,7 +1133,60 @@ async fn check_export_formats(window: WindowHandle<Studio>, cx: &mut AsyncApp) -
     })??;
     keys(
         window,
-        &["backspace", "backspace", "backspace", "s", "t", "l"],
+        &["backspace", "backspace", "backspace", "s", "t", "e", "p"],
+        cx,
+    )
+    .await?;
+    // STEP writes parts only: with every part hidden it stays listed, says
+    // why, and Return explains instead of opening a save dialog.
+    let parts = window.update(cx, |s, _, _| -> Result<Vec<u64>> {
+        let items = s.palette_items();
+        ensure!(
+            items.len() == 1 && items[0].2 == Command::Cad(CadCommand::ExportStep),
+            "Formats did not find STEP export by extension"
+        );
+        let parts: Vec<u64> = s
+            .scene
+            .objects
+            .iter()
+            .filter(|object| object.is_part() && object.visible)
+            .map(|object| object.id)
+            .collect();
+        ensure!(!parts.is_empty(), "the startup scene has no visible part");
+        for id in &parts {
+            s.scene.object_mut(*id).unwrap().visible = false;
+        }
+        Ok(parts)
+    })??;
+    keys(window, &["enter"], cx).await?;
+    window.update(cx, |s, _, _| -> Result<()> {
+        let reason = s.command_unavailable(Command::Cad(CadCommand::ExportStep));
+        ensure!(
+            s.palette_open && reason.is_some() && Some(s.status.as_str()) == reason,
+            "unavailable STEP export did not explain itself (status: {})",
+            s.status
+        );
+        for id in &parts {
+            s.scene.object_mut(*id).unwrap().visible = true;
+        }
+        ensure!(
+            s.command_unavailable(Command::Cad(CadCommand::ExportStep))
+                .is_none(),
+            "STEP export stayed unavailable with a visible part"
+        );
+        Ok(())
+    })??;
+    keys(
+        window,
+        &[
+            "backspace",
+            "backspace",
+            "backspace",
+            "backspace",
+            "s",
+            "t",
+            "l",
+        ],
         cx,
     )
     .await?;
@@ -1155,13 +1220,15 @@ async fn check_export_formats(window: WindowHandle<Studio>, cx: &mut AsyncApp) -
             s.palette_open
                 && !s.palette_exports_only
                 && s.palette_query.is_empty()
-                && s.palette_items().len() > 3,
+                && s.palette_items().len() > 4,
             "Commands did not restore the unrestricted palette after Formats"
         );
         Ok(())
     })??;
     keys(window, &["escape"], cx).await?;
-    println!("export_formats=three_formats_scoped_search_keyboard_dispatch_normal_reset_pass");
+    println!(
+        "export_formats=four_formats_scoped_search_step_unavailable_reason_keyboard_dispatch_normal_reset_pass"
+    );
     Ok(())
 }
 

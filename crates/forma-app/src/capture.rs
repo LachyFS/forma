@@ -197,6 +197,33 @@ pub(crate) fn scenarios() -> Vec<Scenario> {
             leave: |s, w, cx| s.execute(Command::TogglePalette, w, cx),
         },
         Scenario {
+            name: "export-unavailable",
+            enter: |s, w, cx| {
+                stash_scene(s);
+                let parts: Vec<u64> = s
+                    .scene
+                    .objects
+                    .iter()
+                    .filter(|object| object.is_part())
+                    .map(|object| object.id)
+                    .collect();
+                for id in parts {
+                    s.scene.remove(id);
+                }
+                s.scene.purge_orphans();
+                select_named(s, "Torus");
+                s.invalidate(true, cx);
+                s.execute(Command::TogglePalette, w, cx);
+                s.palette_exports_only = true;
+                s.palette_index = 3;
+            },
+            leave: |s, w, cx| {
+                s.execute(Command::TogglePalette, w, cx);
+                restore_scene(s, cx);
+                select_hero(s, cx);
+            },
+        },
+        Scenario {
             name: "help",
             enter: |s, w, cx| s.execute(Command::ToggleHelp, w, cx),
             leave: |s, w, cx| s.execute(Command::ToggleHelp, w, cx),

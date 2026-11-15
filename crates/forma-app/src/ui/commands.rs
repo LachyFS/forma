@@ -525,7 +525,8 @@ pub(crate) fn command_group(command: Command) -> &'static str {
         | Command::ImportStl
         | Command::ExportObj
         | Command::ExportStl
-        | Command::ExportImage => "File",
+        | Command::ExportImage
+        | Command::Cad(CadCommand::ImportStep | CadCommand::ExportStep) => "File",
         Command::Add(_) => "Add",
         Command::Draw(_) => "Draw",
         Command::Cad(_) | Command::CadTool(_) => "Part",

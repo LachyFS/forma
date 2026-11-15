@@ -144,7 +144,7 @@ fn export_controls(
                 .tooltip(tip_detail(
                     t,
                     "Export formats",
-                    "PNG image, Wavefront OBJ or STL",
+                    "PNG image, Wavefront OBJ, STL or STEP",
                     None,
                 ))
                 .on_click(cx.listener(|s, _, window, cx| {
