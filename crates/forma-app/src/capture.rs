@@ -265,6 +265,19 @@ pub(crate) fn scenarios() -> Vec<Scenario> {
             leave: restore_size,
         },
         Scenario {
+            name: "narrow-wide-sidebar",
+            enter: |s, w, cx| {
+                resize(w, 1000., 650.);
+                s.panels.set_sidebar_width(560.);
+                s.execute(Command::SetEditMode(EditMode::Edge), w, cx);
+            },
+            leave: |s, w, cx| {
+                s.execute(Command::SetEditMode(EditMode::Object), w, cx);
+                s.panels.set_sidebar_width(crate::ui::SIDEBAR_DEFAULT_WIDTH);
+                restore_size(s, w, cx);
+            },
+        },
+        Scenario {
             name: "narrow-edit",
             enter: |s, w, cx| {
                 resize(w, 1000., 650.);

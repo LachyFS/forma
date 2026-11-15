@@ -36,9 +36,10 @@ pub(crate) enum PanelSection {
     Textures,
     Denoise,
     Lighting,
+    Display,
 }
 
-const SECTION_COUNT: usize = 7;
+const SECTION_COUNT: usize = 8;
 
 impl PanelSection {
     fn contains_field(self, field: Field) -> bool {
@@ -65,7 +66,7 @@ impl PanelSection {
             Self::Transform | Self::Surface | Self::Geometry | Self::Textures => {
                 InspectorTab::Object
             }
-            Self::Render | Self::Denoise | Self::Lighting => InspectorTab::Render,
+            Self::Render | Self::Denoise | Self::Lighting | Self::Display => InspectorTab::Render,
         }
     }
 
@@ -176,6 +177,7 @@ impl Default for PanelState {
             PanelSection::Render,
             PanelSection::Denoise,
             PanelSection::Lighting,
+            PanelSection::Display,
         ] {
             open[section as usize] = true;
         }
@@ -296,6 +298,11 @@ impl PanelState {
         let maximum =
             (window_width - DIVIDER_WIDTH - VIEWPORT_MIN_WIDTH).clamp(0., SIDEBAR_MAX_WIDTH);
         width.clamp(SIDEBAR_MIN_WIDTH.min(maximum), maximum)
+    }
+
+    /// Set the sidebar width directly (clamped at layout), as a drag would.
+    pub(crate) fn set_sidebar_width(&mut self, width: f32) {
+        self.sidebar_width = width;
     }
 
     pub(crate) fn sidebar_width(&self, window_width: f32) -> f32 {
@@ -977,7 +984,13 @@ pub fn render(
                 .min_h(px(0.))
                 .w_full()
                 .overflow_hidden()
-                .child(hud::viewport_area(t, studio, viewport, cx))
+                .child(hud::viewport_area(
+                    t,
+                    studio,
+                    viewport,
+                    width - sidebar_width - DIVIDER_WIDTH,
+                    cx,
+                ))
                 .child(sidebar_divider(t, studio, cx))
                 .child(
                     col()

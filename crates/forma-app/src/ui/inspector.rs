@@ -1072,7 +1072,33 @@ fn render_page(t: Colors, s: &Studio, cx: &mut Context<Studio>) -> Div {
             );
         }
     }
-    page
+    page.child(section(
+        t,
+        s,
+        PanelSection::Display,
+        "Viewport display",
+        None,
+        col()
+            .child(switch_row(
+                t,
+                "display-grid",
+                "Ground grid",
+                None,
+                s.settings.show_grid,
+                Command::ToggleGrid,
+                cx,
+            ))
+            .child(switch_row(
+                t,
+                "display-measurements",
+                "Measurements",
+                Some("World dimensions and selected edge lengths"),
+                s.show_measurements,
+                Command::ToggleMeasurements,
+                cx,
+            )),
+        cx,
+    ))
 }
 
 pub(super) fn inspector(t: Colors, s: &Studio, width: f32, cx: &mut Context<Studio>) -> Div {

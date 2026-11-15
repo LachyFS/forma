@@ -94,37 +94,63 @@ fn tool_palette(t: Colors, s: &Studio, cx: &mut Context<Studio>) -> Div {
 }
 
 /// Vertex / edge / face filter, shown while editing components.
-fn component_filter(t: Colors, s: &Studio, cx: &mut Context<Studio>) -> Div {
-    hud(t).children(
-        [
-            (EditMode::Vertex, Icon::Vertex, "Vertex"),
-            (EditMode::Edge, Icon::Edge, "Edge"),
-            (EditMode::Face, Icon::Face, "Face"),
-        ]
-        .into_iter()
-        .map(|(mode, glyph, label)| {
-            let active = s.edit_mode == mode;
-            on_command(
-                button_base(
-                    t,
-                    SharedString::from(format!("select-{label}")),
-                    if active { Tone::Selected } else { Tone::Ghost },
-                    H_MD,
+/// How much room the floating clusters have, from the viewport width.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum Density {
+    /// Below 640 px: icon-only filter stacked under the tools, no view label.
+    Tight,
+    /// Below 900 px: icon-only filter beside the tools.
+    Compact,
+    Full,
+}
+
+impl Density {
+    fn for_width(width: f32) -> Self {
+        if width < 640. {
+            Self::Tight
+        } else if width < 900. {
+            Self::Compact
+        } else {
+            Self::Full
+        }
+    }
+}
+
+fn component_filter(t: Colors, s: &Studio, density: Density, cx: &mut Context<Studio>) -> Div {
+    let labels = density == Density::Full;
+    hud(t)
+        .when(density == Density::Tight, |d| d.flex_col())
+        .children(
+            [
+                (EditMode::Vertex, Icon::Vertex, "Vertex"),
+                (EditMode::Edge, Icon::Edge, "Edge"),
+                (EditMode::Face, Icon::Face, "Face"),
+            ]
+            .into_iter()
+            .map(|(mode, glyph, label)| {
+                let active = s.edit_mode == mode;
+                on_command(
+                    button_base(
+                        t,
+                        SharedString::from(format!("select-{label}")),
+                        if active { Tone::Selected } else { Tone::Ghost },
+                        if labels { H_MD } else { TOOL },
+                    )
+                    .when(labels, |d| d.px(px(SP_2)))
+                    .when(!labels, |d| d.w(px(TOOL)))
+                    .font_weight(WEIGHT_MEDIUM)
+                    .child(icon(
+                        glyph,
+                        ICON_MD,
+                        if active { t.accent_text } else { t.text_muted },
+                    ))
+                    .when(labels, |d| d.child(label))
+                    .tooltip(command_tip(t, Command::SetEditMode(mode))),
+                    Command::SetEditMode(mode),
+                    cx,
                 )
-                .px(px(SP_2))
-                .font_weight(WEIGHT_MEDIUM)
-                .child(icon(
-                    glyph,
-                    ICON_MD,
-                    if active { t.accent_text } else { t.text_muted },
-                ))
-                .child(label)
-                .tooltip(command_tip(t, Command::SetEditMode(mode))),
-                Command::SetEditMode(mode),
-                cx,
-            )
-        }),
-    )
+            }),
+        )
 }
 
 /// Short name of the current view for the views menu button.
@@ -142,7 +168,8 @@ pub(crate) fn view_name(camera: forma_core::Camera) -> &'static str {
     }
 }
 
-fn view_controls(t: Colors, s: &Studio, cx: &mut Context<Studio>) -> Div {
+fn view_controls(t: Colors, s: &Studio, width: f32, cx: &mut Context<Studio>) -> Div {
+    let labelled = Density::for_width(width) != Density::Tight;
     let menu_open = s
         .panels
         .menu
@@ -165,12 +192,14 @@ fn view_controls(t: Colors, s: &Studio, cx: &mut Context<Studio>) -> Div {
             .px(px(SP_2))
             .font_weight(WEIGHT_MEDIUM)
             .child(icon(Icon::Views, ICON_MD, t.text_muted))
-            .child(
-                div()
-                    .min_w(px(78.))
-                    .text_color(rgb(t.text))
-                    .child(view_name(s.scene.camera)),
-            )
+            .when(labelled, |d| {
+                d.child(
+                    div()
+                        .min_w(px(78.))
+                        .text_color(rgb(t.text))
+                        .child(view_name(s.scene.camera)),
+                )
+            })
             .child(icon(Icon::ChevronDown, ICON_SM, t.text_faint))
             .child(s.panels.anchor_cell(Anchor::ViewHud).element())
             .tooltip(tip_detail(
@@ -271,7 +300,9 @@ fn view_controls(t: Colors, s: &Studio, cx: &mut Context<Studio>) -> Div {
     row()
         .gap(px(SP_1_5))
         .child(views)
-        .child(display)
+        // Framing, grid and measurements stay reachable from the views menu,
+        // shortcuts and the palette when the viewport is very narrow.
+        .when(width >= 540., |d| d.child(display))
         .child(shading)
 }
 
@@ -514,14 +545,16 @@ pub(super) fn viewport_area(
     t: Colors,
     s: &Studio,
     viewport: AnyElement,
+    width: f32,
     cx: &mut Context<Studio>,
 ) -> impl IntoElement {
+    let density = Density::for_width(width);
     let tools = tool_palette(t, s, cx);
     let filter = s
         .edit_mode
         .is_component()
-        .then(|| component_filter(t, s, cx));
-    let views = view_controls(t, s, cx);
+        .then(|| component_filter(t, s, density, cx));
+    let views = view_controls(t, s, width, cx);
     let operation = operation_hud(t, s);
     let dock = slots::viewport_dock(s, t, cx);
     let adjust = slots::adjust_last_operation(s, t, cx);
@@ -541,17 +574,13 @@ pub(super) fn viewport_area(
                 .absolute()
                 .top(px(HUD_INSET))
                 .left(px(HUD_INSET))
-                .child(tools),
+                .flex()
+                .items_start()
+                .gap(px(SP_2))
+                .when(density == Density::Tight, |d| d.flex_col())
+                .child(tools)
+                .children(filter),
         )
-        .when_some(filter, |d, filter| {
-            d.child(
-                div()
-                    .absolute()
-                    .top(px(HUD_INSET))
-                    .left(px(HUD_INSET + TOOL + 8. + SP_2))
-                    .child(filter),
-            )
-        })
         .child(
             div()
                 .absolute()
@@ -621,7 +650,10 @@ fn update_notice(t: Colors, s: &Studio, cx: &mut Context<Studio>) -> Option<Anim
             Icon::Update,
             t.accent_text,
             "Update ready",
-            Some(format!("Forma {version} installs when you restart. Your work is saved first.").into()),
+            Some(
+                format!("Forma {version} installs when you restart. Your work is saved first.")
+                    .into(),
+            ),
         )
         .child(
             col()

@@ -84,6 +84,18 @@ pub(crate) fn items(kind: MenuKind, camera: forma_core::Camera) -> Vec<MenuItem>
     }
 }
 
+fn is_named_view(command: Command) -> bool {
+    matches!(
+        command,
+        Command::ViewFront
+            | Command::ViewBack
+            | Command::ViewRight
+            | Command::ViewLeft
+            | Command::ViewTop
+            | Command::ViewBottom
+    )
+}
+
 pub(crate) fn first_item(kind: MenuKind) -> usize {
     items(kind, forma_core::Camera::default())
         .iter()
@@ -155,13 +167,18 @@ pub(super) fn overlay(t: Colors, s: &Studio, cx: &mut Context<Studio>) -> AnyEle
                         } else {
                             clear()
                         })
-                        .child(match command_icon(command) {
-                            Some(glyph) => {
-                                icon(glyph, ICON_MD, if active { t.text } else { t.text_muted })
-                                    .into_any_element()
-                            }
-                            None => div().w(px(ICON_MD)).into_any_element(),
-                        })
+                        // Named views share one glyph; repeating it adds noise.
+                        .child(
+                            match command_icon(command)
+                                .filter(|_| kind != MenuKind::View || !is_named_view(command))
+                            {
+                                Some(glyph) => {
+                                    icon(glyph, ICON_MD, if active { t.text } else { t.text_muted })
+                                        .into_any_element()
+                                }
+                                None => div().w(px(ICON_MD)).into_any_element(),
+                            },
+                        )
                         .child(div().flex_1().text_color(rgb(t.text)).child(label))
                         .when(checked, |d| {
                             d.child(icon(Icon::Check, ICON_SM, t.accent_text))
