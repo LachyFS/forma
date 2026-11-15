@@ -50,6 +50,38 @@ pub(crate) fn restore_size(s: &mut Studio, w: &mut gpui::Window, cx: &mut gpui::
     s.invalidate(false, cx);
 }
 
+/// Select the named object: component-editing states work on the torus,
+/// because the startup selection is a CAD part.
+pub(crate) fn select_named(s: &mut Studio, name: &str) {
+    let id = s
+        .scene
+        .objects
+        .iter()
+        .find(|object| object.name == name)
+        .map(|object| object.id);
+    s.select_objects(id.into_iter().collect(), id);
+}
+/// Restore the startup selection (the scene's hero part).
+pub(crate) fn select_hero(s: &mut Studio, cx: &mut gpui::Context<Studio>) {
+    let id = crate::startup::hero(&s.scene);
+    s.select_objects(id.into_iter().collect(), id);
+    s.invalidate(false, cx);
+}
+/// Edit `mode` on the torus.
+fn edit_torus(
+    s: &mut Studio,
+    w: &mut gpui::Window,
+    cx: &mut gpui::Context<Studio>,
+    mode: EditMode,
+) {
+    select_named(s, "Torus");
+    s.execute(Command::SetEditMode(mode), w, cx);
+}
+fn leave_edit(s: &mut Studio, w: &mut gpui::Window, cx: &mut gpui::Context<Studio>) {
+    s.execute(Command::SetEditMode(EditMode::Object), w, cx);
+    select_hero(s, cx);
+}
+
 thread_local! {
     /// Scenes replaced by a scenario, restored when it leaves.
     static SAVED_SCENE: std::cell::RefCell<Option<forma_core::Scene>> = const {
@@ -91,8 +123,7 @@ pub(crate) fn parts(
 }
 pub(crate) fn leave_parts(s: &mut Studio, w: &mut gpui::Window, cx: &mut gpui::Context<Studio>) {
     restore_scene(s, cx);
-    let first = s.scene.objects.first().map(|object| object.id);
-    s.select_objects(first.into_iter().collect(), first);
+    select_hero(s, cx);
     s.execute(Command::SetMode(RenderMode::MaterialPreview), w, cx);
 }
 
@@ -193,10 +224,10 @@ pub(crate) fn scenarios() -> Vec<Scenario> {
         Scenario {
             name: "edit-mode",
             enter: |s, w, cx| {
-                s.execute(Command::SetEditMode(EditMode::Face), w, cx);
+                edit_torus(s, w, cx, EditMode::Face);
                 s.execute(Command::SelectAll, w, cx);
             },
-            leave: |s, w, cx| s.execute(Command::SetEditMode(EditMode::Object), w, cx),
+            leave: leave_edit,
         },
         Scenario {
             name: "transform",
@@ -258,16 +289,22 @@ pub(crate) fn scenarios() -> Vec<Scenario> {
             },
         },
         Scenario {
+            name: "solid-mode",
+            enter: |s, w, cx| s.execute(Command::SetMode(RenderMode::Solid), w, cx),
+            leave: |s, w, cx| s.execute(Command::SetMode(RenderMode::MaterialPreview), w, cx),
+        },
+        Scenario {
+            name: "wireframe-mode",
+            enter: |s, w, cx| s.execute(Command::SetMode(RenderMode::Wireframe), w, cx),
+            leave: |s, w, cx| s.execute(Command::SetMode(RenderMode::MaterialPreview), w, cx),
+        },
+        Scenario {
             name: "no-selection",
             enter: |s, _, cx| {
                 s.select_objects(Default::default(), None);
                 s.invalidate(false, cx);
             },
-            leave: |s, w, cx| {
-                if let Some(id) = s.scene.objects.first().map(|object| object.id) {
-                    s.execute(Command::Select(id), w, cx);
-                }
-            },
+            leave: |s, _, cx| select_hero(s, cx),
         },
         Scenario {
             name: "empty-scene",
@@ -280,11 +317,9 @@ pub(crate) fn scenarios() -> Vec<Scenario> {
                 }
                 s.invalidate(true, cx);
             },
-            leave: |s, w, cx| {
+            leave: |s, _, cx| {
                 restore_scene(s, cx);
-                if let Some(id) = s.scene.objects.first().map(|object| object.id) {
-                    s.execute(Command::Select(id), w, cx);
-                }
+                select_hero(s, cx);
             },
         },
         Scenario {
@@ -337,10 +372,10 @@ pub(crate) fn scenarios() -> Vec<Scenario> {
             enter: |s, w, cx| {
                 resize(w, 1000., 650.);
                 s.panels.set_sidebar_width(560.);
-                s.execute(Command::SetEditMode(EditMode::Edge), w, cx);
+                edit_torus(s, w, cx, EditMode::Edge);
             },
             leave: |s, w, cx| {
-                s.execute(Command::SetEditMode(EditMode::Object), w, cx);
+                leave_edit(s, w, cx);
                 s.panels.set_sidebar_width(crate::ui::SIDEBAR_DEFAULT_WIDTH);
                 restore_size(s, w, cx);
             },
@@ -349,10 +384,10 @@ pub(crate) fn scenarios() -> Vec<Scenario> {
             name: "narrow-edit",
             enter: |s, w, cx| {
                 resize(w, 1000., 650.);
-                s.execute(Command::SetEditMode(EditMode::Vertex), w, cx);
+                edit_torus(s, w, cx, EditMode::Vertex);
             },
             leave: |s, w, cx| {
-                s.execute(Command::SetEditMode(EditMode::Object), w, cx);
+                leave_edit(s, w, cx);
                 restore_size(s, w, cx);
             },
         },
@@ -394,12 +429,12 @@ pub(crate) fn scenarios() -> Vec<Scenario> {
             name: "theme-matcha-edit",
             enter: |s, w, cx| {
                 theme(s, Theme::Matcha, cx);
-                s.execute(Command::SetEditMode(EditMode::Edge), w, cx);
+                edit_torus(s, w, cx, EditMode::Edge);
                 s.execute(Command::ToggleMeasurements, w, cx);
             },
             leave: |s, w, cx| {
                 s.execute(Command::ToggleMeasurements, w, cx);
-                s.execute(Command::SetEditMode(EditMode::Object), w, cx);
+                leave_edit(s, w, cx);
                 theme(s, Theme::Forma, cx);
             },
         },

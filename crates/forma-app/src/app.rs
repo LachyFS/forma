@@ -21,6 +21,10 @@ use std::{
     sync::Arc,
 };
 
+/// Longest the first frame waits for the startup scene's part, so a slow or
+/// failed CAD worker never keeps the viewport blank.
+const STARTUP_HOLD: std::time::Duration = std::time::Duration::from_millis(1500);
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Tool {
     Select,
@@ -278,6 +282,9 @@ pub struct Studio {
     preview_load_id: u64,
     pub(crate) cad: crate::cad::CadState,
     pub(crate) cad_tool: crate::cad_tools::CadToolState,
+    /// Set at launch while the startup scene's part regenerates: the first
+    /// presented frame waits for it (briefly) so the scene appears complete.
+    startup_hold: Option<std::time::Instant>,
 }
 
 impl Studio {
@@ -303,8 +310,8 @@ impl Studio {
         };
         let focus = cx.focus_handle();
         window.focus(&focus);
-        let scene = Scene::default();
-        let selected = scene.objects.first().map(|o| o.id);
+        let scene = crate::startup::studio_scene();
+        let selected = crate::startup::hero(&scene);
         let (worker, notifications) = RenderWorker::new(backend);
         cx.on_release(|studio, cx| {
             if let Some(image) = studio.frame_image.take() {
@@ -493,7 +500,19 @@ impl Studio {
             preview_load_id: 0,
             cad: crate::cad::CadState::new(cx),
             cad_tool: Default::default(),
+            startup_hold: Some(std::time::Instant::now()),
         };
+        // The startup part has no tessellation yet; regenerate it now.
+        studio.sync_parts();
+        cx.spawn(async move |this, cx| {
+            Timer::after(STARTUP_HOLD).await;
+            let _ = this.update(cx, |s, cx| {
+                if s.startup_hold.take().is_some() {
+                    s.invalidate(false, cx);
+                }
+            });
+        })
+        .detach();
         studio.invalidate(false, cx);
         studio
     }
@@ -776,6 +795,15 @@ impl Studio {
     }
 
     fn submit_render(&mut self) {
+        if let Some(since) = self.startup_hold {
+            if self.cad_idle() || since.elapsed() >= STARTUP_HOLD {
+                self.startup_hold = None;
+            } else {
+                // Regeneration finishing (or the hold timing out) renders.
+                self.needs_render = false;
+                return;
+            }
+        }
         if self.needs_snapshot {
             self.scene_snapshot = Arc::new(self.scene.clone());
             self.needs_snapshot = false;
@@ -1594,10 +1622,10 @@ impl Studio {
         self.preview_load_id += 1;
         self.preview_loading = false;
         self.project_epoch += 1;
-        self.scene = Scene::default();
+        self.scene = crate::startup::studio_scene();
         self.history = History::default();
         self.restore_render_preferences();
-        self.selected = self.scene.objects.first().map(|o| o.id);
+        self.selected = crate::startup::hero(&self.scene);
         self.objects_selected.clear();
         self.clear_components();
         self.path = None;

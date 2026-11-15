@@ -1165,9 +1165,72 @@ async fn check_export_formats(window: WindowHandle<Studio>, cx: &mut AsyncApp) -
     Ok(())
 }
 
+/// The startup scene mixes meshes with a parametric part, which is selected
+/// so its timeline shows on first launch, and regenerates without issues.
+async fn check_startup_scene(window: WindowHandle<Studio>, cx: &mut AsyncApp) -> Result<()> {
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while !window.update(cx, |s, _, _| s.cad_idle())? {
+        ensure!(
+            Instant::now() < deadline,
+            "the startup part did not regenerate within 20 seconds"
+        );
+        Timer::after(Duration::from_millis(30)).await;
+    }
+    window.update(cx, |s, _, _| -> Result<()> {
+        let selected = s.selected.and_then(|id| s.scene.object(id));
+        ensure!(
+            selected
+                .is_some_and(|object| object.is_part() && object.name == crate::startup::HERO_PART),
+            "the startup scene did not select its part"
+        );
+        let (object, part) = s
+            .timeline_part()
+            .ok_or_else(|| anyhow::anyhow!("the startup part's timeline is not shown"))?;
+        ensure!(
+            part.features.len() >= 5
+                && part
+                    .features
+                    .iter()
+                    .filter(|feature| crate::timeline::feature_sketch(feature).is_some())
+                    .count()
+                    >= 4,
+            "the startup part has no sketch-based history"
+        );
+        ensure!(
+            part.is_evaluated() && part.issues().is_empty(),
+            "the startup part regenerated with issues: {:?}",
+            part.issues()
+        );
+        ensure!(
+            s.scene
+                .object_mesh(object)
+                .is_some_and(|mesh| !mesh.faces.is_empty()),
+            "the startup part has no tessellation"
+        );
+        ensure!(
+            s.scene
+                .objects
+                .iter()
+                .filter(|object| object.data.is_editable_mesh())
+                .count()
+                >= 3,
+            "the startup scene lost its mesh objects"
+        );
+        ensure!(
+            s.status == "Ready" && !s.dirty && !s.history.can_undo(),
+            "the startup scene is not a clean document (status: {})",
+            s.status
+        );
+        Ok(())
+    })??;
+    println!("startup_scene=hybrid_meshes_part_selected_timeline_regenerated_clean PASS");
+    Ok(())
+}
+
 async fn run(window: WindowHandle<Studio>, output: PathBuf, cx: &mut AsyncApp) -> Result<()> {
     std::fs::create_dir_all(&output)?;
     settle(window, cx).await?;
+    check_startup_scene(window, cx).await?;
     let device = window.update(cx, |s, _, _| s.device_name.clone())?;
     println!("renderer={device}");
     Timer::after(Duration::from_secs(1)).await;
