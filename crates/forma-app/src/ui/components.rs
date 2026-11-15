@@ -909,8 +909,44 @@ pub(crate) fn numeric_row(
         )
 }
 
-/// A disabled value that explains why it cannot be edited.
+/// A read-only fact (a count, a derived value): label and plain value with
+/// no well, so it never reads as an input. Hover explains where it comes from.
 pub(crate) fn readonly_row(
+    t: Colors,
+    label: &'static str,
+    unit: &'static str,
+    value: String,
+    reason: &'static str,
+) -> Stateful<Div> {
+    row()
+        .id(label)
+        .min_h(px(ROW_H))
+        .gap(px(SP_2))
+        .tooltip(tip(t, reason, None))
+        .child(
+            div()
+                .w(px(LABEL_W))
+                .flex_shrink_0()
+                .text_color(rgb(t.text_muted))
+                .child(unit_label(t, label, unit)),
+        )
+        .child(
+            div()
+                .flex_1()
+                .min_w(px(0.))
+                .px(px(SP_2))
+                .text_right()
+                .truncate()
+                .tabular()
+                .text_color(rgb(t.text))
+                .child(value),
+        )
+}
+
+/// An input that is temporarily unavailable: the field's shape, dimmed,
+/// with the reason on hover. For values that are never editable, use
+/// [`readonly_row`] or [`stat_tiles`].
+pub(crate) fn disabled_field_row(
     t: Colors,
     label: &'static str,
     unit: &'static str,
@@ -943,6 +979,32 @@ pub(crate) fn readonly_row(
                 .tabular()
                 .child(value),
         )
+}
+
+/// One summary statistic: a small caption over its value, in an inset tile.
+/// Tiles never look like fields, so derived data never invites editing.
+pub(crate) fn stat_tile(t: Colors, label: &'static str, value: impl Into<SharedString>) -> Div {
+    col()
+        .flex_1()
+        .min_w(px(0.))
+        .px(px(SP_2 + 2.))
+        .py(px(SP_1_5))
+        .gap(px(1.))
+        .rounded(px(R_SM))
+        .bg(rgb(t.raised))
+        .child(caption(t, label).text_size(px(TEXT_XS)).truncate())
+        .child(
+            div()
+                .tabular()
+                .font_weight(WEIGHT_MEDIUM)
+                .truncate()
+                .child(value.into()),
+        )
+}
+
+/// A row of [`stat_tile`]s sharing the width equally.
+pub(crate) fn stat_tiles(tiles: impl IntoIterator<Item = Div>) -> Div {
+    row().gap(px(SP_1)).children(tiles)
 }
 
 // ---------------------------------------------------------------------------

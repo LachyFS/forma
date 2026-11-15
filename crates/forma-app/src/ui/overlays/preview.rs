@@ -102,7 +102,7 @@ fn field_row(
     if enabled {
         numeric_row(t, s, id, label, unit, field, cx).into_any_element()
     } else {
-        readonly_row(
+        disabled_field_row(
             t,
             label,
             unit,

@@ -604,22 +604,6 @@ fn geometry(
     object: &forma_core::MeshInstance,
     cx: &mut Context<Studio>,
 ) -> Div {
-    let stat = |label: &'static str, value: usize| {
-        col()
-            .flex_1()
-            .px(px(SP_2 + 2.))
-            .py(px(SP_1_5))
-            .gap(px(1.))
-            .rounded(px(R_SM))
-            .bg(rgb(t.field))
-            .child(caption(t, label).text_size(px(TEXT_XS)))
-            .child(
-                div()
-                    .tabular()
-                    .font_weight(WEIGHT_MEDIUM)
-                    .child(value.to_string()),
-            )
-    };
     let operations = [
         ("extrude", "Extrude", Icon::Extrude, Command::Extrude),
         ("inset", "Inset", Icon::Inset, Command::Inset),
@@ -651,12 +635,10 @@ fn geometry(
     ];
     col()
         .gap(px(SP_2))
-        .child(
-            row()
-                .gap(px(SP_1))
-                .child(stat("Vertices", object.mesh.positions.len()))
-                .child(stat("Faces", object.mesh.faces.len())),
-        )
+        .child(stat_tiles([
+            stat_tile(t, "Vertices", object.mesh.positions.len().to_string()),
+            stat_tile(t, "Faces", object.mesh.faces.len().to_string()),
+        ]))
         .child(
             div()
                 .grid()
