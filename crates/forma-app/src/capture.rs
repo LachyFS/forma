@@ -96,6 +96,34 @@ fn leave_parts(s: &mut Studio, w: &mut gpui::Window, cx: &mut gpui::Context<Stud
     s.execute(Command::SetMode(RenderMode::MaterialPreview), w, cx);
 }
 
+/// Modelling-tool states (see `cad_tools::demo`).
+fn tool_scenarios() -> Vec<Scenario> {
+    use crate::cad_tools::demo;
+    let scenario = |name, enter| Scenario {
+        name,
+        enter,
+        leave: demo::restore,
+    };
+    vec![
+        scenario("tools-region-hover", demo::region_hover),
+        scenario("tools-extrude-new", demo::extrude_new),
+        scenario("tools-extrude-join", demo::extrude_join),
+        scenario("tools-extrude-cut", demo::extrude_cut),
+        scenario("tools-revolve", demo::revolve),
+        scenario("tools-push-pull-part", demo::push_pull_part),
+        scenario("tools-push-pull-mesh", demo::push_pull_mesh),
+        scenario("tools-part-edit-faces", demo::part_edit_faces),
+        scenario("tools-part-edit-edges", demo::part_edit_edges),
+        scenario("tools-chamfer", demo::chamfer),
+        scenario("tools-adjust", demo::adjust),
+        Scenario {
+            name: "tools-light-theme",
+            enter: demo::extrude_light,
+            leave: demo::restore_theme,
+        },
+    ]
+}
+
 /// Workspace states captured by `--ui-capture`. Add a scenario here whenever a
 /// new panel, overlay or mode lands so its appearance can be reviewed.
 pub(crate) fn scenarios() -> Vec<Scenario> {
@@ -454,6 +482,9 @@ pub(crate) fn scenarios() -> Vec<Scenario> {
             leave: leave_parts,
         },
     ]
+    .into_iter()
+    .chain(tool_scenarios())
+    .collect()
 }
 
 pub fn start(window: WindowHandle<Studio>, output: PathBuf, filter: Vec<String>, cx: &mut App) {
