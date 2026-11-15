@@ -116,11 +116,19 @@ parts through `MeshInstance` unchanged. Polygon tools never reach it:
 `Scene::object_mesh_mut` returns `None` for parts, transform baking refuses them,
 and the editor answers component commands with “Convert to mesh to edit
 polygons”. `PartData::stamp` is an FNV-1a hash of the canonical JSON of the
-features, rollback marker and tessellation quality; `evaluated` records which
-stamp produced the cache and the feature issues it reported. Editing helpers
-restamp; loading recomputes every stamp, so a hand-edited file can never pass
-off a stale cache. Undo restores whole scenes including caches, and the stamp
-check requests regeneration when needed.
+features' geometry (`FeatureGeometry`: ids, suppression and parameters,
+recursively through combine tools — never names or sources), the rollback
+marker and tessellation quality, so renaming or relinking never forces a
+regeneration. `evaluated` records which stamp produced the cache and the
+feature issues it reported; issues flagged `warning` mean the feature applied
+approximately rather than failed. A regeneration that produces nothing (worker
+failure, or a tessellation the scene rejects) is recorded only in the
+session-only `failed` field: it stops resubmission, keeps the older cache, is
+never saved, and reopening the file retries. Editing helpers restamp; loading
+recomputes every stamp, so a hand-edited file can never pass off a stale
+cache. Validation rejects a part cache that is also an editable mesh's data or
+another part's cache. Undo restores whole scenes including caches, and the
+stamp check requests regeneration when needed.
 
 ### Kernel layer (`forma-cad`)
 
@@ -151,12 +159,21 @@ truck's booleans need a guard layer, measured during the dependency audit:
   subtraction for them). Nested operands are classified from meshes first —
   a tool strictly inside becomes a void, an enclosing tool is a clear error —
   because truck panics or silently returns an operand unchanged there.
+- **Flush sketch features**: an extrusion cap lying on a body face is
+  extended by a sliver only where probes prove it changes nothing (empty space
+  beyond a cut's cap, material beyond a join's), so pockets, through cuts and
+  bosses sketched on faces are exact.
 - **Retries**: a finer tracing tolerance, then the tool inflated by a tiny
-  overshoot about its centre so coplanar or flush faces separate.
+  overshoot about its centre so coplanar or flush faces separate. That result
+  is approximate, so the feature gets a `warning` issue stating how far the
+  tool was enlarged.
 - **Validation** of every result: closed shells, plausible volume, probe
   points just inside the tool (they must leave a cut and stay in a join), and
   per-face checks that material lies behind each face and not in front (truck
-  can keep a zero-thickness lid over a flush-capped hole).
+  can keep a zero-thickness lid over a flush-capped hole). Ray queries use a
+  bounding volume hierarchy and the face check probes at most 256 faces inside
+  the tool's bounds, so validation stays far cheaper than truck's boolean
+  (15 ms over 39k triangles).
 - **Lumps**: tools with several separate lumps are applied one at a time.
 - **Transforms** of boolean results can loop forever in truck, so
   intersection curves are baked first on a deep copy: straight and circular
@@ -185,7 +202,10 @@ triangles, and vertices are welded so polygon tools see one connected surface.
 STEP export bakes intersection curves (truck-stepio 0.3 writes raw boolean
 results that do not read back), converts metres to truck's millimetres, applies
 object world transforms and writes a fixed header timestamp, so output is
-deterministic. Import detects the length unit, keeps the document as a
+deterministic. Import reads the length unit from the parsed unit entities (the
+unit `GLOBAL_UNIT_ASSIGNED_CONTEXT` assigns, with `SI_UNIT` prefixes and
+`CONVERSION_BASED_UNIT` factors evaluated — never from names in the file),
+keeps the document as a
 `BaseBody::Step` and regenerates from it; imported geometry renders and exports
 but cannot take part in booleans yet.
 
@@ -217,11 +237,17 @@ the editor never runs them in-process. `CadHost` (in `forma-cad`) owns a
 updater or any window starts — and talks to it with length-prefixed JSON frames
 behind an 8-byte magic, so stray text a dependency prints on stdout is skipped.
 One request runs at a time on the host thread; queued regenerations of the same
-part are coalesced. The worker reports progress before each feature. If no
-progress arrives within the per-feature timeout (20 s) or the request exceeds
-120 s, or the worker exits, the host kills it, reports the restart, and retries
-the regeneration with the last reported feature marked as skipped (up to three
-times), so the rest of the part still appears with a clear issue. The worker's
+part are coalesced. The worker reports progress before each feature
+(regenerations, bakes and exports alike). If no progress arrives within the
+per-feature timeout (20 s), or the worker exits or sends a reply that cannot
+be decoded, the host kills it, reports the restart, and retries the
+regeneration with the last reported feature marked as skipped (up to three
+times), so the rest of the part still appears with a clear issue; bakes and
+exports of that part version skip the same features. If the whole request
+exceeds 120 s, no single feature is blamed. Replies have NaN and infinities
+replaced before encoding (JSON would carry them as `null`), parts are
+validated before they are sent, and the host never kills or waits on the
+worker while holding the lock shutdown needs. The worker's
 own stdin reader exits the process as soon as the editor's pipe closes, even
 mid-computation, and `Studio::shutdown_cad` kills it from the app-quit hook.
 `WorkerMode::InProcess` runs the same request handler without isolation for
