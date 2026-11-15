@@ -1,15 +1,20 @@
 # Architecture
 
-Forma's main crates are below. Scene data is independent of UI, GPU resources
-and the CAD kernel; the native app owns interaction and coordinates the renderer
-and the CAD kernel through workers.
+Forma's main crates are below. Scene data — meshes, sketches and parametric
+part histories alike — is plain serializable data, independent of UI, GPU
+resources and the CAD kernel; the native app owns interaction and coordinates
+the renderer and the CAD kernel through workers. Meshes and parts meet at one
+boundary: a part's cached tessellation is an ordinary mesh data block, so every
+consumer of meshes (rendering, picking, measurements, OBJ/STL) handles parts
+without knowing about B-reps.
 
 | Crate | Responsibility |
 | --- | --- |
-| `forma-core` | Indexed polygon meshes, primitives, subdivision/extrusion/inset, convex bevels, triangulation and normal orientation, materials, object transform/origin utilities, camera, picking, history and scene/OBJ/STL I/O. |
+| `forma-core` | The scene graph and its data: indexed polygon meshes and their tools (primitives, subdivision, extrusion/inset, convex bevels, triangulation, normal orientation), sketches with their planar arrangement into profiles, part feature histories, materials, object transform/origin utilities, camera, picking, history and scene/OBJ/STL I/O. |
 | `forma-cad` | B-rep CAD on the [truck](https://github.com/ricosjp/truck) kernel: part regeneration from feature histories, robust booleans, tessellation into grouped Forma meshes, part ↔ mesh conversion, STEP I/O, and the crash-isolated worker process and host. |
 | `forma-render` | Native Metal and wgpu compute pipelines, shared triangle/BVH upload and light transport, progressive film, immutable display frames and PNG readback. |
-| `forma` (`crates/forma-app`) | GPUI workspace, commands, inspector, outliner, face/object transforms, native dialogs, viewport overlays and render scheduling. |
+| `forma-update` | Authenticated full-package updates: signed release metadata, verified downloads. No GUI or installation policy. |
+| `forma` (`crates/forma-app`) | GPUI workspace: commands, inspector, outliner, transforms, Draw mode, the CAD host integration, feature timeline and direct-modelling tools, native dialogs, viewport overlays, render scheduling, the startup scene, and the smoke and UI-capture harnesses. |
 
 ## Scene and geometry
 
@@ -38,8 +43,10 @@ shares them, and either link can later be made single-user. Mesh instances are
 the resolved boundary used by render, picking, OBJ/STL exchange and editor code, keeping
 those consumers independent of storage layout and non-mesh object types.
 
-Object payloads currently model mesh, empty, light and camera objects, plus a
-namespaced custom type with JSON properties for forward-compatible extensions.
+Object payloads model mesh, empty, light and camera objects, sketches (a
+`Sketch` whose plane lives in the object's space, drawn as an overlay with no
+renderable surface), parts (see [CAD parts](#cad-parts)), and a namespaced
+custom type with JSON properties for forward-compatible extensions.
 Collections form a visibility hierarchy, objects may belong to multiple
 collections, and object parent chains compose local transforms into world
 transforms. A parent-inverse matrix preserves an object's exact world transform
@@ -87,6 +94,40 @@ and Rendered. Custom code compiles on a background executor before an editor
 transaction commits; the renderer caches both entry-point pipelines by source.
 Invalid project code uses a reported PBR fallback. There is no node graph.
 See [material contracts and limits](MATERIALS.md).
+
+## Sketches and Draw mode
+
+A `Sketch` (`forma-core/src/sketch.rs`) is a `SketchPlane` — an origin and two
+orthonormal axes in its owner's space — plus `SketchEntity`s: lines, arcs and
+circles in plane coordinates, each optionally marked construction. Sketches
+hold no constraints and no kernel types; limits on coordinates and curve count
+(25,000) keep every derived structure interactive.
+
+Profiles come from a planar arrangement (`sketch/arrangement.rs`), evaluated
+in `f64`: curves are split wherever they cross, touch or overlap, coincident
+vertices merge within `SKETCH_TOLERANCE`, and the planar graph is walked for
+its minimal faces. Every bounded face is a `Profile`, and curves nested inside
+one become its holes — two overlapping rectangles give three regions, a circle
+in a rectangle gives a ring and a disc, as CAD sketchers present them.
+Construction curves never enter the arrangement. CAD features consume profiles
+through region picks (interior points), never through region indices, so picks
+survive edits.
+
+Draw mode (`crates/forma-app/src/sketch/`) keeps the scene as the single source
+of truth. A `DrawSession` holds only the edited object's id (created with the
+first curve, so leaving an unused session changes nothing), its plane, and
+transient tool, snap, numeric-entry and drag state. Every completed operation —
+a segment, a rectangle, a trim, a drag — edits the sketch object and records
+one history checkpoint, so undo works while drawing and finishing never
+discards work. Derived data (`analysis.rs`: profiles, snap targets, display
+polylines) is rebuilt only when the sketch changes; overlays cache world-space
+polylines per edit and only project them each paint, in every render mode.
+`plane.rs` chooses the plane for a new sketch (the planar face under the
+pointer, snapped to the kernel's exact face plane on parts, else the
+orthographic view plane, else the ground) and eases the camera to face it;
+`snap.rs` resolves point snaps, inference lines and the adaptive grid in plane
+coordinates. Sketch edits propagate to linked part features inside the same
+undo step (see [associativity](#timeline-feature-editing-and-associativity)).
 
 ## CAD parts
 
@@ -259,6 +300,15 @@ requested. Results arrive through an async channel and are installed with
 `Scene::set_part_tessellation`, which drops stale stamps. Nothing waits on the
 UI thread; the status line reports regeneration results and issues.
 
+The startup and New project scene (`crates/forma-app/src/startup.rs`) puts
+polygon meshes beside a bracket part whose history is built from sketches, and
+selects the part so its timeline shows. Its part arrives without a cache, like
+a hand-made file, so launch submits it at once; the first render request waits
+until the CAD host is idle (at most 1.5 s), so the first presented frame is the
+complete scene rather than one the part pops into. A unit test regenerates the
+bracket in-process and requires no issues, warnings included, and the native
+smoke test checks the launched scene.
+
 ### Timeline, feature editing and associativity
 
 `crates/forma-app/src/timeline/` owns the history workflow; its views are
@@ -426,6 +476,17 @@ those tokens. Shell regions (`titlebar`, `hud`, `outliner`, `inspector`,
 `modes` lists the title bar's workspace modes as data, and `slots` provides the
 reserved viewport dock and adjust-last-operation hooks that features fill;
 `timeline` and `feature_inspector` render the part history workflow.
+
+Values a user cannot edit never borrow an input's look: counts and derived
+figures are `stat_tile`s (the part summary, mesh geometry and sketch
+inspector share them) or `readonly_row`s with plain text, while
+`disabled_field_row` is reserved for inputs that are temporarily unavailable.
+Commands that cannot run stay listed in the palette, dimmed, with the reason
+(`Studio::command_unavailable`) instead of disappearing. GPUI 0.2 measures
+no-wrap text once and caches that unconstrained size, so `text_ellipsis` only
+works when a text's width is known before layout; text in content-sized rows
+(the status bar, the feature inspector's sketch link) is shortened with
+`components::fit_text`, which truncates with the font's real metrics.
 
 The app's `theme` module defines semantic color tokens (surfaces, lines, ink tiers,
 accent, status and axis colors) and five built-in presets that map onto them.
@@ -596,7 +657,11 @@ use a specialized pipeline without glass continuation state. wgpu modes use the 
 software BVH on the GPU. Geometry validation, triangulation, BVH construction,
 OBJ/STL I/O and history cloning remain CPU work. Project/OBJ/STL parsing and disk writes
 run on background executors. Snapshot cloning, picking, subdivision and transform
-validation still run on the UI thread and can pause on large meshes. Generation
+validation still run on the UI thread and can pause on large meshes. B-rep
+regeneration never runs on the UI thread: it happens in the CAD worker, where
+boolean-heavy parts take about 0.5–2 s from scratch and edits to the last
+feature reuse the memoized bodies before it; tool previews stay at frame rate
+because drags draw ghosts rather than calling the kernel. Generation
 and document-identity guards reject stale loads and preserve edits made during
 an asynchronous save. Material Preview produces deterministic IBL shading in one
 frame; its reflections use the environment and contact shading approximates
