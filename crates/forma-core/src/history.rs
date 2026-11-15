@@ -25,8 +25,15 @@ impl Default for History {
 
 impl History {
     pub fn checkpoint(&mut self, scene: &Scene) {
+        self.checkpoint_owned(scene.clone());
+    }
+
+    /// Records a snapshot taken before an edit that may fail. Take the copy
+    /// first, apply the edit, and record the copy only once it succeeded, so
+    /// a failed edit neither adds an undo step nor clears redo.
+    pub fn checkpoint_owned(&mut self, before: Scene) {
         self.redo.clear();
-        self.undo.push_back(scene.clone());
+        self.undo.push_back(before);
         Self::trim(&mut self.undo, self.limit, self.byte_limit);
     }
 
@@ -69,7 +76,15 @@ fn scene_bytes(scene: &Scene) -> usize {
     let objects = scene
         .objects
         .iter()
-        .map(|object| std::mem::size_of_val(object) + object.name.len())
+        .map(|object| {
+            let sketch = match &object.data {
+                crate::ObjectData::Sketch { sketch } => {
+                    sketch.entities.len() * std::mem::size_of::<crate::SketchEntity>()
+                }
+                _ => 0,
+            };
+            std::mem::size_of_val(object) + object.name.len() + sketch
+        })
         .sum::<usize>();
     let meshes = scene
         .meshes
@@ -103,4 +118,39 @@ fn scene_bytes(scene: &Scene) -> usize {
         })
         .sum::<usize>();
     objects + meshes + materials
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{Sketch, SketchCurve, SketchEntity, Vec2};
+
+    #[test]
+    fn sketch_curves_count_toward_the_history_budget() {
+        let mut scene = Scene::empty();
+        let id = scene.add_sketch("Sketch", Sketch::default()).unwrap();
+        let empty = scene_bytes(&scene);
+        let sketch = scene.object_sketch_mut(id).unwrap();
+        for i in 0..1000 {
+            let x = i as f32;
+            sketch.entities.push(SketchEntity::from(SketchCurve::Line {
+                start: Vec2::new(x, 0.0),
+                end: Vec2::new(x, 1.0),
+            }));
+        }
+        assert!(scene_bytes(&scene) >= empty + 1000 * std::mem::size_of::<SketchEntity>());
+    }
+
+    #[test]
+    fn owned_checkpoints_undo_like_borrowed_ones() {
+        let mut history = History::default();
+        let mut scene = Scene::empty();
+        let before = scene.clone();
+        scene.add_sketch("Sketch", Sketch::default()).unwrap();
+        history.checkpoint_owned(before.clone());
+        assert!(history.undo(&mut scene));
+        assert_eq!(scene, before);
+        assert!(history.redo(&mut scene));
+        assert_eq!(scene.objects.len(), 1);
+    }
 }

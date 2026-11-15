@@ -688,23 +688,29 @@ impl Studio {
             cx.notify();
             return false;
         }
-        self.history.checkpoint(&self.scene);
         match object {
-            Some(id) => *self.scene.object_sketch_mut(id).unwrap() = candidate,
-            None => match self.scene.add_sketch("Sketch", candidate) {
-                Ok(id) => {
-                    if let Some(session) = self.sketch.session.as_mut() {
-                        session.object = Some(id);
+            Some(id) => {
+                self.history.checkpoint(&self.scene);
+                *self.scene.object_sketch_mut(id).unwrap() = candidate;
+            }
+            None => {
+                // Creation can fail (object limit); record history only
+                // once it succeeded, so failure leaves undo and redo intact.
+                let before = self.scene.clone();
+                match self.scene.add_sketch("Sketch", candidate) {
+                    Ok(id) => {
+                        self.history.checkpoint_owned(before);
+                        if let Some(session) = self.sketch.session.as_mut() {
+                            session.object = Some(id);
+                        }
+                    }
+                    Err(error) => {
+                        self.status = format!("{label}: {error:#}");
+                        cx.notify();
+                        return false;
                     }
                 }
-                Err(error) => {
-                    // Drop the checkpoint that preceded the failed creation.
-                    self.history.undo(&mut self.scene);
-                    self.status = format!("{label}: {error:#}");
-                    cx.notify();
-                    return false;
-                }
-            },
+            }
         }
         self.sketch.revision += 1;
         self.dirty = true;
