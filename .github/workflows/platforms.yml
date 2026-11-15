@@ -56,8 +56,8 @@ jobs:
         run: cargo clippy --locked --workspace --all-targets -- -D warnings
       - name: Build application and renderer tools
         run: cargo build --locked --workspace --bins
-      - name: Core and application unit tests
-        run: cargo test --locked -p forma-core -p forma
+      - name: Core, CAD kernel and application unit tests
+        run: cargo test --locked -p forma-core -p forma-cad -p forma
       - name: Validate WGSL and generate Vulkan, Metal, and DirectX shaders
         if: runner.os != 'Linux'
         run: cargo test --locked -p forma-render --test shaders

@@ -96,8 +96,8 @@ jobs:
             build-essential clang libclang-dev cmake pkg-config libssl-dev \
             libzstd-dev libasound2-dev libfontconfig1-dev libwayland-dev \
             libxkbcommon-dev libxkbcommon-x11-dev libx11-xcb-dev libvulkan-dev squashfs-tools
-      - name: Test core and application
-        run: cargo test --locked -p forma-core -p forma -p forma-update
+      - name: Test core, CAD kernel and application
+        run: cargo test --locked -p forma-core -p forma-cad -p forma -p forma-update
       - name: Validate shaders
         run: cargo test --locked -p forma-render --test shaders
       - name: Package macOS application
