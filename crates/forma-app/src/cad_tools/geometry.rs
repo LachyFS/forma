@@ -168,6 +168,7 @@ impl Prism {
     }
 
     /// Area of the caps.
+    #[cfg(test)]
     pub(crate) fn area(&self) -> f32 {
         self.triangles
             .iter()
