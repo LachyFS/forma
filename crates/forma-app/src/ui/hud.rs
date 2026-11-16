@@ -103,25 +103,33 @@ fn tool_palette(t: Colors, s: &Studio, cx: &mut Context<Studio>) -> Div {
                 cx,
             ))
     } else {
+        // Like the transform tools, these need something to act on.
+        let empty = s.scene.objects.is_empty();
         palette
-            .child(command_icon(
-                t,
-                "rail-push-pull",
-                Icon::PushPull,
-                push_pull,
-                pushing,
-                TOOL,
-                cx,
-            ))
-            .child(command_icon(
-                t,
-                "rail-bevel",
-                Icon::Bevel,
-                Command::Bevel,
-                false,
-                TOOL,
-                cx,
-            ))
+            .child(
+                command_icon(
+                    t,
+                    "rail-push-pull",
+                    Icon::PushPull,
+                    push_pull,
+                    pushing,
+                    TOOL,
+                    cx,
+                )
+                .when(empty, |icon| icon.opacity(0.4)),
+            )
+            .child(
+                command_icon(
+                    t,
+                    "rail-bevel",
+                    Icon::Bevel,
+                    Command::Bevel,
+                    false,
+                    TOOL,
+                    cx,
+                )
+                .when(empty, |icon| icon.opacity(0.4)),
+            )
     };
     palette.child(separator()).child(
         icon_button(t, "tool-add", Icon::Plus, menu_open, TOOL)
@@ -330,18 +338,24 @@ fn view_controls(t: Colors, s: &Studio, width: f32, cx: &mut Context<Studio>) ->
                 )
             }),
         )
-        .when(mode == RenderMode::MaterialPreview, |d| {
-            d.child(div().w(px(1.)).h(px(16.)).mx(px(2.)).bg(rgba(t.hud_border)))
-                .child(command_icon(
-                    t,
-                    "shading-lighting",
-                    Icon::Lighting,
-                    Command::TogglePreviewSettings,
-                    s.preview_open,
-                    H_MD,
-                    cx,
-                ))
-        });
+        // The lighting button keeps its slot in every mode, so the cluster
+        // never shifts under the pointer; outside Material Preview it is quiet
+        // and opening it switches to Material Preview.
+        .child(div().w(px(1.)).h(px(16.)).mx(px(2.)).bg(rgba(t.hud_border)))
+        .child(
+            command_icon(
+                t,
+                "shading-lighting",
+                Icon::Lighting,
+                Command::TogglePreviewSettings,
+                s.preview_open,
+                H_MD,
+                cx,
+            )
+            .when(mode != RenderMode::MaterialPreview, |icon| {
+                icon.opacity(0.55)
+            }),
+        );
     row()
         .gap(px(SP_1_5))
         .child(views)

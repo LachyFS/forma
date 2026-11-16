@@ -439,7 +439,8 @@ bool light_viewport(constant Uniforms &u) { return (uint(u.cam_up.w + 0.5f) & 1u
 bool ghost_scene(constant Uniforms &u) { return (uint(u.cam_up.w + 0.5f) & 2u) != 0u; }
 float3 viewport_background(Ray ray, constant Uniforms &u) {
     float t = smoothstep(-0.5f, 0.7f, ray.direction.y);
-    if (light_viewport(u)) return mix(float3(0.60f, 0.62f, 0.65f), float3(0.84f, 0.855f, 0.875f), t);
+    // Deeper toward the horizon, so light models separate from the backdrop.
+    if (light_viewport(u)) return mix(float3(0.44f, 0.455f, 0.48f), float3(0.8f, 0.815f, 0.84f), t);
     return mix(float3(0.029f, 0.034f, 0.043f), float3(0.018f, 0.023f, 0.032f), t);
 }
 float2 project_to_pixels(float3 point, constant Uniforms &u) {
@@ -544,7 +545,7 @@ float3 composite_edit(float3 color, Ray ray, Hit hit, float2 pixel, device const
     // The mesh being edited carries the wire; other meshes keep a faint
     // cage for context, and only the edited mesh shows vertex markers.
     bool editing = is_selected(hit, triangles, u);
-    float3 result = mix(color, float3(0.10f, 0.13f, 0.16f), edge_coverage(ray, hit, tri, u, 1.0f) * (editing ? 0.85f : 0.1f));
+    float3 result = mix(color, float3(0.10f, 0.13f, 0.16f), edge_coverage(ray, hit, tri, u, 1.0f) * (editing ? 0.85f : 0.05f));
     if (u.cam_origin.w > 1.5f && editing) {
         float2 marker_pixel(pixel.x - float(u.image.x) * 0.5f, float(u.image.y) * 0.5f - pixel.y);
         float distance = min(length(marker_pixel - project_to_pixels(tri.v0.xyz, u)), min(length(marker_pixel - project_to_pixels(tri.v1.xyz, u)), length(marker_pixel - project_to_pixels(tri.v2.xyz, u))));
@@ -638,11 +639,11 @@ float3 add_grid(float3 color, Ray ray, Hit hit, float2 pixel, constant Uniforms 
     // minor/major pair, including their contrast at shared grid intersections.
     float opacity = mix(0.11f * minor + 0.13f * major, 0.11f * major + 0.13f * coarse, blend) * fade;
     bool light = light_viewport(u);
-    color = mix(color, light ? float3(0.22f, 0.235f, 0.26f) : float3(0.13f, 0.15f, 0.18f), opacity * (light ? 2.4f : 1.0f));
+    color = mix(color, light ? float3(0.16f, 0.17f, 0.19f) : float3(0.13f, 0.15f, 0.18f), opacity * (light ? 3.0f : 1.0f));
     float x_axis = 1.0f - smoothstep(wz * 0.5f, wz * 1.6f, abs(p.z));
     float z_axis = 1.0f - smoothstep(wx * 0.5f, wx * 1.6f, abs(p.x));
-    color = mix(color, light ? float3(0.62f, 0.09f, 0.1f) : float3(0.23f, 0.055f, 0.06f), x_axis * fade * 0.55f);
-    return mix(color, light ? float3(0.08f, 0.2f, 0.62f) : float3(0.055f, 0.12f, 0.29f), z_axis * fade * 0.55f);
+    color = mix(color, light ? float3(0.72f, 0.05f, 0.06f) : float3(0.23f, 0.055f, 0.06f), x_axis * fade * 0.55f);
+    return mix(color, light ? float3(0.04f, 0.16f, 0.72f) : float3(0.055f, 0.12f, 0.29f), z_axis * fade * 0.55f);
 }
 // Contact shading for Solid: eight fixed directions within SOLID_AO_RADIUS,
 // traced once per pixel from the centre hit, so objects sit on what they

@@ -510,7 +510,8 @@ fn light_viewport() -> bool { return (u32(u.cam_up.w + 0.5) & 1u) != 0u; }
 fn ghost_scene() -> bool { return (u32(u.cam_up.w + 0.5) & 2u) != 0u; }
 fn viewport_background(ray: Ray) -> vec3<f32> {
     let t = smoothstep(-0.5, 0.7, ray.direction.y);
-    if light_viewport() { return mix(vec3(0.60, 0.62, 0.65), vec3(0.84, 0.855, 0.875), t); }
+    // Deeper toward the horizon, so light models separate from the backdrop.
+    if light_viewport() { return mix(vec3(0.44, 0.455, 0.48), vec3(0.8, 0.815, 0.84), t); }
     return mix(vec3(0.029, 0.034, 0.043), vec3(0.018, 0.023, 0.032), t);
 }
 fn project_to_pixels(point: vec3<f32>) -> vec2<f32> {
@@ -610,7 +611,7 @@ fn composite_edit(color: vec3<f32>, ray: Ray, hit: Hit, pixel: vec2<f32>) -> vec
     // The mesh being edited carries the wire; other meshes keep a faint
     // cage for context, and only the edited mesh shows vertex markers.
     let editing = is_selected(hit);
-    var result = mix(color, vec3(0.10, 0.13, 0.16), edge_coverage(ray, hit, tri, 1.0) * select(0.1, 0.85, editing));
+    var result = mix(color, vec3(0.10, 0.13, 0.16), edge_coverage(ray, hit, tri, 1.0) * select(0.05, 0.85, editing));
     if u.cam_origin.w > 1.5 && editing {
         let marker_pixel = vec2(pixel.x - f32(u.image.x) * 0.5, f32(u.image.y) * 0.5 - pixel.y);
         let distance = min(length(marker_pixel - project_to_pixels(tri.v0.xyz)), min(length(marker_pixel - project_to_pixels(tri.v1.xyz)), length(marker_pixel - project_to_pixels(tri.v2.xyz))));
@@ -709,11 +710,11 @@ fn add_grid(initial_color: vec3<f32>, ray: Ray, hit: Hit, pixel: vec2<f32>) -> v
     // minor/major pair, including their contrast at shared grid intersections.
     let opacity = mix(0.11 * minor + 0.13 * major, 0.11 * major + 0.13 * coarse, blend) * fade;
     let light = light_viewport();
-    color = mix(color, select(vec3(0.13, 0.15, 0.18), vec3(0.22, 0.235, 0.26), light), opacity * select(1.0, 2.4, light));
+    color = mix(color, select(vec3(0.13, 0.15, 0.18), vec3(0.16, 0.17, 0.19), light), opacity * select(1.0, 3.0, light));
     let x_axis = 1.0 - smoothstep(wz * 0.5, wz * 1.6, abs(p.z));
     let z_axis = 1.0 - smoothstep(wx * 0.5, wx * 1.6, abs(p.x));
-    color = mix(color, select(vec3(0.23, 0.055, 0.06), vec3(0.62, 0.09, 0.1), light), x_axis * fade * 0.55);
-    return mix(color, select(vec3(0.055, 0.12, 0.29), vec3(0.08, 0.2, 0.62), light), z_axis * fade * 0.55);
+    color = mix(color, select(vec3(0.23, 0.055, 0.06), vec3(0.72, 0.05, 0.06), light), x_axis * fade * 0.55);
+    return mix(color, select(vec3(0.055, 0.12, 0.29), vec3(0.04, 0.16, 0.72), light), z_axis * fade * 0.55);
 }
 // Contact shading for Solid: eight fixed directions within SOLID_AO_RADIUS,
 // traced once per pixel from the centre hit, so objects sit on what they

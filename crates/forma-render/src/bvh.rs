@@ -105,13 +105,53 @@ struct MeshTriangle {
 /// Dihedral angle above which a mesh edge reads as a crease, as in CAD views.
 const FEATURE_CREASE_COS: f32 = 0.82; // about 35 degrees
 
+/// Cosine above which two faces across an edge are one plane: booleans can
+/// leave a flat face split in two, and that seam carries no shape.
+const COPLANAR_COS: f32 = 0.99995;
+
+/// B-rep edges of a part, minus seams between coplanar faces. Tangent
+/// boundaries (fillets, cylinder seams) keep their lines, since tessellated
+/// neighbours across them still differ by the chord angle.
+fn brep_feature_edges(mesh: &Mesh, edges: &HashSet<(u32, u32)>) -> HashSet<(u32, u32)> {
+    // edge -> (first side's normal, uses, bent)
+    let mut sides: std::collections::HashMap<(u32, u32), (Vec3, u32, bool)> =
+        std::collections::HashMap::with_capacity(edges.len());
+    for (index, face) in mesh.faces.iter().enumerate() {
+        let mut normal = None;
+        for (&a, &b) in face
+            .iter()
+            .zip(face.iter().cycle().skip(1))
+            .take(face.len())
+        {
+            let key = edge_key(a, b);
+            if a == b || !edges.contains(&key) {
+                continue;
+            }
+            let n = *normal.get_or_insert_with(|| mesh.face_normal(index));
+            sides
+                .entry(key)
+                .and_modify(|(first, uses, bent)| {
+                    *uses += 1;
+                    *bent |= first.dot(n) < COPLANAR_COS;
+                })
+                .or_insert((n, 1, false));
+        }
+    }
+    // Open boundaries (one side) stay; shared edges stay unless flat.
+    sides
+        .into_iter()
+        .filter(|(_, (_, uses, bent))| *uses == 1 || *bent)
+        .map(|(key, _)| key)
+        .collect()
+}
+
 /// Edges a shaded CAD view outlines. Parts (grouped meshes) outline every
 /// B-rep edge, including tangent fillet boundaries. Meshes outline creases and
 /// open boundaries, so a smooth sphere shows no wire while a cube shows its 12
 /// edges.
 fn feature_edges(mesh: &Mesh, edges: &HashSet<(u32, u32)>) -> HashSet<(u32, u32)> {
     if mesh.has_groups() {
-        return edges.clone();
+        return brep_feature_edges(mesh, edges);
     }
     let mut normals: std::collections::HashMap<(u32, u32), (Vec3, u32, bool)> =
         std::collections::HashMap::with_capacity(edges.len());

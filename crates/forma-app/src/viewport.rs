@@ -166,8 +166,6 @@ const GIZMO_SIZE: f32 = 108.;
 const GIZMO_ARM: f32 = 36.;
 /// Overlay colors drawn over the 3D image. They are independent of the editor
 /// theme so they stay legible over any material or environment.
-const COMPONENT_HIGHLIGHT: u32 = 0xffa94d;
-const COMPONENT_VERTEX: u32 = 0xffd8a8;
 const ACTIVE_AXIS: u32 = 0xffffff;
 const PIVOT: u32 = 0xf4f6f6;
 
@@ -1339,7 +1337,9 @@ impl Studio {
                             .iter()
                             .filter_map(|face| face.iter().map(|p| projector.point(*p)).collect())
                             .collect();
-                        let tint = crate::sketch::overlay::ink(COMPONENT_HIGHLIGHT, 0.26);
+                        // Components select in the theme accent, like objects
+                        // and B-rep faces: one selection colour in every mode.
+                        let tint = crate::sketch::overlay::ink(t.accent, 0.26);
                         crate::sketch::overlay::fill_polygons(window, &fills, tint);
                         // The visible parts of cut faces, as one non-zero
                         // fill, whatever their winding.
@@ -1365,7 +1365,7 @@ impl Studio {
                         window,
                         &runs,
                         width,
-                        crate::sketch::overlay::ink(COMPONENT_HIGHLIGHT, 1.),
+                        crate::sketch::overlay::ink(t.accent, 1.),
                     );
                     if marker > 0. {
                         for p in highlight.markers.iter().filter_map(|p| projector.point(*p)) {
@@ -1374,7 +1374,7 @@ impl Studio {
                                     p - point(px(marker * 0.5), px(marker * 0.5)),
                                     size(px(marker), px(marker)),
                                 ),
-                                rgb(COMPONENT_VERTEX),
+                                rgb(t.accent),
                             ));
                         }
                     }
