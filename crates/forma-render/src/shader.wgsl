@@ -572,9 +572,11 @@ fn outline_ink(center: Hit, hit: Hit) -> f32 {
     // occlusion jumps (the far side of a torus) ink fully.
     return clamp((abs(hit.distance - center.distance) / center.distance - 0.06) * 12.0, 0.0, 1.0);
 }
+// Lines darken what is under them rather than paint a fixed grey, so they
+// keep the surface's hue and never lift a black pixel.
 fn composite_features(display: vec3<f32>, coverage: f32) -> vec3<f32> {
-    let ink = select(vec3(0.03, 0.033, 0.04), vec3(0.17, 0.18, 0.2), light_viewport());
-    return mix(display, ink, clamp(coverage, 0.0, 1.0) * u.cam_right.w);
+    let strength = select(0.9, 0.8, light_viewport());
+    return display * (1.0 - clamp(coverage, 0.0, 1.0) * u.cam_right.w * strength);
 }
 fn composite_edit(color: vec3<f32>, ray: Ray, hit: Hit, pixel: vec2<f32>) -> vec3<f32> {
     if hit.triangle == NO_HIT { return color; }

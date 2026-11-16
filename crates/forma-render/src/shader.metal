@@ -502,9 +502,11 @@ float outline_ink(Hit center, Hit hit, device const Triangle *triangles, constan
     // occlusion jumps (the far side of a torus) ink fully.
     return clamp((abs(hit.distance - center.distance) / center.distance - 0.06f) * 12.0f, 0.0f, 1.0f);
 }
+// Lines darken what is under them rather than paint a fixed grey, so they
+// keep the surface's hue and never lift a black pixel.
 float3 composite_features(float3 display, float coverage, constant Uniforms &u) {
-    float3 ink = light_viewport(u) ? float3(0.17f, 0.18f, 0.2f) : float3(0.03f, 0.033f, 0.04f);
-    return mix(display, ink, clamp(coverage, 0.0f, 1.0f) * u.cam_right.w);
+    float strength = light_viewport(u) ? 0.8f : 0.9f;
+    return display * (1.0f - clamp(coverage, 0.0f, 1.0f) * u.cam_right.w * strength);
 }
 bool is_selected(Hit hit, device const Triangle *triangles, constant Uniforms &u);
 float3 composite_edit(float3 color, Ray ray, Hit hit, float2 pixel, device const Triangle *triangles, constant Uniforms &u) {
