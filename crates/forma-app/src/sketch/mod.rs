@@ -182,6 +182,25 @@ pub(crate) struct DrawSession {
     analysis: Cached<(u64, u64, bool), Analysis>,
 }
 
+impl DrawSession {
+    /// Whether `point` is an end of the line chain being drawn: its first
+    /// point or its latest one. Those are open by design until the chain
+    /// closes or the tool finishes, so Draw does not warn about them.
+    pub(crate) fn is_chain_end(&self, point: Vec2) -> bool {
+        match self.step {
+            Step::Line {
+                start,
+                chain_start,
+                segments,
+                ..
+            } if segments > 0 => [start, chain_start]
+                .iter()
+                .any(|end| end.distance(point) < 1.0e-5),
+            _ => false,
+        }
+    }
+}
+
 #[derive(Default)]
 pub(crate) struct SketchState {
     pub session: Option<DrawSession>,

@@ -78,6 +78,8 @@ pub(crate) struct ActiveOverlay {
     /// Where scene geometry stands in front of the plane, so the grid stops
     /// at objects instead of running across them.
     pub mask: Option<Rc<PlaneMask>>,
+    /// Ends of the line chain being drawn, which are not flagged as open.
+    pub chain_ends: Vec<Vec2>,
 }
 
 /// Where geometry hides the sketch plane, sampled on a coarse screen grid:
@@ -433,6 +435,12 @@ impl Studio {
             let analysis = self.sketch_analysis()?;
             let focus = self.plane_focus(&frame);
             let grid = self.grid_steps(&frame);
+            let chain_ends = analysis
+                .endpoints
+                .iter()
+                .map(|(point, _)| *point)
+                .filter(|point| session.is_chain_end(*point))
+                .collect();
             let mut overlay = ActiveOverlay {
                 frame,
                 analysis,
@@ -455,6 +463,7 @@ impl Studio {
                 marquee: session.marquee,
                 segment: None,
                 mask: self.plane_mask(&frame),
+                chain_ends,
             };
             self.describe_tool_preview(&mut overlay);
             Some(overlay)
@@ -1255,6 +1264,11 @@ fn paint_active(
     // ends" warning: the place to continue or close the outline.
     for (point, count) in &analysis.endpoints {
         if let Some(p) = screen(*point) {
+            let count = if *count == 1 && active.chain_ends.contains(point) {
+                2
+            } else {
+                *count
+            };
             match count {
                 0 => point_marker(window, p, 4.0, ink(c.text_muted, 1.0), inks.halo),
                 1 => {

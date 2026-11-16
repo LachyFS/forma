@@ -300,7 +300,14 @@ pub(super) fn panel(t: Colors, s: &Studio, cx: &mut Context<Studio>) -> Option<D
             open_ends: analysis
                 .endpoints
                 .iter()
-                .filter(|(_, count)| *count == 1)
+                .filter(|(point, count)| {
+                    *count == 1
+                        && !s
+                            .sketch
+                            .session
+                            .as_ref()
+                            .is_some_and(|d| d.is_chain_end(*point))
+                })
                 .count(),
         });
     let header = row()
