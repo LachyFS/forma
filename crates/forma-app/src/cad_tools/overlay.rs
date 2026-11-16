@@ -895,7 +895,7 @@ fn label_style(numeric: &str, invalid: bool, snapped: bool) -> LabelStyle {
 
 /// Fills polygons as one non-zero path: front faces of a closed ghost share
 /// one orientation on screen, so overlaps tint once, never twice.
-fn fill_union(window: &mut Window, polygons: &[Vec<Point<Pixels>>], color: gpui::Rgba) {
+pub(crate) fn fill_union(window: &mut Window, polygons: &[Vec<Point<Pixels>>], color: gpui::Rgba) {
     let mut path = PathBuilder::fill().with_style(PathStyle::Fill(
         FillOptions::default().with_fill_rule(FillRule::NonZero),
     ));
