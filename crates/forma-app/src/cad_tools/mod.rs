@@ -994,7 +994,9 @@ pub(crate) fn insert_feature(
 ) -> u64 {
     let at = crate::timeline::marker(part);
     let id = part.allocate_feature_id();
-    let mut feature = forma_core::Feature::new(id, name, kind);
+    // A second chamfer is "Chamfer 2", matching the pending history row.
+    let name = crate::timeline::numbered_name(part, name);
+    let mut feature = forma_core::Feature::new(id, &name, kind);
     feature.source = source;
     part.features.insert(at, feature);
     if part.rollback.is_some() {
