@@ -130,7 +130,7 @@ pub(crate) fn bracket() -> PartData {
         "Upright holes",
         extrude(
             upright_holes,
-            0.5,
+            THICKNESS + 0.08,
             ExtrudeExtent::OneSide,
             true,
             FeatureOperation::Cut,

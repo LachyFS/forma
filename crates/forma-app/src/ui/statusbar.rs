@@ -213,23 +213,24 @@ thread_local! {
     static FRAMES: std::cell::RefCell<FrameClock> = Default::default();
 }
 
-/// The frame time to show: typical of recent frames, falling back to the
-/// last one before any have been seen.
-fn frame_time(s: &Studio) -> f64 {
+/// The frame time to show: typical of recent frames, or none until a frame
+/// after the latest scene change has been seen, so a lone upload frame is
+/// never shown as the headline.
+fn frame_time(s: &Studio) -> Option<f64> {
     FRAMES.with(|clock| {
         let mut clock = clock.borrow_mut();
         clock.record(s.render_ms, s.samples, FrameChange::of(s));
-        clock.typical().unwrap_or(s.render_ms)
+        clock.typical()
     })
 }
 
 /// The performance readout's tooltip: frame time, the active part's last
 /// regeneration and the GPU, one fact per line.
-fn performance_detail(s: &Studio, typical: f64) -> String {
-    let mut lines = vec![format!(
-        "Frame {typical:.1} ms typical · last {:.1} ms",
-        s.render_ms
-    )];
+fn performance_detail(s: &Studio, typical: Option<f64>) -> String {
+    let mut lines = vec![match typical {
+        Some(typical) => format!("Frame {typical:.1} ms typical · last {:.1} ms", s.render_ms),
+        None => format!("Last frame {:.1} ms, measuring", s.render_ms),
+    }];
     if let Some((total, detail)) = regeneration(s) {
         lines.push(format!("Part regenerated in {total} · {detail}"));
     }
@@ -407,7 +408,7 @@ pub(super) fn statusbar(
                         .whitespace_nowrap()
                         .tabular()
                         .text_color(rgb(t.text_faint))
-                        .child(format!("{typical:.1} ms")),
+                        .child(typical.map_or_else(String::new, |ms| format!("{ms:.1} ms"))),
                 )
                 .tooltip(tip_detail(
                     t,
