@@ -1664,6 +1664,7 @@ fn open_add_menu(s: &mut Studio, anchor: Bounds<Pixels>, cx: &mut Context<Studio
             from: Anchor::ViewHud,
             anchor,
             index: super::overlays::menu::first_item(MenuKind::Add),
+            query: String::new(),
         });
     }
     cx.notify();
