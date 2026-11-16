@@ -657,19 +657,40 @@ fn add_grid(initial_color: vec3<f32>, ray: Ray, hit: Hit, pixel: vec2<f32>) -> v
     color = mix(color, select(vec3(0.23, 0.055, 0.06), vec3(0.62, 0.09, 0.1), light), x_axis * fade * 0.55);
     return mix(color, select(vec3(0.055, 0.12, 0.29), vec3(0.08, 0.2, 0.62), light), z_axis * fade * 0.55);
 }
-fn solid_sample(p: vec2<f32>, ray: Ray, hit: Hit) -> vec3<f32> {
+// Contact shading for Solid: eight fixed directions within SOLID_AO_RADIUS,
+// traced once per pixel from the centre hit, so objects sit on what they
+// touch and creases read without a light rig.
+const SOLID_AO_RADIUS: f32 = 0.5;
+fn solid_ao(s: Surface) -> f32 {
+    var occlusion = 0.0;
+    for (var i = 0u; i < 8u; i += 1u) {
+        let phi = fract(f32(i) * 0.61803398875 + 0.125);
+        let direction = cosine_sample(vec2((f32(i) + 0.5) / 8.0, phi), s.normal);
+        if dot(direction, s.geometric_normal) <= 0.0 { continue; }
+        let ray = Ray(offset_origin(s.position, s.geometric_normal, direction), direction);
+        let hit = trace(ray, SOLID_AO_RADIUS, false);
+        if hit.triangle != NO_HIT { occlusion += 1.0 - smoothstep(0.0, SOLID_AO_RADIUS, hit.distance); }
+    }
+    return max(0.3, 1.0 - 0.8 * occlusion / 8.0);
+}
+fn solid_sample(p: vec2<f32>, ray: Ray, hit: Hit, ao: f32) -> vec3<f32> {
     var color = viewport_background(ray);
-    if hit.triangle != NO_HIT { color = solid_shading(surface_at(ray, hit), ray); }
+    if hit.triangle != NO_HIT { color = solid_shading(surface_at(ray, hit), ray) * ao; }
     return add_grid(color, ray, hit, p);
 }
 // Four rotated-grid samples: smooth silhouettes and edges at Solid's low cost.
-// Returns the color, and the averaged feature line coverage in w.
-fn solid_supersampled(pixel: vec2<f32>) -> vec4<f32> {
+// Returns the color, and the averaged feature line coverage in w. Samples on
+// the centre hit's object share its contact shading.
+fn solid_supersampled(pixel: vec2<f32>, center: Hit) -> vec4<f32> {
+    var ao = 1.0;
+    if center.triangle != NO_HIT { ao = solid_ao(surface_at(camera_ray(pixel), center)); }
     let offsets = array<vec2<f32>, 4>(vec2(-0.125, -0.375), vec2(0.375, -0.125), vec2(-0.375, 0.125), vec2(0.125, 0.375));
     var result = vec4(0.0);
     for (var i = 0u; i < 4u; i += 1u) {
         let p = pixel + offsets[i]; let r = camera_ray(p); let h = trace(r, FAR, false);
-        result += vec4(solid_sample(p, r, h), feature_ink(r, h)) * 0.25;
+        let same = center.triangle != NO_HIT && h.triangle != NO_HIT
+            && triangles[h.triangle].params.z == triangles[center.triangle].params.z;
+        result += vec4(solid_sample(p, r, h, select(1.0, ao, same)), feature_ink(r, h)) * 0.25;
     }
     return result;
 }
@@ -752,7 +773,7 @@ fn render_main(@builtin(global_invocation_id) global_id: vec3<u32>) {
         color = total.xyz / max(1.0, total.w);
     } else {
         if u.image.w == 0u { color = wireframe_shading(ray, pixel, primary); }
-        else if u.image.w == 1u { let solid = solid_supersampled(pixel); color = solid.xyz; ink = solid.w; }
+        else if u.image.w == 1u { let solid = solid_supersampled(pixel, primary); color = solid.xyz; ink = solid.w; }
         else if primary.triangle != NO_HIT { color = solid_shading(surface_at(ray, primary), ray); }
         else { color = viewport_background(ray); }
         accumulation[index] = vec4(color, 1.0);

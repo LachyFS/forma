@@ -594,9 +594,30 @@ float3 add_grid(float3 color, Ray ray, Hit hit, float2 pixel, constant Uniforms 
     color = mix(color, light ? float3(0.62f, 0.09f, 0.1f) : float3(0.23f, 0.055f, 0.06f), x_axis * fade * 0.55f);
     return mix(color, light ? float3(0.08f, 0.2f, 0.62f) : float3(0.055f, 0.12f, 0.29f), z_axis * fade * 0.55f);
 }
-float3 solid_sample(float2 p, Ray ray, Hit hit, device const Triangle *triangles, constant Uniforms &u) {
+// Contact shading for Solid: eight fixed directions within SOLID_AO_RADIUS,
+// traced once per pixel from the centre hit, so objects sit on what they
+// touch and creases read without a light rig.
+constant float SOLID_AO_RADIUS = 0.5f;
+float solid_occlusion(float occlusion) { return max(0.3f, 1.0f - 0.8f * occlusion / 8.0f); }
+float solid_ao(Surface s, device const Triangle *triangles, device const BvhNode *nodes, constant Uniforms &u) {
+    float occlusion = 0.0f;
+    for (uint i = 0u; i < 8u; ++i) {
+        float phi = fract(float(i) * 0.61803398875f + 0.125f);
+        float3 direction = cosine_sample(float2((float(i) + 0.5f) / 8.0f, phi), s.normal);
+        if (dot(direction, s.geometric_normal) <= 0.0f) continue;
+        Ray ray = { offset_origin(s.position, s.geometric_normal, direction), direction };
+        Hit hit = trace(ray, SOLID_AO_RADIUS, triangles, nodes, u);
+        if (hit.triangle != NO_HIT) occlusion += 1.0f - smoothstep(0.0f, SOLID_AO_RADIUS, hit.distance);
+    }
+    return solid_occlusion(occlusion);
+}
+bool same_object(Hit a, Hit b, device const Triangle *triangles) {
+    return a.triangle != NO_HIT && b.triangle != NO_HIT
+        && triangles[a.triangle].params.z == triangles[b.triangle].params.z;
+}
+float3 solid_sample(float2 p, Ray ray, Hit hit, float ao, device const Triangle *triangles, constant Uniforms &u) {
     float3 color = hit.triangle == NO_HIT ? viewport_background(ray, u)
-        : solid_shading(surface_at(ray, hit, triangles), ray, u);
+        : solid_shading(surface_at(ray, hit, triangles), ray, u) * ao;
     return add_grid(color, ray, hit, p, u);
 }
 // Four rotated-grid samples: smooth silhouettes and edges at Solid's low cost.
@@ -707,11 +728,13 @@ kernel void render_main(device const Triangle *triangles [[buffer(0)]],
             color = wireframe_shading(ray, pixel, primary, triangles, nodes, u);
         } else if (u.image.w == 1u) {
             color = float3(0.0f);
+            float ao = primary.triangle == NO_HIT ? 1.0f
+                : solid_ao(surface_at(ray, primary, triangles), triangles, nodes, u);
             for (uint i = 0u; i < 4u; ++i) {
                 float2 p = pixel + SOLID_OFFSETS[i];
                 Ray r = camera_ray(p, u);
                 Hit h = trace(r, INFINITY, triangles, nodes, u);
-                color += solid_sample(p, r, h, triangles, u) * 0.25f;
+                color += solid_sample(p, r, h, same_object(primary, h, triangles) ? ao : 1.0f, triangles, u) * 0.25f;
                 ink += feature_ink(r, h, triangles, u) * 0.25f;
             }
         } else if (primary.triangle != NO_HIT) {

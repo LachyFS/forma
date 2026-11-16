@@ -75,6 +75,21 @@ float preview_selection_coverage(float2 pixel, Hit hit, device const Triangle *t
 }
 #endif
 
+// Solid's contact shading through the preview acceleration structure; the
+// same directions and falloff as solid_ao.
+float preview_solid_ao(Surface s, device const Triangle *triangles,
+                       device const BvhNode *nodes, constant Uniforms &u PREVIEW_ACCEL_PARAM) {
+    float occlusion = 0.0f;
+    for (uint i = 0u; i < 8u; ++i) {
+        float phi = fract(float(i) * 0.61803398875f + 0.125f);
+        float3 direction = cosine_sample(float2((float(i) + 0.5f) / 8.0f, phi), s.normal);
+        if (dot(direction, s.geometric_normal) <= 0.0f) continue;
+        Ray ray = { offset_origin(s.position, s.geometric_normal, direction), direction };
+        Hit hit = preview_trace(ray, SOLID_AO_RADIUS, triangles, nodes, u PREVIEW_ACCEL_ARG);
+        if (hit.triangle != NO_HIT) occlusion += 1.0f - smoothstep(0.0f, SOLID_AO_RADIUS, hit.distance);
+    }
+    return solid_occlusion(occlusion);
+}
 // Solid has no material evaluation or path-tracing state. Keep it in a small
 // kernel so primary visibility and selection can share preview acceleration.
 kernel void solid_main(device const Triangle *triangles [[buffer(0)]],
@@ -95,11 +110,13 @@ kernel void solid_main(device const Triangle *triangles [[buffer(0)]],
     Hit hit = preview_trace(ray, INFINITY, triangles, nodes, u PREVIEW_ACCEL_ARG);
     float3 color = float3(0.0f);
     float ink = 0.0f;
+    float ao = hit.triangle == NO_HIT ? 1.0f
+        : preview_solid_ao(surface_at(ray, hit, triangles), triangles, nodes, u PREVIEW_ACCEL_ARG);
     for (uint i = 0u; i < 4u; ++i) {
         float2 p = pixel + SOLID_OFFSETS[i];
         Ray r = camera_ray(p, u);
         Hit h = preview_trace(r, INFINITY, triangles, nodes, u PREVIEW_ACCEL_ARG);
-        color += solid_sample(p, r, h, triangles, u) * 0.25f;
+        color += solid_sample(p, r, h, same_object(hit, h, triangles) ? ao : 1.0f, triangles, u) * 0.25f;
         ink += feature_ink(r, h, triangles, u) * 0.25f;
     }
     accumulation[gid.y * u.image.x + gid.x] = float4(color, 1.0f);
