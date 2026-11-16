@@ -2,12 +2,15 @@
 //! tools, filters and view controls float above it in translucent clusters,
 //! leaving the scene as large as possible.
 use super::assets::{Icon, icon};
-use super::commands::{command_icon as command_glyph, shading_icon};
+use super::commands::{
+    MESH_DETAIL, PART_DETAIL, SKETCH_DETAIL, command_icon as command_glyph, shading_icon,
+};
 use super::components::*;
 use super::tokens::*;
 use super::{Anchor, MenuKind, VIEWPORT_MIN_WIDTH, slots};
 use crate::app::{Command, EditMode, Studio, Tool};
 use crate::cad::{CadCommand, PartShape};
+use crate::platform_shortcut;
 use crate::sketch::DrawCommand;
 use crate::theme::Colors;
 use forma_core::Primitive;
@@ -19,11 +22,12 @@ pub(crate) const HUD_INSET: f32 = 12.;
 const TOOL: f32 = H_LG;
 
 fn tool_palette(t: Colors, s: &Studio, cx: &mut Context<Studio>) -> Div {
+    // Only the + that opened the Add menu lights up; the Scene panel has one too.
     let menu_open = s
         .panels
         .menu
         .as_ref()
-        .is_some_and(|menu| menu.kind == MenuKind::Add);
+        .is_some_and(|menu| menu.kind == MenuKind::Add && menu.from == Anchor::ToolRail);
     let separator = || {
         div()
             .mx(px(SP_1_5))
@@ -120,7 +124,12 @@ fn tool_palette(t: Colors, s: &Studio, cx: &mut Context<Studio>) -> Div {
         icon_button(t, "tool-add", Icon::Plus, menu_open, TOOL)
             .relative()
             .child(s.panels.anchor_cell(Anchor::ToolRail).element())
-            .tooltip(tip_detail(t, "Add", "Primitives and imported meshes", None))
+            .tooltip(tip_detail(
+                t,
+                "Add",
+                "Meshes, parts, sketches and imports",
+                None,
+            ))
             .on_click(cx.listener(|s, _, _, cx| {
                 cx.stop_propagation();
                 s.open_menu(MenuKind::Add, Anchor::ToolRail, cx);
@@ -511,87 +520,200 @@ fn measurements_card(t: Colors, s: &Studio) -> Option<Div> {
     Some(card)
 }
 
-/// Guidance and quick starts when the scene has no objects: one row for each
-/// way of making geometry (mesh, part, sketch), then every import format.
-fn empty_scene(t: Colors, s: &Studio, cx: &mut Context<Studio>) -> Option<Div> {
+/// One way of making geometry on the start card: what it is, then the
+/// commands that create it.
+struct StartKind {
+    id: &'static str,
+    glyph: Icon,
+    title: &'static str,
+    detail: &'static str,
+    actions: &'static [(&'static str, Command)],
+}
+
+const START_KINDS: [StartKind; 3] = [
+    StartKind {
+        id: "mesh",
+        glyph: Icon::Mesh,
+        title: "Mesh",
+        detail: MESH_DETAIL,
+        actions: &[
+            ("Cube", Command::Add(Primitive::Cube)),
+            ("Sphere", Command::Add(Primitive::Sphere)),
+            ("Cylinder", Command::Add(Primitive::Cylinder)),
+        ],
+    },
+    StartKind {
+        id: "part",
+        glyph: Icon::PartBox,
+        title: "Part",
+        detail: PART_DETAIL,
+        actions: &[
+            ("Box", Command::Cad(CadCommand::AddPart(PartShape::Box))),
+            (
+                "Cylinder",
+                Command::Cad(CadCommand::AddPart(PartShape::Cylinder)),
+            ),
+            (
+                "Sphere",
+                Command::Cad(CadCommand::AddPart(PartShape::Sphere)),
+            ),
+        ],
+    },
+    StartKind {
+        id: "sketch",
+        glyph: Icon::DrawMode,
+        title: "Sketch",
+        detail: SKETCH_DETAIL,
+        actions: &[(
+            "Draw on the ground",
+            Command::Draw(DrawCommand::NewGroundSketch),
+        )],
+    },
+];
+
+/// A start tile: the kind's glyph, name and one-line description over its
+/// creation commands, in equal columns so the three read as one choice.
+fn start_tile(t: Colors, kind: &StartKind, stacked: bool, cx: &mut Context<Studio>) -> Div {
+    let actions = kind.actions.iter().map(|(label, command)| {
+        on_command(
+            button_base(
+                t,
+                SharedString::from(format!("empty-{}-{label}", kind.id)),
+                Tone::Ghost,
+                H_SM + 2.,
+            )
+            .w_full()
+            .justify_start()
+            .px(px(SP_1_5))
+            .gap(px(SP_2))
+            .text_color(rgb(t.text))
+            .when_some(command_glyph(*command), |d, glyph| {
+                d.child(icon(glyph, ICON_SM, t.text_muted))
+            })
+            .child(*label)
+            .tooltip(command_tip(t, *command)),
+            *command,
+            cx,
+        )
+    });
+    col()
+        .when(!stacked, |d| d.flex_1().flex_basis(px(0.)))
+        .min_w(px(0.))
+        .p(px(SP_2))
+        .gap(px(SP_2))
+        .rounded(px(R_LG))
+        .bg(tint(t.text, if t.dark { 0.035 } else { 0.03 }))
+        .border_1()
+        .border_color(rgba(t.hud_border))
+        .child(
+            col()
+                .px(px(SP_1_5))
+                .pt(px(SP_1_5))
+                .gap(px(SP_1))
+                .child(
+                    row()
+                        .gap(px(SP_2))
+                        .child(icon(kind.glyph, ICON_MD, t.accent_text))
+                        .child(
+                            div()
+                                .text_size(px(TEXT_LG))
+                                .font_weight(WEIGHT_SEMIBOLD)
+                                .text_color(rgb(t.text))
+                                .child(kind.title),
+                        ),
+                )
+                .child(
+                    div()
+                        .text_size(px(TEXT_SM))
+                        .line_height(px(15.))
+                        .text_color(rgb(t.text_muted))
+                        .child(kind.detail),
+                ),
+        )
+        .child(hrule(t).bg(rgba(t.hud_border)))
+        .child(col().gap(px(1.)).children(actions))
+}
+
+/// Quick starts when the scene has no objects: a tile for each way of making
+/// geometry (mesh, part, sketch), then a quiet row of import links.
+fn empty_scene(t: Colors, s: &Studio, width: f32, cx: &mut Context<Studio>) -> Option<Div> {
     if !s.scene.objects.is_empty() || s.frame.is_none() {
         return None;
     }
-    let mut quick = |group: &str, label: &'static str, command: Command, tone: Tone| {
-        command_button(
-            t,
-            SharedString::from(format!("empty-{group}-{label}")),
-            label,
-            command_glyph(command),
-            command,
-            tone,
-            cx,
-        )
-    };
-    let mesh = [
-        ("Cube", Primitive::Cube),
-        ("Sphere", Primitive::Sphere),
-        ("Cylinder", Primitive::Cylinder),
-        ("Plane", Primitive::Plane),
-    ]
-    .map(|(label, primitive)| quick("mesh", label, Command::Add(primitive), Tone::Secondary));
-    let part = [
-        ("Box", PartShape::Box),
-        ("Cylinder", PartShape::Cylinder),
-        ("Sphere", PartShape::Sphere),
-    ]
-    .map(|(label, shape)| {
-        quick(
-            "part",
-            label,
-            Command::Cad(CadCommand::AddPart(shape)),
-            Tone::Secondary,
-        )
-    });
-    let sketch = quick(
-        "sketch",
-        "Draw a sketch",
-        Command::Draw(DrawCommand::NewGroundSketch),
-        Tone::Secondary,
-    );
-    let import = [
+    // Clear of the tool rail on both sides; below about 480 px the tiles
+    // stack instead of squeezing their descriptions.
+    let card = 588f32.min(width - 2. * (HUD_INSET + TOOL + SP_5));
+    let stacked = card < 480.;
+    let tiles: Vec<Div> = START_KINDS
+        .iter()
+        .map(|kind| start_tile(t, kind, stacked, cx))
+        .collect();
+    let imports = [
         ("OBJ…", Command::ImportObj),
         ("STL…", Command::ImportStl),
         ("STEP…", Command::Cad(CadCommand::ImportStep)),
     ]
-    .map(|(label, command)| quick("import", label, command, Tone::Ghost));
-    let line = |label: &'static str| {
-        row().gap(px(SP_3)).child(
+    .map(|(label, command)| {
+        on_command(
             div()
-                .w(px(52.))
-                .flex_shrink_0()
-                .text_size(px(TEXT_SM))
-                .text_color(rgb(t.text_faint))
-                .child(label),
+                .id(SharedString::from(format!("empty-import-{label}")))
+                .px(px(SP_1_5))
+                .py(px(2.))
+                .rounded(px(R_SM))
+                .text_color(rgb(t.text_muted))
+                .cursor_pointer()
+                .hover(move |d| d.text_color(rgb(t.text)).bg(rgb(t.control_hover)))
+                .child(label)
+                .tooltip(command_tip(t, command)),
+            command,
+            cx,
         )
-    };
+    });
     Some(
         hud(t)
             .flex_col()
-            .items_center()
-            .px(px(SP_6))
-            .pt(px(SP_5))
-            .pb(px(SP_4))
+            .items_stretch()
+            .w(px(card))
+            .p(px(SP_4))
             .gap(px(SP_3))
-            .child(empty_state(
-                t,
-                Icon::Cube,
-                "Empty scene",
-                "Start from a mesh, a parametric part or a sketch, or bring in a file.",
-            ))
             .child(
                 col()
-                    .gap(px(SP_1_5))
-                    .child(line("Mesh").child(row().gap(px(SP_1)).children(mesh)))
-                    .child(line("Part").child(row().gap(px(SP_1)).children(part)))
-                    .child(line("Sketch").child(sketch))
-                    .child(div().my(px(SP_1)).child(hrule(t).bg(rgba(t.hud_border))))
-                    .child(line("Import").child(row().gap(px(SP_1)).children(import))),
+                    .px(px(SP_1))
+                    .gap(px(2.))
+                    .child(
+                        div()
+                            .text_size(px(TEXT_XL))
+                            .font_weight(WEIGHT_SEMIBOLD)
+                            .text_color(rgb(t.text))
+                            .child("Start a model"),
+                    )
+                    .child(
+                        div()
+                            .text_color(rgb(t.text_muted))
+                            .child("Pick a kind of geometry, or bring in a file."),
+                    ),
+            )
+            .child(
+                row()
+                    .items_stretch()
+                    .gap(px(SP_2))
+                    .when(stacked, |d| d.flex_col())
+                    .children(tiles),
+            )
+            .child(
+                row()
+                    .px(px(SP_1))
+                    .gap(px(SP_1))
+                    .text_size(px(TEXT_MD))
+                    .child(
+                        div()
+                            .mr(px(SP_1))
+                            .text_color(rgb(t.text_faint))
+                            .child("Import"),
+                    )
+                    .children(imports)
+                    .child(spacer())
+                    .child(hint(t, platform_shortcut("⌘ K", "Ctrl K"), "All commands")),
             ),
     )
 }
@@ -617,7 +739,7 @@ pub(super) fn viewport_area(
     let adjust = slots::adjust_last_operation(s, t, cx);
     let measurements = measurements_card(t, s);
     let notice = update_notice(t, s, cx);
-    let empty = empty_scene(t, s, cx);
+    let empty = empty_scene(t, s, width, cx);
     div()
         .relative()
         .flex_1()

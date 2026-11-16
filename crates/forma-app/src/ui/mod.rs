@@ -398,6 +398,11 @@ impl PanelState {
         &self.recent
     }
 
+    /// Clear recent palette commands (captures start each state fresh).
+    pub(crate) fn forget_recent_commands(&mut self) {
+        self.recent.clear();
+    }
+
     /// Commands run from the palette appear first next time it opens.
     pub(crate) fn remember_command(&mut self, command: Command) {
         if matches!(

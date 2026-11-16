@@ -41,6 +41,11 @@ const fn explained(label: &'static str, detail: &'static str) -> CommandInfo {
     }
 }
 
+/// What a mesh primitive and a parametric part are, wherever both are offered.
+pub(crate) const MESH_DETAIL: &str = "Editable polygons";
+pub(crate) const PART_DETAIL: &str = "Parametric solid with history";
+pub(crate) const SKETCH_DETAIL: &str = "Profiles to extrude";
+
 pub(crate) fn command_info(command: Command) -> CommandInfo {
     match command {
         Command::CheckForUpdates => info("Check for updates"),
@@ -68,11 +73,11 @@ pub(crate) fn command_info(command: Command) -> CommandInfo {
             "Export image…",
             "PNG of the current viewport mode · keeps rendering while you edit",
         ),
-        Command::Add(Primitive::Cube) => info("Cube"),
-        Command::Add(Primitive::Sphere) => info("Sphere"),
-        Command::Add(Primitive::Cylinder) => info("Cylinder"),
-        Command::Add(Primitive::Torus) => info("Torus"),
-        Command::Add(Primitive::Plane) => info("Plane"),
+        Command::Add(Primitive::Cube) => explained("Cube", MESH_DETAIL),
+        Command::Add(Primitive::Sphere) => explained("Sphere", MESH_DETAIL),
+        Command::Add(Primitive::Cylinder) => explained("Cylinder", MESH_DETAIL),
+        Command::Add(Primitive::Torus) => explained("Torus", MESH_DETAIL),
+        Command::Add(Primitive::Plane) => explained("Plane", MESH_DETAIL),
         Command::Select(_) => info("Select object"),
         Command::ToggleVisible(_) => info("Show or hide"),
         Command::Delete => keyed("Delete", "Delete"),
@@ -279,13 +284,9 @@ fn timeline_info(command: TimelineCommand) -> CommandInfo {
 
 fn cad_info(command: CadCommand) -> CommandInfo {
     match command {
-        CadCommand::AddPart(PartShape::Box) => explained("Box part", "Parametric B-rep solid"),
-        CadCommand::AddPart(PartShape::Cylinder) => {
-            explained("Cylinder part", "Parametric B-rep solid")
-        }
-        CadCommand::AddPart(PartShape::Sphere) => {
-            explained("Sphere part", "Parametric B-rep solid")
-        }
+        CadCommand::AddPart(PartShape::Box) => explained("Box part", PART_DETAIL),
+        CadCommand::AddPart(PartShape::Cylinder) => explained("Cylinder part", PART_DETAIL),
+        CadCommand::AddPart(PartShape::Sphere) => explained("Sphere part", PART_DETAIL),
         CadCommand::ExtrudeSketch => explained(
             "Extrude sketch",
             "The selected sketch's outer regions, 1 m, as a new part",
@@ -391,6 +392,8 @@ pub(crate) fn command_icon(command: Command) -> Option<Icon> {
         Command::Open => Icon::Open,
         Command::Save | Command::SaveAs => Icon::Save,
         Command::ImportObj | Command::ImportStl => Icon::Import,
+        Command::ToggleTheme => Icon::Theme,
+        Command::ToggleUpdates => Icon::Settings,
         Command::ExportObj | Command::ExportStl => Icon::Export,
         Command::ExportImage => Icon::ExportImage,
         Command::Add(Primitive::Cube) => Icon::Cube,
@@ -432,20 +435,17 @@ pub(crate) fn command_icon(command: Command) -> Option<Icon> {
         Command::ApplyScale => Icon::Scale,
         Command::ApplyRotationScale => Icon::ApplyRotation,
         Command::CenterOrigin => Icon::Origin,
-        Command::SelectAll
-        | Command::DeselectAll
-        | Command::InvertSelection
-        | Command::SelectLinked
-        | Command::BoxSelect => Icon::Select,
+        Command::SelectAll | Command::DeselectAll | Command::InvertSelection => Icon::Select,
+        Command::SelectLinked => Icon::Mesh,
+        Command::BoxSelect => Icon::DrawConstruction,
         Command::ToggleGrid => Icon::Grid,
         Command::ToggleMeasurements => Icon::Measure,
         Command::ToggleViewportDenoise | Command::ToggleRenderDenoise => Icon::Denoise,
         Command::SetShader(_) => Icon::Material,
         Command::EditShader => Icon::Code,
         Command::ToggleHelp => Icon::Keyboard,
-        Command::ToggleTheme => Icon::Theme,
         Command::TogglePreviewSettings => Icon::Lighting,
-        Command::CheckForUpdates | Command::ToggleUpdates => Icon::Update,
+        Command::CheckForUpdates => Icon::Update,
         Command::Draw(DrawCommand::NewSketch | DrawCommand::NewGroundSketch) => Icon::DrawMode,
         Command::Draw(DrawCommand::EditSketch) => Icon::Sketch,
         Command::Draw(DrawCommand::Finish) => Icon::Check,
@@ -453,9 +453,9 @@ pub(crate) fn command_icon(command: Command) -> Option<Icon> {
         Command::Draw(DrawCommand::ToggleConstruction) => Icon::DrawConstruction,
         Command::Draw(DrawCommand::ToggleRectangleMode) => Icon::DrawCenterRectangle,
         Command::Draw(DrawCommand::PolygonSides(_)) => Icon::DrawPolygon,
-        Command::Cad(CadCommand::AddPart(PartShape::Box)) => Icon::Part,
-        Command::Cad(CadCommand::AddPart(PartShape::Cylinder)) => Icon::Cylinder,
-        Command::Cad(CadCommand::AddPart(PartShape::Sphere)) => Icon::Sphere,
+        Command::Cad(CadCommand::AddPart(PartShape::Box)) => Icon::PartBox,
+        Command::Cad(CadCommand::AddPart(PartShape::Cylinder)) => Icon::PartCylinder,
+        Command::Cad(CadCommand::AddPart(PartShape::Sphere)) => Icon::PartSphere,
         Command::Cad(CadCommand::ExtrudeSketch) => Icon::Extrude,
         Command::Cad(CadCommand::Combine(FeatureOperation::Cut)) => Icon::Subtract,
         Command::Cad(CadCommand::Combine(FeatureOperation::Intersect)) => Icon::Intersect,
@@ -516,21 +516,43 @@ pub(crate) fn shading_icon(mode: RenderMode) -> Icon {
     }
 }
 
-/// Palette section for a command. `palette_commands` lists commands in this
-/// order so keyboard navigation and grouped drawing agree.
+/// Palette sections, in the order the unfiltered palette lists them:
+/// making geometry first, then editing, viewing and files.
+pub(crate) const PALETTE_GROUPS: [&str; 13] = [
+    "Add",
+    "Draw",
+    "Part",
+    "Mesh",
+    "Object",
+    "Select",
+    "Timeline",
+    "View",
+    "Shading",
+    "File",
+    "Import",
+    "Export",
+    "Workspace",
+];
+
+/// Position of `group` in `PALETTE_GROUPS`.
+pub(crate) fn group_rank(group: &str) -> usize {
+    PALETTE_GROUPS
+        .iter()
+        .position(|candidate| *candidate == group)
+        .unwrap_or(PALETTE_GROUPS.len())
+}
+
+/// Palette section for a command; also the category shown beside a search
+/// result.
 pub(crate) fn command_group(command: Command) -> &'static str {
     match command {
-        Command::New
-        | Command::Open
-        | Command::Save
-        | Command::SaveAs
-        | Command::ImportObj
-        | Command::ImportStl
-        | Command::ExportObj
+        Command::New | Command::Open | Command::Save | Command::SaveAs => "File",
+        Command::ImportObj | Command::ImportStl | Command::Cad(CadCommand::ImportStep) => "Import",
+        Command::ExportObj
         | Command::ExportStl
         | Command::ExportImage
-        | Command::Cad(CadCommand::ImportStep | CadCommand::ExportStep) => "File",
-        Command::Add(_) => "Add",
+        | Command::Cad(CadCommand::ExportStep) => "Export",
+        Command::Add(_) | Command::Cad(CadCommand::AddPart(_)) => "Add",
         Command::Draw(_) => "Draw",
         Command::Cad(_) | Command::CadTool(_) => "Part",
         Command::Timeline(_) => "Timeline",
@@ -572,5 +594,27 @@ pub(crate) fn command_group(command: Command) -> &'static str {
         | Command::ToggleGrid
         | Command::ToggleMeasurements => "View",
         _ => "Workspace",
+    }
+}
+
+/// Other words a command answers to in palette search, for names used by
+/// other modellers ("boolean", "union") and the kind of object it makes.
+pub(crate) fn command_keywords(command: Command) -> &'static str {
+    match command {
+        Command::Add(_) => "mesh primitive polygon",
+        Command::Cad(CadCommand::AddPart(_)) => "solid primitive parametric brep cad",
+        Command::Cad(CadCommand::Combine(FeatureOperation::Join)) => "combine union merge",
+        Command::Cad(CadCommand::Combine(FeatureOperation::Cut)) => "combine subtract difference",
+        Command::Cad(CadCommand::Combine(_)) => "combine common",
+        Command::Cad(CadCommand::ConvertToPart) => "solid brep cad",
+        Command::Cad(CadCommand::ConvertToMesh) => "polygons bake",
+        Command::CadTool(ToolCommand::Chamfer) | Command::Bevel => "chamfer bevel",
+        Command::CadTool(ToolCommand::PushPull) => "press pull offset face",
+        Command::ToggleTheme => "appearance dark light preferences",
+        Command::ToggleHelp => "help keys hotkeys reference",
+        Command::ExportImage => "render screenshot",
+        Command::ToggleProjection => "ortho",
+        Command::SetMode(_) => "shading",
+        _ => "",
     }
 }

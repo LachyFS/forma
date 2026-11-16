@@ -1,22 +1,27 @@
 //! Dropdown menus (Add, Views): anchored to their trigger, keyboard
 //! navigable, and dismissed by Escape or any press outside.
 use super::super::assets::{Icon, icon};
-use super::super::commands::{command_icon, command_info};
+use super::super::commands::{MESH_DETAIL, PART_DETAIL, SKETCH_DETAIL, command_icon, command_info};
 use super::super::components::*;
 use super::super::tokens::*;
 use super::super::{Anchor, MenuKind, hud::view_name};
-use super::{backdrop, contain, pop_in};
+use super::{backdrop, contain, float_border, float_shadow, heading, pop_in, selected_fill};
 use crate::app::{Command, Studio};
 use crate::cad::{CadCommand, PartShape};
+use crate::sketch::DrawCommand;
 use crate::theme::Colors;
 use forma_core::Primitive;
 use gpui::{prelude::*, *};
 
-const MENU_WIDTH: f32 = 232.;
+const ADD_WIDTH: f32 = 264.;
+const VIEW_WIDTH: f32 = 224.;
+/// Space between a menu and the edge of the control that opened it.
+const MENU_GAP: f32 = SP_2;
 
 #[derive(Clone, Copy)]
 pub(crate) enum MenuItem {
-    Heading(&'static str),
+    /// A section title and a short note on what the section makes.
+    Heading(&'static str, Option<&'static str>),
     Action {
         command: Command,
         label: &'static str,
@@ -45,14 +50,14 @@ fn action(command: Command, label: &'static str) -> MenuItem {
 pub(crate) fn items(kind: MenuKind, camera: forma_core::Camera) -> Vec<MenuItem> {
     match kind {
         MenuKind::Add => vec![
-            MenuItem::Heading("Mesh"),
+            MenuItem::Heading("Mesh", Some(MESH_DETAIL)),
             action(Command::Add(Primitive::Cube), "Cube"),
             action(Command::Add(Primitive::Sphere), "Sphere"),
             action(Command::Add(Primitive::Cylinder), "Cylinder"),
             action(Command::Add(Primitive::Torus), "Torus"),
             action(Command::Add(Primitive::Plane), "Plane"),
             MenuItem::Separator,
-            MenuItem::Heading("Part"),
+            MenuItem::Heading("Part", Some(PART_DETAIL)),
             action(Command::Cad(CadCommand::AddPart(PartShape::Box)), "Box"),
             action(
                 Command::Cad(CadCommand::AddPart(PartShape::Cylinder)),
@@ -63,7 +68,10 @@ pub(crate) fn items(kind: MenuKind, camera: forma_core::Camera) -> Vec<MenuItem>
                 "Sphere",
             ),
             MenuItem::Separator,
-            MenuItem::Heading("Import"),
+            MenuItem::Heading("Sketch", Some(SKETCH_DETAIL)),
+            action(Command::Draw(DrawCommand::NewSketch), "New sketch"),
+            MenuItem::Separator,
+            MenuItem::Heading("Import", None),
             action(Command::ImportObj, "Wavefront OBJ…"),
             action(Command::ImportStl, "STL…"),
             action(Command::Cad(CadCommand::ImportStep), "STEP…"),
@@ -138,25 +146,49 @@ pub(super) fn overlay(t: Colors, s: &Studio, cx: &mut Context<Studio>) -> AnyEle
     let selected = menu.index;
     let kind = menu.kind;
     let items = items(kind, s.scene.camera);
-    // Rail menus open beside the rail; others drop below their trigger.
+    // Rail menus open beside the rail, level with their button; others drop
+    // below their trigger. `RAIL_EDGE` is the rail's padding and border
+    // around the button, so the gap is measured from the rail itself.
+    const RAIL_EDGE: f32 = 4.;
     let (position, corner) = match menu.from {
         Anchor::ToolRail => (
-            point(anchor.right() + px(SP_2 + 2.), anchor.top() - px(SP_1)),
+            point(anchor.right() + px(RAIL_EDGE + MENU_GAP), anchor.top()),
             Corner::TopLeft,
         ),
         Anchor::Outliner | Anchor::ViewHud => (
-            point(anchor.right(), anchor.bottom() + px(SP_1_5)),
+            point(anchor.right(), anchor.bottom() + px(MENU_GAP)),
             Corner::TopRight,
         ),
     };
-    let mut list = popover(t).w(px(MENU_WIDTH)).gap(px(1.));
+    let mut list = popover(t)
+        .w(px(if kind == MenuKind::Add {
+            ADD_WIDTH
+        } else {
+            VIEW_WIDTH
+        }))
+        .border_color(float_border(t))
+        .shadow(float_shadow(t))
+        .gap(px(1.));
     for (index, item) in items.into_iter().enumerate() {
         list = match item {
-            MenuItem::Heading(label) => list.child(group_label(t, label)),
+            MenuItem::Heading(label, detail) => list.child(
+                heading(t, label)
+                    .h(px(H_MD - 2.))
+                    .gap(px(SP_2))
+                    .child(spacer())
+                    .when_some(detail, |d, detail| {
+                        d.child(
+                            div()
+                                .font_weight(FontWeight::NORMAL)
+                                .text_color(rgb(t.text_faint))
+                                .child(detail),
+                        )
+                    }),
+            ),
             MenuItem::Separator => list.child(
                 div()
                     .my(px(SP_1))
-                    .mx(px(SP_1))
+                    .mx(px(SP_2))
                     .h(px(1.))
                     .bg(rgb(t.hairline)),
             ),
@@ -172,14 +204,10 @@ pub(super) fn overlay(t: Colors, s: &Studio, cx: &mut Context<Studio>) -> AnyEle
                         .id(("menu-item", index))
                         .h(px(H_MD))
                         .px(px(SP_2))
-                        .gap(px(SP_2))
+                        .gap(px(SP_2 + 2.))
                         .rounded(px(R_SM + 1.))
                         .cursor_pointer()
-                        .bg(if active {
-                            hex(t.control_hover)
-                        } else {
-                            clear()
-                        })
+                        .bg(if active { selected_fill(t) } else { clear() })
                         // Named views share one glyph; repeating it adds noise.
                         .child(
                             match command_icon(command)
@@ -189,10 +217,17 @@ pub(super) fn overlay(t: Colors, s: &Studio, cx: &mut Context<Studio>) -> AnyEle
                                     icon(glyph, ICON_MD, if active { t.text } else { t.text_muted })
                                         .into_any_element()
                                 }
-                                None => div().w(px(ICON_MD)).into_any_element(),
+                                None => div().w(px(ICON_MD)).flex_shrink_0().into_any_element(),
                             },
                         )
-                        .child(div().flex_1().text_color(rgb(t.text)).child(label))
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w(px(0.))
+                                .text_size(px(TEXT_LG))
+                                .text_color(rgb(t.text))
+                                .child(label),
+                        )
                         .when(checked, |d| {
                             d.child(icon(Icon::Check, ICON_SM, t.accent_text))
                         })
