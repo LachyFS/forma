@@ -36,7 +36,26 @@ pub(crate) struct EditState {
     pub faces: Vec<FaceRef>,
     pub edges: Vec<EdgeSelection>,
     hover: Option<(u64, EditHover)>,
+    /// The pointer rests on the active face's push/pull arrow.
+    pub arrow_hot: bool,
+    /// The active face's pick and area, per scene revision and face.
+    arrow_face: std::cell::RefCell<Option<ArrowFace>>,
 }
+
+/// The active face of a part edit selection, prepared for its arrow.
+type ArrowFace = ((u64, u64, u32), Rc<super::push_pull::FacePick>, f32);
+
+/// The push/pull arrow on the active face of a part edit selection: its
+/// screen base and tip, and the face's area (world).
+pub(crate) struct FaceArrow {
+    pub base: Vec2,
+    pub tip: Vec2,
+    pub area: f32,
+}
+
+/// Screen length of the selected face's push/pull arrow: shorter than a
+/// running tool's, as it only offers the tool.
+const FACE_ARROW_PIXELS: f32 = 40.0;
 
 impl EditState {
     /// The hovered face group or edge, if it was picked at `revision`.
@@ -109,17 +128,67 @@ pub(crate) struct ChamferEdge {
     /// Unit directions from the edge into each adjacent face (world).
     pub into_a: Vec3,
     pub into_b: Vec3,
+    /// How far each corner of the chamfer face moves per unit of distance,
+    /// in `quad` order (start on face a, end on a, end on b, start on b):
+    /// `into_a` or `into_b` slid along the edge so that each end of the
+    /// chamfer face meets the neighbouring face (or neighbouring chamfer)
+    /// as the kernel's result does. See [`mitre_chamfer_edges`].
+    pub mitre: [Vec3; 4],
 }
 
 impl ChamferEdge {
     /// The chamfer face for `distance` (world).
     pub(crate) fn quad(&self, distance: f32) -> [Vec3; 4] {
+        let [sa, ea, eb, sb] = self.mitre;
         [
-            self.start + self.into_a * distance,
-            self.end + self.into_a * distance,
-            self.end + self.into_b * distance,
-            self.start + self.into_b * distance,
+            self.start + sa * distance,
+            self.end + ea * distance,
+            self.end + eb * distance,
+            self.start + sb * distance,
         ]
+    }
+
+    /// The material the chamfer removes, as the faces of a closed solid:
+    /// the strips it cuts from both faces and its two end caps. The chamfer
+    /// face itself closes the solid.
+    pub(crate) fn wedge(&self, distance: f32) -> [Vec<Vec3>; 4] {
+        let [sa, ea, eb, sb] = self.quad(distance);
+        [
+            vec![self.start, self.end, ea, sa],
+            vec![self.start, sb, eb, self.end],
+            vec![self.start, sa, sb],
+            vec![self.end, eb, ea],
+        ]
+    }
+
+    /// The unit direction from the edge into face `side` (0 = a, 1 = b).
+    pub(crate) fn across(&self, side: usize) -> Vec3 {
+        if side == 0 { self.into_a } else { self.into_b }
+    }
+
+    /// The outward normal of face `side`.
+    pub(crate) fn face_normal(&self, side: usize) -> Vec3 {
+        let along = (self.end - self.start).normalize_or_zero();
+        let normal = along.cross(self.across(side)).normalize_or_zero();
+        // The other face runs into the material, below this one.
+        if normal.dot(self.across(1 - side)) > 0.0 {
+            -normal
+        } else {
+            normal
+        }
+    }
+
+    /// The chamfer face's outward normal: away from the material, halfway
+    /// between the two faces (equal distances on both).
+    pub(crate) fn outward(&self) -> Vec3 {
+        -(self.into_a + self.into_b).normalize_or_zero()
+    }
+
+    /// Where the chamfer face meets face `side` at the middle of the edge:
+    /// the arrow's base. It moves straight across that face as the
+    /// distance grows, one unit per unit.
+    pub(crate) fn handle_point(&self, side: usize, distance: f32) -> Vec3 {
+        (self.start + self.end) * 0.5 + self.across(side) * distance
     }
 }
 
@@ -129,13 +198,54 @@ pub(crate) struct ChamferTool {
     /// World distance along each face.
     pub distance: f32,
     pub numeric: String,
+    /// The pointer's drag while the tool is modal, across face `side`.
     pub drag: AxisDrag,
+    pub side: usize,
+    /// Keyboard-started: the pointer drives the distance until the arrow
+    /// is grabbed; after that only dragging the arrow changes it.
+    pub modal: bool,
+    /// A press on the arrow (dragging once it travels) and the face it
+    /// lies on.
+    pub handle_drag: Option<(AxisDrag, usize)>,
+    /// The pointer rests on the arrow.
+    pub handle_hot: bool,
     /// World length of one part unit (uniform object scale).
     pub scale: f32,
     pub error: Option<String>,
 }
 
 impl ChamferTool {
+    /// The face of the first edge the arrow lies on: while a drag runs, the
+    /// face it runs across; otherwise the face toward the viewer whose
+    /// direction away from the edge reads most clearly on screen.
+    pub(crate) fn handle_side(&self, studio: &Studio) -> usize {
+        if let Some((_, side)) = self.handle_drag {
+            return side;
+        }
+        if self.modal {
+            return self.side;
+        }
+        self.edges
+            .first()
+            .map_or(0, |edge| clearest_side(studio, edge))
+    }
+
+    /// Screen base and tip of the arrow: where the chamfer face meets the
+    /// handle's face, pointing across that face, the way the chamfer grows.
+    pub(crate) fn handle_screen(&self, studio: &Studio) -> Option<(Vec2, Vec2)> {
+        let edge = self.edges.first()?;
+        let side = self.handle_side(studio);
+        let base = edge.handle_point(side, self.value());
+        let screen = studio.world_to_screen(base)?;
+        let ahead =
+            studio.world_to_screen(base + edge.across(side) * studio.world_per_pixel(base) * 10.0);
+        let direction = ahead
+            .map(|p| p - screen)
+            .and_then(|d| d.try_normalize())
+            .unwrap_or(Vec2::NEG_Y);
+        Some((screen, screen + direction * super::HANDLE_PIXELS))
+    }
+
     pub(crate) fn typed(&self) -> Result<Option<f32>, ()> {
         let text = self.numeric.trim();
         if text.is_empty() {
@@ -474,13 +584,66 @@ impl Studio {
         }
     }
 
-    /// Hover over the edited part's faces or edges.
+    /// Hover over the edited part's faces or edges, or the active face's
+    /// push/pull arrow.
     pub(crate) fn part_edit_hover(&mut self, id: u64, position: Vec2, cx: &mut Context<Self>) {
-        let hover = self.part_edit_pick(id, position).map(|(hover, _)| hover);
+        let arrow_hot = self.face_arrow(id).is_some_and(|arrow| {
+            super::segment_distance(position, arrow.base, arrow.tip) <= PICK_PIXELS
+        });
+        let hover = if arrow_hot {
+            None
+        } else {
+            self.part_edit_pick(id, position).map(|(hover, _)| hover)
+        };
         let revision = self.scene_revision;
-        if self.edit_state_for(id).set_hover(revision, hover) {
+        let state = self.edit_state_for(id);
+        let changed = state.arrow_hot != arrow_hot;
+        state.arrow_hot = arrow_hot;
+        if state.set_hover(revision, hover) || changed {
             cx.notify();
         }
+    }
+
+    /// The push/pull arrow of the active (last selected) face when it is
+    /// flat, in Face mode with no tool running. It stands at the face's
+    /// centroid (or where it was picked, when the centroid falls in a hole)
+    /// along its normal.
+    pub(crate) fn face_arrow(&self, id: u64) -> Option<FaceArrow> {
+        if self.edit_mode != EditMode::Face || self.cad_tool.active() {
+            return None;
+        }
+        let (group, reference) = *self.selected_edit_faces(id).last()?;
+        let key = (self.scene_revision, id, group);
+        let cached = self
+            .cad_tool
+            .edit
+            .arrow_face
+            .borrow()
+            .as_ref()
+            .filter(|(k, _, _)| *k == key)
+            .map(|(_, face, area)| (face.clone(), *area));
+        let (face, area) = match cached {
+            Some(found) => found,
+            None => {
+                let face = Rc::new(self.face_pick_for_group(id, group, reference)?);
+                let area = face.prism.area();
+                *self.cad_tool.edit.arrow_face.borrow_mut() = Some((key, face.clone(), area));
+                (face, area)
+            }
+        };
+        if !face.planar {
+            return None;
+        }
+        let anchor = face.anchor();
+        let base = self.world_to_screen(anchor)?;
+        let ahead =
+            self.world_to_screen(anchor + face.normal * self.world_per_pixel(anchor) * 10.0)?;
+        let direction = (ahead - base).try_normalize().unwrap_or(Vec2::NEG_Y);
+        Some(FaceArrow {
+            base,
+            tip: base + direction * FACE_ARROW_PIXELS,
+            area,
+        })
     }
 
     /// The face group or edge of the edited part under the pointer, with a
@@ -545,6 +708,14 @@ impl Studio {
     ) -> bool {
         self.cad_tool.last = None;
         let shift = event.modifiers.shift;
+        if !shift
+            && self.face_arrow(id).is_some_and(|arrow| {
+                super::segment_distance(position, arrow.base, arrow.tip) <= PICK_PIXELS
+            })
+        {
+            self.push_pull_from_arrow(position, cx);
+            return true;
+        }
         let pick = self.part_edit_pick(id, position);
         let mesh = self.scene.object_mesh(id).cloned();
         let topology = self.part_topology(id);
@@ -710,7 +881,7 @@ impl Studio {
         };
         let matrix = instance.world_transform;
         let mut edges = Vec::new();
-        for index in indices {
+        for &index in &indices {
             let Some(edge) = topology.edges.get(index) else {
                 self.status = "Chamfer · Select straight edges first (2 for Edge mode)".into();
                 cx.notify();
@@ -732,10 +903,18 @@ impl Studio {
             cx.notify();
             return;
         };
+        mitre_chamfer_edges(instance.mesh, &topology, &indices, &mut edges, matrix);
+        // The pointer drags the chamfer's edge across the face that reads
+        // best from here, like the arrow it shows.
         let first = &edges[0];
-        let middle = (first.start + first.end) * 0.5;
-        let bisector = (first.into_a + first.into_b).normalize_or_zero();
-        let mut drag = AxisDrag::new(self, middle, bisector, 0.0, self.last_mouse);
+        let side = clearest_side(self, first);
+        let mut drag = AxisDrag::new(
+            self,
+            (first.start + first.end) * 0.5,
+            first.across(side),
+            0.0,
+            self.last_mouse,
+        );
         drag.started = true;
         let count = edges.len();
         if self.cad_tool.active() {
@@ -747,6 +926,10 @@ impl Studio {
             distance: 0.0,
             numeric: String::new(),
             drag,
+            side,
+            modal: true,
+            handle_drag: None,
+            handle_hot: false,
             scale,
             error: None,
         })));
@@ -757,26 +940,66 @@ impl Studio {
         cx.notify();
     }
 
-    pub(crate) fn chamfer_move(&mut self, position: Vec2, free: bool, cx: &mut Context<Self>) {
+    /// Pointer motion while chamfering: the distance follows the pointer
+    /// until the arrow is grabbed, then follows only an arrow drag; between
+    /// drags the arrow lights up under the pointer.
+    pub(crate) fn chamfer_move(
+        &mut self,
+        position: Vec2,
+        held: bool,
+        free: bool,
+        cx: &mut Context<Self>,
+    ) {
         let Some(Tool::Chamfer(tool)) = self.cad_tool.tool.as_ref() else {
             return;
         };
+        if let Some((mut drag, side)) = tool.handle_drag {
+            if !held {
+                // The release happened outside the window.
+                if let Some(Tool::Chamfer(tool)) = self.cad_tool.tool.as_mut() {
+                    tool.handle_drag = None;
+                }
+                return;
+            }
+            if !drag.started {
+                if drag.press.distance(position) <= super::DRAG_PIXELS {
+                    return;
+                }
+                drag.started = true;
+            }
+            let distance = self.chamfer_drag_distance(&drag, position, free);
+            if let Some(Tool::Chamfer(tool)) = self.cad_tool.tool.as_mut() {
+                tool.handle_drag = Some((drag, side));
+                tool.modal = false;
+                if let Some(distance) = distance {
+                    tool.distance = distance;
+                    self.status = format!(
+                        "Chamfer {} · Release to keep · Return or Done to apply",
+                        crate::sketch::overlay::format_length(distance)
+                    );
+                }
+            }
+            cx.notify();
+            return;
+        }
+        if !tool.modal {
+            let hot = tool
+                .handle_screen(self)
+                .is_some_and(|(a, b)| super::segment_distance(position, a, b) <= PICK_PIXELS);
+            if let Some(Tool::Chamfer(tool)) = self.cad_tool.tool.as_mut()
+                && tool.handle_hot != hot
+            {
+                tool.handle_hot = hot;
+                cx.notify();
+            }
+            return;
+        }
         if !tool.numeric.is_empty() {
             return;
         }
-        let Some(raw) = tool.drag.value(self, position) else {
+        let Some(distance) = self.chamfer_drag_distance(&tool.drag, position, free) else {
             return;
         };
-        let first = &tool.edges[0];
-        // The chamfer face's middle moves |a + b| / 2 per unit of distance.
-        let rate = ((first.into_a + first.into_b).length() * 0.5).max(1.0e-3);
-        let middle = (first.start + first.end) * 0.5;
-        let per_pixel = self.world_per_pixel(middle);
-        let mut distance = (raw / rate).max(0.0);
-        if !free {
-            distance =
-                geometry::snap_value(distance, geometry::snap_step(1.0 / per_pixel), &[], 0.0).0;
-        }
         if let Some(Tool::Chamfer(tool)) = self.cad_tool.tool.as_mut() {
             tool.distance = distance;
             self.status = format!(
@@ -784,6 +1007,79 @@ impl Studio {
                 crate::sketch::overlay::format_length(distance)
             );
         }
+        cx.notify();
+    }
+
+    /// The chamfer distance a drag across a face gives at pointer position
+    /// `position` (the chamfer's edge moves one unit per unit), snapped to
+    /// clean steps unless `free`.
+    fn chamfer_drag_distance(&self, drag: &AxisDrag, position: Vec2, free: bool) -> Option<f32> {
+        let raw = drag.value(self, position)?;
+        let per_pixel = self.world_per_pixel(drag.origin);
+        let mut distance = raw.max(0.0);
+        if !free {
+            distance =
+                geometry::snap_value(distance, geometry::snap_step(1.0 / per_pixel), &[], 0.0).0;
+        }
+        Some(distance)
+    }
+
+    /// A press while chamfering: on the arrow it starts a drag of the
+    /// distance; anywhere else it applies.
+    pub(crate) fn chamfer_press(&mut self, position: Vec2, cx: &mut Context<Self>) {
+        let Some(Tool::Chamfer(tool)) = self.cad_tool.tool.as_ref() else {
+            return;
+        };
+        let on_handle = tool
+            .handle_screen(self)
+            .is_some_and(|(a, b)| super::segment_distance(position, a, b) <= PICK_PIXELS);
+        if !on_handle {
+            self.commit_chamfer(cx);
+            return;
+        }
+        if tool.typed().is_err() {
+            self.status = format!("Invalid distance · {}", tool.numeric);
+            cx.notify();
+            return;
+        }
+        let side = tool.handle_side(self);
+        let first = &tool.edges[0];
+        let value = tool.value();
+        let drag = AxisDrag::new(
+            self,
+            (first.start + first.end) * 0.5,
+            first.across(side),
+            value,
+            position,
+        );
+        if let Some(Tool::Chamfer(tool)) = self.cad_tool.tool.as_mut() {
+            // A typed value becomes the one the drag starts from.
+            tool.distance = value;
+            tool.numeric.clear();
+            tool.handle_drag = Some((drag, side));
+            tool.handle_hot = true;
+        }
+        cx.notify();
+    }
+
+    /// The end of a press on the arrow. A click on it while the pointer
+    /// still drives the distance applies, as any click does then.
+    pub(crate) fn chamfer_release(&mut self, cx: &mut Context<Self>) {
+        let Some(Tool::Chamfer(tool)) = self.cad_tool.tool.as_mut() else {
+            return;
+        };
+        let Some((drag, _)) = tool.handle_drag.take() else {
+            return;
+        };
+        if !drag.started && tool.modal {
+            self.commit_chamfer(cx);
+            return;
+        }
+        let distance = tool.distance;
+        self.status = format!(
+            "Chamfer {} · Drag the arrow or type a distance · Return or Done to apply",
+            crate::sketch::overlay::format_length(distance)
+        );
         cx.notify();
     }
 
@@ -901,6 +1197,45 @@ impl Studio {
     }
 }
 
+/// The face of `edge` a chamfer handle reads best on: turned toward the
+/// viewer, with its direction away from the edge as square to the edge on
+/// screen as possible. Dragging along a direction foreshortened onto the
+/// edge would slide along the edge instead of across it. How squarely each
+/// face faces the viewer also counts, so near ties do not flip between
+/// frames.
+pub(crate) fn clearest_side(studio: &Studio, edge: &ChamferEdge) -> usize {
+    let camera = studio.scene.camera;
+    let middle = (edge.start + edge.end) * 0.5;
+    let toward_viewer = if camera.orthographic {
+        camera.view_matrix().inverse().z_axis.truncate()
+    } else {
+        camera.position() - middle
+    }
+    .normalize_or_zero();
+    let (Some(a), Some(b), Some(m)) = (
+        studio.world_to_screen(edge.start),
+        studio.world_to_screen(edge.end),
+        studio.world_to_screen(middle),
+    ) else {
+        return 0;
+    };
+    let along = (b - a).normalize_or_zero();
+    let reach = studio.world_per_pixel(middle) * 10.0;
+    let score = |side: usize| -> f32 {
+        let square = studio
+            .world_to_screen(middle + edge.across(side) * reach)
+            .and_then(|p| (p - m).try_normalize())
+            .map_or(0.0, |d| along.perp_dot(d).abs());
+        let facing = edge.face_normal(side).dot(toward_viewer);
+        if facing > 0.0 {
+            square + 0.35 * facing
+        } else {
+            square - 2.0
+        }
+    };
+    usize::from(score(1) > score(0))
+}
+
 /// The scale of a transform that scales all axes equally (rotations and
 /// mirroring allowed), or `None` for uneven or skewing scales.
 pub(crate) fn uniform_scale(matrix: Mat4) -> Option<f32> {
@@ -968,13 +1303,97 @@ pub(crate) fn chamfer_edge(
     }
     let world = |v: Vec3| matrix.transform_vector3(v).normalize_or_zero();
     let _ = inverse_transpose;
+    let (into_a, into_b) = (world(into_a), world(into_b));
     Ok(ChamferEdge {
         reference: EdgeRef { start: a, end: b },
         start: matrix.transform_point3(a),
         end: matrix.transform_point3(b),
-        into_a: world(into_a),
-        into_b: world(into_b),
+        into_a,
+        into_b,
+        mitre: [into_a, into_a, into_b, into_b],
     })
+}
+
+/// Mitres the ends of chamfer faces: at each end of a chamfered edge, each
+/// side of its chamfer face runs along its face until it meets the next
+/// boundary of that face there. That boundary is the neighbouring edge's
+/// chamfer face when that edge is chamfered too (a mitred corner), else the
+/// plane of the face beyond the neighbouring edge (a box's end, a clipped
+/// corner). `indices` are the topology edges of `edges`, in order.
+pub(crate) fn mitre_chamfer_edges(
+    mesh: &forma_core::Mesh,
+    topology: &Topology,
+    indices: &[usize],
+    edges: &mut [ChamferEdge],
+    matrix: Mat4,
+) {
+    let normal_matrix = matrix.inverse().transpose();
+    let plane_normal = |group: u32| -> Option<Vec3> {
+        let faces = geometry::group_faces(mesh, group);
+        let (normal, _) = geometry::group_plane(mesh, &faces)?;
+        normal_matrix.transform_vector3(normal).try_normalize()
+    };
+    let snapshot: Vec<ChamferEdge> = edges.to_vec();
+    for (k, &index) in indices.iter().enumerate().take(edges.len()) {
+        let Some(edge) = topology.edges.get(index) else {
+            continue;
+        };
+        let chamfer = &snapshot[k];
+        let along = (chamfer.end - chamfer.start).normalize_or_zero();
+        let ends = [edge.points[0], *edge.points.last().unwrap()];
+        for (end, &vertex) in ends.iter().enumerate() {
+            for (side, group, into) in [
+                (0, edge.groups.0, chamfer.into_a),
+                (1, edge.groups.1, chamfer.into_b),
+            ] {
+                // The face's other edge at this vertex.
+                let Some((other, neighbour)) = topology.edges.iter().enumerate().find(|(j, e)| {
+                    *j != index
+                        && (e.groups.0 == group || e.groups.1 == group)
+                        && e.groups.0 != e.groups.1
+                        && (e.points[0] == vertex || *e.points.last().unwrap() == vertex)
+                }) else {
+                    continue;
+                };
+                // The plane the corner slides onto, through the shared
+                // vertex: its normal and how far it lies along that normal
+                // per unit of distance.
+                let plane = match indices.iter().position(|&i| i == other) {
+                    Some(j) if j < snapshot.len() => {
+                        let next = &snapshot[j];
+                        let next_along = (next.end - next.start).normalize_or_zero();
+                        (next.into_b - next.into_a)
+                            .cross(next_along)
+                            .try_normalize()
+                            .map(|normal| (normal, next.into_a.dot(normal)))
+                    }
+                    _ => {
+                        let beyond = if neighbour.groups.0 == group {
+                            neighbour.groups.1
+                        } else {
+                            neighbour.groups.0
+                        };
+                        plane_normal(beyond).map(|normal| (normal, 0.0))
+                    }
+                };
+                let Some((normal, offset)) = plane else {
+                    continue;
+                };
+                let slope = along.dot(normal);
+                if slope.abs() < 0.05 {
+                    continue;
+                }
+                let slide = ((offset - into.dot(normal)) / slope).clamp(-4.0, 4.0);
+                let slot = match (end, side) {
+                    (0, 0) => 0,
+                    (1, 0) => 1,
+                    (1, _) => 2,
+                    _ => 3,
+                };
+                edges[k].mitre[slot] = into + along * slide;
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -1052,6 +1471,147 @@ mod tests {
                 .iter()
                 .any(|e| !e.straight && e.points.len() > 8)
         );
+    }
+
+    fn bracket_mesh() -> forma_core::Mesh {
+        let scene = crate::cad::demo_scene();
+        let part = scene.parts.iter().find(|p| p.name == "Bracket").unwrap();
+        forma_cad::regenerate(
+            &forma_cad::RegenRequest {
+                part_id: part.id,
+                part: part.clone(),
+                skip: Vec::new(),
+            },
+            &mut forma_cad::RegenCache::default(),
+            &mut |_| {},
+        )
+        .mesh
+        .unwrap()
+    }
+
+    /// Regression (design review): chamfer faces ended square to their
+    /// edges, so at the bracket's clipped corners they overshot the corner
+    /// face. Each end must lie on the face beyond it.
+    #[test]
+    fn chamfer_faces_end_on_the_neighbouring_face() {
+        let mesh = bracket_mesh();
+        let topology = Topology::new(&mesh);
+        let p = |i: u32| mesh.positions[i as usize];
+        let top_edge = |pick: &dyn Fn(Vec3, Vec3) -> bool| {
+            topology
+                .edges
+                .iter()
+                .position(|e| {
+                    let (a, b) = (p(e.points[0]), p(*e.points.last().unwrap()));
+                    (a.y - 0.3).abs() < 1.0e-3 && (b.y - 0.3).abs() < 1.0e-3 && pick(a, b)
+                })
+                .unwrap()
+        };
+        let front = top_edge(&|a, b| a.z > 0.74 && b.z > 0.74);
+        let right = top_edge(&|a, b| a.x > 1.09 && b.x > 1.09);
+        let indices = [front, right];
+        let mut edges: Vec<ChamferEdge> = indices
+            .iter()
+            .map(|&i| chamfer_edge(&mesh, &topology.canon, &topology.edges[i], Mat4::IDENTITY))
+            .collect::<Result<_, _>>()
+            .unwrap();
+        let square: Vec<[Vec3; 4]> = edges.iter().map(|e| e.quad(0.1)).collect();
+        mitre_chamfer_edges(&mesh, &topology, &indices, &mut edges, Mat4::IDENTITY);
+        // The front-right corner is clipped at 45°: its face has this normal.
+        let corner = Vec3::new(1.0, 0.0, 1.0).normalize();
+        for (edge, square) in edges.iter().zip(&square) {
+            let quad = edge.quad(0.1);
+            let (start_end, end_end) = ([quad[0], quad[3]], [quad[1], quad[2]]);
+            let at_corner = if edge.end.x + edge.end.z > edge.start.x + edge.start.z {
+                (edge.end, end_end)
+            } else {
+                (edge.start, start_end)
+            };
+            for point in at_corner.1 {
+                assert!(
+                    (point - at_corner.0).dot(corner).abs() < 1.0e-4,
+                    "{point:?} is off the corner face"
+                );
+            }
+            // Square ends would have reached past it.
+            assert!(
+                square
+                    .iter()
+                    .any(|q| (*q - at_corner.0).dot(corner).abs() > 0.02)
+            );
+        }
+    }
+
+    /// Two chamfered edges meeting at a box corner share a mitre: their
+    /// faces meet along one line instead of overlapping.
+    #[test]
+    fn chamfers_meeting_at_a_corner_share_a_mitre() {
+        let mesh = grouped_cube();
+        let topology = Topology::new(&mesh);
+        let p = |i: u32| mesh.positions[i as usize];
+        let find = |pick: &dyn Fn(Vec3, Vec3) -> bool| {
+            topology
+                .edges
+                .iter()
+                .position(|e| pick(p(e.points[0]), p(*e.points.last().unwrap())))
+                .unwrap()
+        };
+        // Top front and top right edges of the 2 m cube.
+        let front = find(&|a, b| a.y > 0.9 && b.y > 0.9 && a.z > 0.9 && b.z > 0.9);
+        let right = find(&|a, b| a.y > 0.9 && b.y > 0.9 && a.x > 0.9 && b.x > 0.9);
+        let indices = [front, right];
+        let mut edges: Vec<ChamferEdge> = indices
+            .iter()
+            .map(|&i| chamfer_edge(&mesh, &topology.canon, &topology.edges[i], Mat4::IDENTITY))
+            .collect::<Result<_, _>>()
+            .unwrap();
+        mitre_chamfer_edges(&mesh, &topology, &indices, &mut edges, Mat4::IDENTITY);
+        let shared = Vec3::ONE;
+        let top_corner = |edge: &ChamferEdge| {
+            let quad = edge.quad(0.25);
+            let ends = if edge.end.distance(shared) < 1.0e-5 {
+                [quad[1], quad[2]]
+            } else {
+                [quad[0], quad[3]]
+            };
+            *ends.iter().max_by(|a, b| a.y.total_cmp(&b.y)).unwrap()
+        };
+        let (a, b) = (top_corner(&edges[0]), top_corner(&edges[1]));
+        assert!(a.distance(b) < 1.0e-4, "{a:?} vs {b:?}");
+        assert!(a.distance(Vec3::new(0.75, 1.0, 0.75)) < 1.0e-4, "{a:?}");
+    }
+
+    /// Regression (design review): the bracket's selected top face was
+    /// outlined with a line from hole to hole. Its B-rep face is clean;
+    /// truck's tessellation repeats a rim point 7 µm apart. The outline
+    /// welds positions, so every boundary edge lies on a real boundary.
+    #[test]
+    fn face_outlines_follow_only_real_boundaries() {
+        let mesh = bracket_mesh();
+        let top = (0..mesh.faces.len() as u32)
+            .find(|&g| {
+                let faces = geometry::group_faces(&mesh, g);
+                geometry::group_plane(&mesh, &faces)
+                    .is_some_and(|(n, point)| n.y > 0.99 && (point.y - 0.3).abs() < 1.0e-3)
+            })
+            .unwrap();
+        let faces = geometry::group_faces(&mesh, top);
+        let on_boundary = |q: Vec3| {
+            let rim = (q.x.abs() - 1.1).abs() < 1.0e-3
+                || (q.z.abs() - 0.75).abs() < 1.0e-3
+                || (q.x.abs() + q.z.abs() - (1.85 - 0.14)).abs() < 2.0e-3;
+            let hole = [(-0.8, -0.48), (0.8, -0.48), (-0.8, 0.48), (0.8, 0.48)]
+                .iter()
+                .any(|&(x, z): &(f32, f32)| ((q.x - x).hypot(q.z - z) - 0.12).abs() < 2.0e-3);
+            rim || hole || (q.x.hypot(q.z) - 0.38).abs() < 2.0e-3
+        };
+        for [a, b] in geometry::group_boundary(&mesh, &faces) {
+            let (pa, pb) = (mesh.positions[a as usize], mesh.positions[b as usize]);
+            assert!(
+                on_boundary((pa + pb) * 0.5),
+                "outline edge {pa:?} to {pb:?} crosses the face"
+            );
+        }
     }
 
     /// Regression (review): chamfers assumed uniform scale.

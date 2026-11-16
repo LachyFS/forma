@@ -168,7 +168,6 @@ impl Prism {
     }
 
     /// Area of the caps.
-    #[cfg(test)]
     pub(crate) fn area(&self) -> f32 {
         self.triangles
             .iter()
@@ -204,7 +203,65 @@ impl Prism {
         }
     }
 
-    /// Whether loop corner `k` of `points` is a crease (not a smooth arc
+    /// Whether `point`, projected along the normal, lies on the caps (a
+    /// plate's centroid can fall inside a hole or under a boss).
+    pub(crate) fn cap_contains(&self, point: Vec3) -> bool {
+        let (u, v) = self.normal.any_orthonormal_pair();
+        let flat = |p: Vec3| Vec2::new(p.dot(u), p.dot(v));
+        let q = flat(point);
+        self.triangles.iter().any(|t| {
+            let [a, b, c] = t.map(|i| flat(self.points[i as usize]));
+            let (d1, d2, d3) = (
+                (b - a).perp_dot(q - a),
+                (c - b).perp_dot(q - b),
+                (a - c).perp_dot(q - c),
+            );
+            (d1 >= 0.0 && d2 >= 0.0 && d3 >= 0.0) || (d1 <= 0.0 && d2 <= 0.0 && d3 <= 0.0)
+        })
+    }
+
+    /// A point on the caps near their centroid, for an arrow to stand on:
+    /// the centroid itself when it lies on them, else the middle of the cap
+    /// triangle furthest from the outline, nearer the centroid winning
+    /// close calls. A ring's centroid is the middle of its hole; this lands
+    /// on the ring.
+    pub(crate) fn interior_point(&self) -> Vec3 {
+        let centroid = self.centroid();
+        if self.triangles.is_empty() || self.cap_contains(centroid) {
+            return centroid;
+        }
+        let segments: Vec<(Vec3, Vec3)> = self
+            .loops
+            .iter()
+            .flat_map(|lp| {
+                (0..lp.len()).map(move |k| {
+                    (
+                        self.points[lp[k] as usize],
+                        self.points[lp[(k + 1) % lp.len()] as usize],
+                    )
+                })
+            })
+            .collect();
+        let clearance = |p: Vec3| {
+            segments
+                .iter()
+                .map(|&(a, b)| {
+                    let d = b - a;
+                    let t = ((p - a).dot(d) / d.length_squared().max(1.0e-12)).clamp(0.0, 1.0);
+                    p.distance(a + d * t)
+                })
+                .fold(f32::INFINITY, f32::min)
+        };
+        self.triangles
+            .iter()
+            .map(|t| t.map(|i| self.points[i as usize]))
+            .map(|[a, b, c]| (a + b + c) / 3.0)
+            .map(|p| (clearance(p) - 0.25 * p.distance(centroid), p))
+            .max_by(|a, b| a.0.total_cmp(&b.0))
+            .map_or(centroid, |(_, p)| p)
+    }
+
+    /// Whether loop corner `k` of `points` is a crease (not a smooth arc    /// Whether loop corner `k` of `points` is a crease (not a smooth arc
     /// sample), so the paint step draws a wall edge there.
     pub(crate) fn sharp_corner(&self, lp: &[u32], k: usize) -> bool {
         let n = lp.len();
@@ -277,13 +334,21 @@ pub(crate) fn group_plane(mesh: &Mesh, faces: &[usize]) -> Option<(Vec3, Vec3)> 
 }
 
 /// Directed boundary edges of a polygon set: edges used by exactly one of
-/// its polygons, in that polygon's winding.
+/// its polygons, in that polygon's winding. Vertices are welded by position
+/// first (as [`weld`] does for the whole mesh), so a tessellation that
+/// repeats a point inside one face does not outline the edges meeting
+/// there: truck's mesh of the bracket's plate repeats the start of a hole's
+/// rim 7 µm apart, and a long edge between two holes then used one copy on
+/// each side and read as a line across the face. Returned indices are the
+/// first vertex at each position.
 pub(crate) fn group_boundary(mesh: &Mesh, faces: &[usize]) -> Vec<[u32; 2]> {
+    let canon = weld_faces(mesh, faces);
+    let canon = |i: u32| canon.get(&i).copied().unwrap_or(i);
     let mut uses: BTreeMap<(u32, u32), (u32, [u32; 2])> = BTreeMap::new();
     for &f in faces {
         let face = &mesh.faces[f];
         for k in 0..face.len() {
-            let (a, b) = (face[k], face[(k + 1) % face.len()]);
+            let (a, b) = (canon(face[k]), canon(face[(k + 1) % face.len()]));
             if a == b {
                 continue;
             }
@@ -497,6 +562,42 @@ pub(crate) fn weld(mesh: &Mesh) -> Vec<u32> {
             i as u32
         });
         canon.push(id);
+    }
+    canon
+}
+
+/// [`weld`] for the vertices of some polygons only: each vertex mapped to
+/// the first of them at its position (within the same tolerance).
+fn weld_faces(mesh: &Mesh, faces: &[usize]) -> HashMap<u32, u32> {
+    let tolerance = (mesh_extent(mesh) * 2.0e-5).max(1.0e-9);
+    let cell = |p: Vec3| {
+        let q = (p / tolerance).floor();
+        (q.x as i64, q.y as i64, q.z as i64)
+    };
+    let mut grid: HashMap<(i64, i64, i64), Vec<u32>> = HashMap::new();
+    let mut canon: HashMap<u32, u32> = HashMap::new();
+    for &f in faces {
+        for &i in &mesh.faces[f] {
+            if canon.contains_key(&i) {
+                continue;
+            }
+            let p = mesh.positions[i as usize];
+            let (x, y, z) = cell(p);
+            let found = (-1..=1)
+                .flat_map(|dx| (-1..=1).flat_map(move |dy| (-1..=1).map(move |dz| (dx, dy, dz))))
+                .find_map(|(dx, dy, dz)| {
+                    grid.get(&(x + dx, y + dy, z + dz)).and_then(|list| {
+                        list.iter()
+                            .copied()
+                            .find(|&j| mesh.positions[j as usize].distance(p) <= tolerance)
+                    })
+                });
+            let id = found.unwrap_or_else(|| {
+                grid.entry((x, y, z)).or_default().push(i);
+                i
+            });
+            canon.insert(i, id);
+        }
     }
     canon
 }
@@ -1133,6 +1234,54 @@ mod tests {
             resolve_group(&mesh, Vec3::new(0.3, 3.0, -0.2), Vec3::Y),
             None
         );
+    }
+
+    #[test]
+    fn caps_contain_points_on_them_but_not_in_holes() {
+        let outer = vec![
+            Vec2::new(-2.0, -2.0),
+            Vec2::new(2.0, -2.0),
+            Vec2::new(2.0, 2.0),
+            Vec2::new(-2.0, 2.0),
+        ];
+        let hole = circle(Vec2::ZERO, 1.0, 32, true);
+        let prism =
+            Prism::from_regions(&SketchPlane::ground(), Mat4::IDENTITY, &[vec![outer, hole]]);
+        // The ring's centroid is the middle of its hole.
+        assert!(prism.centroid().distance(Vec3::ZERO) < 1.0e-4);
+        assert!(!prism.cap_contains(prism.centroid()));
+        assert!(prism.cap_contains(Vec3::new(1.5, 0.3, -1.5)));
+        assert!(!prism.cap_contains(Vec3::new(2.5, 0.0, 0.0)));
+        // An arrow stands on the ring, clear of both outlines.
+        let inside = prism.interior_point();
+        assert!(prism.cap_contains(inside), "{inside:?}");
+        let radius = Vec2::new(inside.x, inside.z).length();
+        assert!(
+            radius > 1.1 && inside.x.abs().max(inside.z.abs()) < 1.9,
+            "{inside:?}"
+        );
+    }
+
+    /// A face whose tessellation repeats a vertex a hair apart (one copy on
+    /// each side of an inner edge) is still outlined by its border only.
+    #[test]
+    fn boundaries_weld_repeated_points() {
+        let positions = vec![
+            Vec3::new(0.0, 0.0, 0.0),
+            Vec3::new(1.0, 0.0, 0.0),
+            Vec3::new(1.0, 0.0, 1.0),
+            Vec3::new(0.0, 0.0, 1.0),
+            // A copy of the first corner, 2 µm off.
+            Vec3::new(2.0e-6, 0.0, 0.0),
+        ];
+        let mesh = Mesh {
+            positions,
+            faces: vec![vec![0, 2, 1], vec![4, 3, 2]],
+            groups: vec![0, 0],
+        };
+        let boundary = group_boundary(&mesh, &[0, 1]);
+        assert_eq!(boundary.len(), 4, "{boundary:?}");
+        assert_eq!(chain_loops(&boundary).len(), 1);
     }
 
     #[test]

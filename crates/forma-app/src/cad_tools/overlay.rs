@@ -8,7 +8,8 @@ use super::sketch_tool::SketchToolKind;
 use super::{Tool, operation_color};
 use crate::app::Studio;
 use crate::sketch::overlay::{
-    Projector, dot, fill_polygons, ink, label, ring, stroke_dashed, stroke_runs, to_point,
+    Projector, dot, fill_polygons, ink, label, ring, shaped_width, stroke_dashed, stroke_runs,
+    to_point,
 };
 use crate::theme::Colors;
 use forma_core::{Mat4, Vec2, Vec3};
@@ -60,10 +61,23 @@ pub(crate) enum LabelStyle {
     Snapped,
 }
 
+/// A value chip. With a leader it hangs off `at` (an arrow tip, the middle
+/// of a sweep) by a short line in `leader`'s screen direction, so it reads
+/// as attached to the handle it measures; without one it is centred on `at`.
 pub(crate) struct LabelPaint {
     pub at: Vec2,
+    pub leader: Option<Vec2>,
     pub text: String,
     pub style: LabelStyle,
+}
+
+/// The material an operation removes, as the faces of a closed convex
+/// solid: its front faces are tinted faintly, so the cut reads as a ghost
+/// inside the part's old silhouette.
+pub(crate) struct WedgePaint {
+    pub faces: Vec<Vec<Vec3>>,
+    pub color: u32,
+    pub fill: f32,
 }
 
 pub(crate) struct ArrowPaint {
@@ -86,6 +100,7 @@ pub(crate) struct ToolOverlay {
     /// Camera position (perspective) or backward view direction (orthographic).
     pub eye: Vec3,
     pub orthographic: bool,
+    pub wedges: Vec<WedgePaint>,
     pub areas: Vec<AreaPaint>,
     pub prisms: Vec<PrismPaint>,
     pub lathes: Vec<LathePaint>,
@@ -109,6 +124,7 @@ impl ToolOverlay {
 
     fn is_empty(&self) -> bool {
         self.areas.is_empty()
+            && self.wedges.is_empty()
             && self.prisms.is_empty()
             && self.lathes.is_empty()
             && self.quads.is_empty()
@@ -146,6 +162,7 @@ impl Studio {
                 camera.position()
             },
             orthographic: camera.orthographic,
+            wedges: Vec::new(),
             areas: Vec::new(),
             prisms: Vec::new(),
             lathes: Vec::new(),
@@ -175,53 +192,28 @@ impl Studio {
                     fill: 0.7,
                 });
             }
-            overlay
-                .quads
-                .extend(ghost.quads.iter().map(|q| (*q, ghost.color)));
+            // Chamfer faces keep the preview's look until the result lands.
+            for quad in &ghost.quads {
+                let normal = (quad[1] - quad[0]).cross(quad[3] - quad[0]);
+                let up = if normal.y < 0.0 { -normal } else { normal };
+                overlay.areas.push(AreaPaint {
+                    polygons: vec![quad.to_vec()],
+                    color: surface_tone(up.normalize_or_zero()),
+                    fill: 0.94,
+                    outline: 0.0,
+                });
+                overlay.areas.push(AreaPaint {
+                    polygons: vec![quad.to_vec()],
+                    color: ghost.color,
+                    fill: 0.35,
+                    outline: 2.0,
+                });
+            }
         }
         match self.cad_tool.tool.as_ref() {
             Some(Tool::Sketch(tool)) => self.sketch_tool_overlay(tool, &mut overlay),
             Some(Tool::PushPull(tool)) => self.push_pull_overlay(tool, &mut overlay),
-            Some(Tool::Chamfer(tool)) => {
-                let value = tool.value();
-                for edge in &tool.edges {
-                    overlay.lines.push(LinePaint {
-                        points: vec![edge.start, edge.end],
-                        color: t.accent,
-                        alpha: 1.0,
-                        width: 3.0,
-                        dashed: false,
-                    });
-                    if value > 0.0 {
-                        overlay.quads.push((edge.quad(value), t.accent));
-                        for corner in [edge.start, edge.end] {
-                            let wedge = vec![
-                                corner + edge.into_a * value,
-                                corner,
-                                corner + edge.into_b * value,
-                            ];
-                            overlay.lines.push(LinePaint {
-                                points: wedge,
-                                color: t.danger,
-                                alpha: 0.9,
-                                width: 1.2,
-                                dashed: true,
-                            });
-                        }
-                    }
-                }
-                if let Some(edge) = tool.edges.first()
-                    && let Some(at) = self.world_to_screen(
-                        (edge.start + edge.end) * 0.5 + (edge.into_a + edge.into_b) * value * 0.5,
-                    )
-                {
-                    overlay.labels.push(LabelPaint {
-                        at: at + Vec2::new(0.0, -26.0),
-                        text: numeric_text(&tool.numeric, value, false),
-                        style: label_style(&tool.numeric, tool.typed().is_err(), false),
-                    });
-                }
-            }
+            Some(Tool::Chamfer(tool)) => self.chamfer_overlay(tool, &mut overlay),
             None => {
                 if let Some(id) = self.part_editing() {
                     self.part_edit_overlay(id, &mut overlay);
@@ -243,6 +235,78 @@ impl Studio {
             }
         }
         (!overlay.is_empty()).then_some(overlay)
+    }
+
+    /// The chamfer as its result. Each new face is painted as a lit
+    /// surface tinted with the accent and outlined, so it covers the corner
+    /// it cuts and the old edge disappears; where the cut reaches past the
+    /// new face (its ends, edges seen in silhouette) the removed wedge shows
+    /// as a faint red ghost. An arrow on the first edge drags the distance,
+    /// with the value hanging off its tip.
+    fn chamfer_overlay(&self, tool: &super::ChamferTool, overlay: &mut ToolOverlay) {
+        let t = overlay.colors;
+        let value = tool.value();
+        let invalid = tool.typed().is_err();
+        let camera = self.scene.camera;
+        let query = self.visibility_query();
+        for edge in &tool.edges {
+            if value <= 1.0e-6 || invalid {
+                // Nothing cut yet: the edges about to be chamfered.
+                overlay.lines.push(LinePaint {
+                    points: vec![edge.start, edge.end],
+                    color: t.accent,
+                    alpha: 1.0,
+                    width: 3.0,
+                    dashed: false,
+                });
+                continue;
+            }
+            overlay.wedges.push(WedgePaint {
+                faces: edge.wedge(value).to_vec(),
+                color: t.danger,
+                fill: 0.18,
+            });
+            // An edge behind other geometry keeps a see-through face: an
+            // opaque one would float in front of what hides it.
+            let outward = edge.outward();
+            let lift = self.world_per_pixel((edge.start + edge.end) * 0.5) * 1.5;
+            let seen = (1..=5)
+                .filter(|&k| {
+                    let p = edge.start.lerp(edge.end, k as f32 / 6.0) + outward * lift;
+                    crate::viewport::visible_in_query(camera, query, p)
+                })
+                .count();
+            let quad = edge.quad(value).to_vec();
+            if seen >= 3 {
+                overlay.areas.push(AreaPaint {
+                    polygons: vec![quad.clone()],
+                    color: surface_tone(outward),
+                    fill: 0.94,
+                    outline: 0.0,
+                });
+            }
+            overlay.areas.push(AreaPaint {
+                polygons: vec![quad],
+                color: t.accent,
+                fill: 0.35,
+                outline: 2.0,
+            });
+        }
+        if let Some((base, tip)) = tool.handle_screen(self) {
+            let dragging = tool.handle_drag.is_some_and(|(d, _)| d.started);
+            overlay.arrows.push(ArrowPaint {
+                base,
+                tip,
+                color: t.accent,
+                hot: tool.handle_hot || dragging,
+            });
+            overlay.labels.push(LabelPaint {
+                at: tip,
+                leader: (tip - base).try_normalize(),
+                text: numeric_text(&tool.numeric, value, false),
+                style: label_style(&tool.numeric, invalid, false),
+            });
+        }
     }
 
     fn sketch_tool_overlay(&self, tool: &super::SketchTool, overlay: &mut ToolOverlay) {
@@ -289,7 +353,8 @@ impl Studio {
                         fill,
                     });
                 }
-                if let Some((base, tip)) = tool.handle_screen(self) {
+                let arrow = tool.handle_screen(self);
+                if let Some((base, tip)) = arrow {
                     overlay.arrows.push(ArrowPaint {
                         base,
                         tip,
@@ -301,6 +366,7 @@ impl Studio {
                     tool.anchor(),
                     regions.normal(),
                     tool.handle_offset(),
+                    arrow,
                     &tool.numeric,
                     tool.typed().is_err(),
                     tool.snapped_face,
@@ -393,7 +459,8 @@ impl Studio {
                             .map(|f| (at - f).normalize_or(Vec2::NEG_Y))
                             .unwrap_or(Vec2::NEG_Y);
                         overlay.labels.push(LabelPaint {
-                            at: at + away * 24.0,
+                            at,
+                            leader: Some(away),
                             text: if tool.numeric.is_empty() {
                                 super::format_sweep(tool.angle)
                             } else {
@@ -407,13 +474,16 @@ impl Studio {
         }
     }
 
-    /// A dimension from the sketch plane (or face) to the moving face.
+    /// A dimension from the sketch plane (or face) to the moving face. The
+    /// value hangs off the arrow's tip (`arrow` is its screen base and tip),
+    /// else off the middle of the dimension line.
     #[allow(clippy::too_many_arguments)]
     fn distance_label(
         &self,
         anchor: Vec3,
         normal: Vec3,
         offset: f32,
+        arrow: Option<(Vec2, Vec2)>,
         numeric: &str,
         invalid: bool,
         snapped: bool,
@@ -430,16 +500,23 @@ impl Studio {
                 dashed: true,
             });
         }
-        let (Some(a), Some(b)) = (self.world_to_screen(anchor), self.world_to_screen(tip)) else {
-            return;
+        let (at, leader) = match arrow {
+            Some((base, tip)) => (tip, (tip - base).try_normalize()),
+            None => {
+                let (Some(a), Some(b)) = (self.world_to_screen(anchor), self.world_to_screen(tip))
+                else {
+                    return;
+                };
+                let along = (b - a).try_normalize().unwrap_or(Vec2::NEG_Y);
+                let side = Vec2::new(-along.y, along.x);
+                let side = if side.x < 0.0 { -side } else { side };
+                ((a + b) * 0.5, Some(side))
+            }
         };
-        let along = (b - a).try_normalize().unwrap_or(Vec2::NEG_Y);
-        let side = Vec2::new(-along.y, along.x);
-        let side = if side.x < 0.0 { -side } else { side };
-        let text = numeric_text(numeric, offset, snapped);
         overlay.labels.push(LabelPaint {
-            at: (a + b) * 0.5 + side * 34.0,
-            text,
+            at,
+            leader,
+            text: numeric_text(numeric, offset, snapped),
             style: label_style(numeric, invalid, snapped),
         });
     }
@@ -485,7 +562,8 @@ impl Studio {
                 });
             }
         }
-        if let Some((base, tip)) = tool.handle_screen(self) {
+        let arrow = tool.handle_screen(self);
+        if let Some((base, tip)) = arrow {
             overlay.arrows.push(ArrowPaint {
                 base,
                 tip,
@@ -498,6 +576,7 @@ impl Studio {
             active.anchor(),
             first.normal,
             distance,
+            arrow,
             &active.numeric,
             active.typed().is_err(),
             active.snapped_face,
@@ -505,6 +584,9 @@ impl Studio {
         );
     }
 
+    /// Part edit mode: selected faces and edges in full accent, hovered ones
+    /// in a clearly lighter accent, and on the active flat face an arrow to
+    /// push or pull it, with its area hanging off the tip.
     fn part_edit_overlay(&self, id: u64, overlay: &mut ToolOverlay) {
         let t = overlay.colors;
         let Some(instance) = self.scene.mesh_instance(id) else {
@@ -533,8 +615,10 @@ impl Studio {
                 // read as x-ray noise once the face tint carries the selection.
             };
         let selected_faces = self.selected_edit_faces(id);
+        let hover = self.cad_tool.edit.hover(self.scene_revision);
         for (group, _) in &selected_faces {
-            paint_face(*group, 0.24, 2.0, 1.0, overlay);
+            let hovered = hover == Some(EditHover::Face(*group));
+            paint_face(*group, if hovered { 0.32 } else { 0.26 }, 2.0, 1.0, overlay);
         }
         let topology = self.part_topology(id);
         let edge_points = |index: usize| -> Option<Vec<Vec3>> {
@@ -558,9 +642,11 @@ impl Studio {
                 });
             }
         }
-        match self.cad_tool.edit.hover(self.scene_revision) {
+        match hover {
             Some(EditHover::Face(group)) if !selected_faces.iter().any(|(g, _)| *g == group) => {
-                paint_face(group, 0.16, 1.6, 0.85, overlay);
+                // An outline with a breath of tint: plainly lighter than a
+                // selected face's fill.
+                paint_face(group, 0.07, 1.5, 0.8, overlay);
             }
             Some(EditHover::Edge(index)) => {
                 if let Some(points) = edge_points(index) {
@@ -571,13 +657,30 @@ impl Studio {
                     overlay.lines.push(LinePaint {
                         points,
                         color: if straight { t.accent } else { t.text },
-                        alpha: 0.8,
-                        width: 3.0,
+                        alpha: 0.55,
+                        width: 2.0,
                         dashed: false,
                     });
                 }
             }
             _ => {}
+        }
+        if let Some(arrow) = self.face_arrow(id) {
+            overlay.arrows.push(ArrowPaint {
+                base: arrow.base,
+                tip: arrow.tip,
+                color: t.accent,
+                hot: self.cad_tool.edit.arrow_hot,
+            });
+            overlay.labels.push(LabelPaint {
+                at: arrow.tip,
+                leader: (arrow.tip - arrow.base).try_normalize(),
+                text: format!(
+                    "{} m²",
+                    crate::transform::format_precision_value(arrow.area)
+                ),
+                style: LabelStyle::Measured,
+            });
         }
     }
 
@@ -623,11 +726,17 @@ impl Studio {
         ];
         let flags: Vec<bool> = samples.iter().map(|p| visible(*p)).collect();
         let mixed = flags.iter().any(|v| *v) && !flags.iter().all(|v| *v);
-        // Very large pieces are split regardless, since an occluder can sit
-        // wholly inside them; otherwise only pieces crossing a boundary.
-        let split = area > 4000.0 || (mixed && span > 5.0);
+        // Very large and very long pieces are split regardless, since an
+        // occluder can sit wholly inside them or across a sliver between its
+        // samples (a long tessellation edge from hole to hole passed behind
+        // the bracket's boss and was tinted across it); otherwise only pieces
+        // crossing a boundary.
+        let split = area > 4000.0 || span > 64.0 || (mixed && span > 5.0);
         if !split || depth >= 10 || *budget == 0 {
-            if flags[0] {
+            // Most samples decide, not the centre alone: one stray ray (a
+            // grazing hit, a hairline gap in an occluder's tessellation)
+            // should not keep a piece that is otherwise hidden.
+            if flags.iter().filter(|v| **v).count() * 2 > flags.len() {
                 out.push(vec![a, b, c]);
             }
             return;
@@ -679,7 +788,15 @@ impl Studio {
             for triangle in &prism.triangles {
                 let [a, b, c] = triangle.map(|i| prism.points[i as usize]);
                 let centre = (a + b + c) / 3.0;
-                if !facing((b - a).cross(c - a), centre) {
+                let normal = (b - a).cross(c - a);
+                // A triangle with no width (as between two copies of a point
+                // the tessellation repeats a hair apart) fills nothing but an
+                // antialiased line across the face.
+                let longest = (b - a)
+                    .length_squared()
+                    .max((c - b).length_squared())
+                    .max((a - c).length_squared());
+                if normal.length() <= longest * 1.0e-4 || !facing(normal, centre) {
                     continue;
                 }
                 if refine {
@@ -705,6 +822,16 @@ impl Studio {
         cache.insert(key, (self.scene_revision, camera, refine, face.clone()));
         face
     }
+}
+
+/// A plain lit grey for a new face with outward `normal`, as the viewport's
+/// overhead studio light shades parts: faces turned up read light, walls
+/// dark. Previewed faces painted in it cover the geometry they replace.
+fn surface_tone(normal: Vec3) -> u32 {
+    let (dark, light) = (Vec3::new(52.0, 59.0, 70.0), Vec3::new(226.0, 229.0, 233.0));
+    let lit = (0.3 + 0.6 * normal.y.max(0.0)).clamp(0.0, 1.0);
+    let c = dark.lerp(light, lit).round();
+    ((c.x as u32) << 16) | ((c.y as u32) << 8) | c.z as u32
 }
 
 fn numeric_text(numeric: &str, value: f32, snapped: bool) -> String {
@@ -762,6 +889,9 @@ pub(crate) fn paint(
     let projector = Projector { matrix, bounds };
     let c = overlay.colors;
     window.with_content_mask(Some(gpui::ContentMask { bounds }), |window| {
+        for wedge in &overlay.wedges {
+            paint_wedge(overlay, wedge, &projector, window);
+        }
         for area in &overlay.areas {
             let polygons: Vec<Vec<Point<Pixels>>> = area
                 .polygons
@@ -769,7 +899,17 @@ pub(crate) fn paint(
                 .filter_map(|polygon| polygon.iter().map(|p| projector.point(*p)).collect())
                 .collect();
             if area.fill > 0.0 {
-                fill_polygons(window, &polygons, ink(area.color, area.fill));
+                // A face highlight is thousands of small front-facing
+                // triangles. Filled even-odd as one path, a sweep-line slip
+                // between their shared edges flipped a whole scanline across
+                // the gap an occluder leaves (a tinted streak across the
+                // bracket's boss); non-zero fills them as one union. Region
+                // outlines with holes keep even-odd, whatever their winding.
+                if area.polygons.iter().all(|p| p.len() == 3) {
+                    fill_union(window, &polygons, ink(area.color, area.fill));
+                } else {
+                    fill_polygons(window, &polygons, ink(area.color, area.fill));
+                }
             }
             if area.outline > 0.0 {
                 let runs: Vec<Vec<Point<Pixels>>> = area
@@ -877,18 +1017,82 @@ pub(crate) fn paint(
                     Some(gpui::rgba(c.hud_border)),
                 ),
             };
+            let center = match paint_label.leader {
+                Some(direction) => {
+                    // The chip's edge meets the leader's end.
+                    let size = Vec2::new(
+                        shaped_width(window, &paint_label.text, LABEL_TEXT) + 12.0,
+                        LABEL_TEXT + 9.0,
+                    );
+                    let exit = (size.x * 0.5 / direction.x.abs().max(1.0e-4))
+                        .min(size.y * 0.5 / direction.y.abs().max(1.0e-4));
+                    let end = paint_label.at + direction * LEADER;
+                    let leader = [vec![to_point(paint_label.at), to_point(end)]];
+                    stroke_runs(window, &leader, 3.0, ink(c.canvas, 0.4));
+                    stroke_runs(window, &leader, 1.2, border.unwrap_or(text));
+                    end + direction * exit
+                }
+                None => paint_label.at,
+            };
             label(
                 window,
                 cx,
                 &paint_label.text,
-                to_point(paint_label.at),
+                to_point(center),
                 text,
                 background,
                 border,
-                11.5,
+                LABEL_TEXT,
             );
         }
     });
+}
+
+/// Font size of value chips, and the length of the leader that attaches
+/// one to its handle.
+const LABEL_TEXT: f32 = 11.5;
+const LEADER: f32 = 10.0;
+
+/// Tints the front faces of a removed solid once, as one non-zero fill.
+fn paint_wedge(
+    overlay: &ToolOverlay,
+    wedge: &WedgePaint,
+    projector: &Projector,
+    window: &mut Window,
+) {
+    let count: usize = wedge.faces.iter().map(Vec::len).sum();
+    if count == 0 {
+        return;
+    }
+    let centroid = wedge.faces.iter().flatten().copied().sum::<Vec3>() / count as f32;
+    let mut front: Vec<Vec<Point<Pixels>>> = Vec::new();
+    for face in &wedge.faces {
+        if face.len() < 3 {
+            continue;
+        }
+        // Newell's normal, turned away from the solid's middle.
+        let mut normal = Vec3::ZERO;
+        for (k, a) in face.iter().enumerate() {
+            normal += a.cross(face[(k + 1) % face.len()]);
+        }
+        let center = face.iter().copied().sum::<Vec3>() / face.len() as f32;
+        let mut points = face.clone();
+        if normal.dot(center - centroid) < 0.0 {
+            normal = -normal;
+            points.reverse();
+        }
+        if normal.length_squared() < 1.0e-12 || !overlay.facing(normal, center) {
+            continue;
+        }
+        if let Some(projected) = points
+            .iter()
+            .map(|p| projector.point(*p))
+            .collect::<Option<Vec<_>>>()
+        {
+            front.push(projected);
+        }
+    }
+    fill_union(window, &front, ink(wedge.color, wedge.fill));
 }
 
 fn paint_prism(

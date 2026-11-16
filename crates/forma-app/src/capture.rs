@@ -161,6 +161,8 @@ fn tool_scenarios() -> Vec<Scenario> {
         scenario("tools-part-edit-faces", demo::part_edit_faces),
         scenario("tools-part-edit-edges", demo::part_edit_edges),
         scenario("tools-chamfer", demo::chamfer),
+        scenario("tools-chamfer-drag", demo::chamfer_drag),
+        scenario("tools-part-edit-face-arrow", demo::part_edit_face_arrow),
         scenario("tools-adjust", demo::adjust),
         Scenario {
             name: "tools-light-theme",

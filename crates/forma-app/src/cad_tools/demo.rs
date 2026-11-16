@@ -428,11 +428,64 @@ pub(crate) fn chamfer(s: &mut Studio, w: &mut Window, cx: &mut Context<Studio>) 
     let side_top = Vec3::new(-2.0 + 1.1, 0.3, 0.25 + 0.1);
     press(s, w, cx, screen(s, front_top), false);
     press(s, w, cx, screen(s, side_top), true);
-    let start = screen(s, front_top + Vec3::new(0.0, 0.1, 0.1));
-    hover(s, w, cx, start);
+    hover(s, w, cx, screen(s, front_top));
     s.start_chamfer(cx);
-    let end = screen(s, front_top + Vec3::new(0.0, 0.065, 0.065));
-    hover(s, w, cx, end);
+    // Drag the chamfer's edge 0.1 m across the face its arrow lies on.
+    let across = match s.cad_tool.tool.as_ref() {
+        Some(Tool::Chamfer(tool)) => tool.edges[0].across(tool.side),
+        _ => Vec3::ZERO,
+    };
+    hover(s, w, cx, screen(s, front_top + across * 0.1));
+}
+
+/// The chamfer after grabbing its arrow and dragging it 0.1 m further.
+pub(crate) fn chamfer_drag(s: &mut Studio, w: &mut Window, cx: &mut Context<Studio>) {
+    chamfer(s, w, cx);
+    let Some(Tool::Chamfer(tool)) = s.cad_tool.tool.as_ref() else {
+        return;
+    };
+    let (Some((base, tip)), edge, side) = (tool.handle_screen(s), tool.edges[0].clone(), tool.side)
+    else {
+        return;
+    };
+    // Press the arrow where it is (a hover first would move it while the
+    // pointer still drives the distance), then drag along it.
+    let grab = base.lerp(tip, 0.4);
+    s.mouse_down(
+        &MouseDownEvent {
+            button: MouseButton::Left,
+            position: point(px(grab.x), px(grab.y)),
+            click_count: 1,
+            ..Default::default()
+        },
+        w,
+        cx,
+    );
+    let middle = (edge.start + edge.end) * 0.5;
+    let step = s
+        .world_to_screen(middle + edge.across(side) * 0.2)
+        .zip(s.world_to_screen(middle + edge.across(side) * 0.1))
+        .map_or(Vec2::ZERO, |(far, near)| far - near);
+    let to = grab + step;
+    drag(s, w, cx, point(px(to.x), px(to.y)));
+}
+
+/// One flat face selected in part edit mode, the pointer on its arrow.
+pub(crate) fn part_edit_face_arrow(s: &mut Studio, w: &mut Window, cx: &mut Context<Studio>) {
+    let id = bracket(s, w, cx, EditMode::Face);
+    let front = Vec3::new(-2.0 + 0.3, 0.15, 0.25 + 0.75);
+    press(s, w, cx, screen(s, front), false);
+    s.cad_tool_mouse_up(
+        &MouseUpEvent {
+            button: MouseButton::Left,
+            ..Default::default()
+        },
+        cx,
+    );
+    if let Some(arrow) = s.face_arrow(id) {
+        let at = arrow.base.lerp(arrow.tip, 0.6);
+        hover(s, w, cx, point(px(at.x), px(at.y)));
+    }
 }
 
 pub(crate) fn adjust(s: &mut Studio, w: &mut Window, cx: &mut Context<Studio>) {
