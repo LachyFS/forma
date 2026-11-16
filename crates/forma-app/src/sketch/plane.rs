@@ -315,6 +315,47 @@ pub(crate) fn look_at(camera: Camera, plane: &SketchPlane, focus: Vec3) -> Camer
     result
 }
 
+/// A world plane in words: the named origin planes, else its orientation.
+pub(crate) fn describe(plane: &SketchPlane) -> &'static str {
+    let normal = plane.normal();
+    let through_origin = plane.origin.dot(normal).abs() < 1.0e-4;
+    let along = |axis: Vec3| normal.dot(axis).abs() > 0.9999;
+    match (along(Vec3::Y), along(Vec3::Z), along(Vec3::X)) {
+        (true, _, _) if through_origin => "Ground plane",
+        (true, _, _) => "Horizontal plane",
+        (_, true, _) if through_origin => "Front plane",
+        (_, _, true) if through_origin => "Right plane",
+        _ if normal.y.abs() < 1.0e-3 => "Vertical plane",
+        _ => "Tilted plane",
+    }
+}
+
+/// The share of the view's shorter half extent a framed sketch or face
+/// fills on entering Draw: the rest is margin and context.
+const FRAME_FILL: f32 = 0.62;
+
+/// The camera Draw mode starts with: normal to `plane` (world space) in
+/// orthographic, centred on `focus`. `extent`, a world radius, frames an
+/// existing sketch or a picked face; without it the scale at the focus is
+/// kept, since an orthographic view at the same distance matches the
+/// perspective scale at the target.
+pub(crate) fn drawing_camera(
+    camera: Camera,
+    plane: &SketchPlane,
+    focus: Vec3,
+    extent: Option<f32>,
+    aspect: f32,
+) -> Camera {
+    let mut result = look_at(camera, plane, focus);
+    result.orthographic = true;
+    if let Some(radius) = extent.filter(|r| r.is_finite() && *r > 0.0) {
+        let half_height = (result.fov_y * 0.5).tan();
+        let short = half_height * aspect.clamp(1.0e-3, 1.0);
+        result.distance = (radius / (short * FRAME_FILL)).clamp(0.02, 100_000.0);
+    }
+    result
+}
+
 /// Angle between the camera's viewing direction and the plane's normal view.
 pub(crate) fn view_angle(camera: Camera, plane: &SketchPlane) -> f32 {
     let (_, _, backward) = camera_axes(camera);
@@ -417,6 +458,39 @@ mod tests {
             }
             assert_eq!(camera.target, Vec3::new(1.0, 2.0, 3.0));
         }
+    }
+
+    #[test]
+    fn drawing_cameras_look_normal_in_orthographic_and_frame_extents() {
+        let plane = SketchPlane::from_point_normal(Vec3::ZERO, Vec3::new(0.3, 0.8, 0.2)).unwrap();
+        let focus = Vec3::new(0.5, 0.1, -0.2);
+        let camera = Camera::default();
+        // A bare plane keeps the zoom: the scale at the target is unchanged.
+        let bare = drawing_camera(camera, &plane, focus, None, 1.6);
+        assert!(bare.orthographic);
+        assert!(view_angle(bare, &plane) < 1.0e-3);
+        assert_eq!((bare.target, bare.distance), (focus, camera.distance));
+        // An extent fills a fixed share of the shorter half extent, in
+        // landscape and portrait viewports.
+        for aspect in [1.6, 0.6] {
+            let framed = drawing_camera(camera, &plane, focus, Some(1.5), aspect);
+            let half_height = framed.distance * (framed.fov_y * 0.5).tan();
+            let short = half_height * aspect.min(1.0);
+            assert!((1.5 / short - FRAME_FILL).abs() < 1.0e-4, "{aspect}");
+        }
+    }
+
+    #[test]
+    fn planes_are_described_by_orientation() {
+        assert_eq!(describe(&SketchPlane::ground()), "Ground plane");
+        assert_eq!(describe(&SketchPlane::front()), "Front plane");
+        assert_eq!(describe(&SketchPlane::right()), "Right plane");
+        let raised = SketchPlane::from_point_normal(Vec3::Y, Vec3::NEG_Y).unwrap();
+        assert_eq!(describe(&raised), "Horizontal plane");
+        let wall = SketchPlane::from_point_normal(Vec3::X, Vec3::new(1.0, 0.0, 1.0)).unwrap();
+        assert_eq!(describe(&wall), "Vertical plane");
+        let tilted = SketchPlane::from_point_normal(Vec3::ZERO, Vec3::ONE).unwrap();
+        assert_eq!(describe(&tilted), "Tilted plane");
     }
 
     #[test]
