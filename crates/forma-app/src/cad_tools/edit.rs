@@ -934,7 +934,7 @@ impl Studio {
             error: None,
         })));
         self.status = format!(
-            "Chamfer {count} edge{} · Move the pointer or type a distance · Click or Return to apply · Esc cancel",
+            "Chamfer {count} edge{} · Move the pointer or type a distance · Click or Return when done · Esc cancel",
             if count == 1 { "" } else { "s" }
         );
         cx.notify();
@@ -1003,7 +1003,7 @@ impl Studio {
         if let Some(Tool::Chamfer(tool)) = self.cad_tool.tool.as_mut() {
             tool.distance = distance;
             self.status = format!(
-                "Chamfer {} · Click or Return to apply · Type an exact value",
+                "Chamfer {} · Click or Return when done · Type an exact value",
                 crate::sketch::overlay::format_length(distance)
             );
         }

@@ -559,7 +559,7 @@ impl Studio {
         if matches!(key, "shift" | "control" | "alt" | "platform" | "function") {
             return false;
         }
-        self.status = "Finish the tool first · Return to apply · Esc to cancel".into();
+        self.status = "Finish the tool first · Return when done · Esc to cancel".into();
         true
     }
 

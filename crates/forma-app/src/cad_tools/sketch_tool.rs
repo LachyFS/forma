@@ -879,10 +879,10 @@ impl Studio {
         let picked = format!("{regions} region{}", if regions == 1 { "" } else { "s" });
         self.status = match tool.kind {
             SketchToolKind::Extrude if tool.distance == 0.0 => format!(
-                "Extrude · {picked} · Drag the arrow or a region, or type a distance · Return to apply"
+                "Extrude · {picked} · Drag the arrow or a region, or type a distance · Return when done"
             ),
             SketchToolKind::Extrude => format!(
-                "Extrude {} · {picked} · {} · Return to apply · Esc cancel",
+                "Extrude {} · {picked} · {} · Return when done · Esc cancel",
                 crate::sketch::overlay::format_length(tool.distance),
                 tool.operation().label()
             ),
@@ -890,7 +890,7 @@ impl Studio {
                 format!("Revolve · {picked} · Click a line for the axis, or press X or Y")
             }
             SketchToolKind::Revolve => format!(
-                "Revolve {} · {picked} · Drag the handle or type an angle · Return to apply",
+                "Revolve {} · {picked} · Drag the handle or type an angle · Return when done",
                 super::format_sweep(tool.angle)
             ),
         };

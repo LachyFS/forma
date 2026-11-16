@@ -267,7 +267,7 @@ impl Studio {
         };
         self.cad_tool.tool = Some(Tool::PushPull(Box::new(tool)));
         self.status = format!(
-            "Push/Pull {count} face{} · Move the pointer or type a distance · Click or Return to apply · Esc cancel",
+            "Push/Pull {count} face{} · Move the pointer or type a distance · Click or Return when done · Esc cancel",
             if count == 1 { "" } else { "s" }
         );
         cx.notify();
@@ -527,7 +527,7 @@ impl Studio {
                 });
             }
         }
-        self.status = format!("Push/Pull {label} face · Drag along the normal · Release to apply");
+        self.status = format!("Push/Pull {label} face · Drag along the normal · Release when done");
         cx.notify();
         true
     }
@@ -588,7 +588,7 @@ impl Studio {
                 }
                 let distance = active.distance;
                 self.status = format!(
-                    "Push/Pull {} · {} · Release to apply · Type an exact value",
+                    "Push/Pull {} · {} · Release when done · Type an exact value",
                     crate::sketch::overlay::format_length(distance),
                     if distance >= 0.0 {
                         "Pull out"

@@ -166,8 +166,10 @@ fn tessellate_at(body: &Body, tolerance: f64) -> Result<Tessellation, KernelErro
         .map(|m| m.as_ref().map(|poly| face_triangles(poly, degenerate)))
         .collect();
     // Positions on shared edges coincide (truck meshes each edge once per
-    // shell); quantize well below the chord tolerance to match them.
-    let step = (tolerance * 1.0e-2).max(size * 1.0e-10);
+    // shell), but a wire's closing vertex can repeat a few micrometres away;
+    // weld at 5% of the chord tolerance, still far below display precision,
+    // so such a repeat cannot read as a boundary edge across a flat face.
+    let step = (tolerance * 5.0e-2).max(size * 1.0e-10);
     let mut parent: Vec<usize> = (0..faces.len()).collect();
     {
         // position -> (face, normal) for every vertex.
@@ -326,7 +328,7 @@ pub(crate) fn editable_mesh(
     let tolerance = body.tolerance(quality.chord_fraction(), quality.max_angle());
     let size = body.size();
     let meshes = body.face_meshes(tolerance)?;
-    let step = (tolerance * 1.0e-2).max(size * 1.0e-10);
+    let step = (tolerance * 5.0e-2).max(size * 1.0e-10);
     let degenerate = (size * 1.0e-9).powi(2);
     let mut weld = Welder::new(step);
     let mut positions: Vec<Vec3> = Vec::new();
