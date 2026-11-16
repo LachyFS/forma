@@ -168,10 +168,12 @@ impl Studio {
         if tool != DrawTool::Select {
             session.selection.clear();
         }
-        self.status = format!("{} · {}", tool.label(), self.draw_hint());
+        self.status = self.draw_hint();
     }
 
-    /// One line of guidance for the current tool and step.
+    /// One line of guidance for the current tool and step, short enough
+    /// for the status bar: the toolbar already names the tool and the key
+    /// hints list the rest.
     pub(crate) fn draw_hint(&self) -> String {
         let Some(session) = self.sketch.session.as_ref() else {
             return String::new();
@@ -180,39 +182,38 @@ impl Studio {
         match (session.tool, session.step) {
             (DrawTool::Select, _) => {
                 if session.selection.is_empty() {
-                    "Click or drag a box to select · Drag points and curves to move them".into()
+                    "Click or drag a box to select · Drag to move".into()
                 } else {
                     format!(
-                        "{} selected · Drag to move · Delete removes · X construction",
+                        "{} selected · Drag to move · Delete removes",
                         session.selection.len()
                     )
                 }
             }
-            (DrawTool::Trim, _) => "Click the piece of a curve to remove it".into(),
+            (DrawTool::Trim, _) => "Click a piece of a curve to remove it".into(),
             (DrawTool::Line, Step::Line { arc: true, .. }) => {
-                "Tangent arc · Click its end · Type radius, Tab for sweep · L for lines".into()
+                "Click the arc's end · type a radius · L for lines".into()
             }
             (DrawTool::Line, Step::Line { .. }) => {
-                "Click the next point · Type a length, Tab for angle · A tangent arc · Return ends"
-                    .into()
+                "Click next point · type a length · Tab for angle".into()
             }
             (DrawTool::Line, _) => "Click to start a line".into(),
             (DrawTool::Rectangle, Step::Rectangle { .. }) => {
-                "Click the opposite corner · Type width, Tab for height".into()
+                "Click the opposite corner · type a width".into()
             }
-            (DrawTool::Rectangle, _) if center => "Click the centre · R for corner mode".into(),
-            (DrawTool::Rectangle, _) => "Click the first corner · R for centre mode".into(),
+            (DrawTool::Rectangle, _) if center => "Click the centre · R for corners".into(),
+            (DrawTool::Rectangle, _) => "Click the first corner · R for centre".into(),
             (DrawTool::Circle, Step::Circle { .. }) => {
-                "Click to set the radius · Type a radius".into()
+                "Click to set the radius · or type it".into()
             }
             (DrawTool::Circle, _) => "Click the centre".into(),
             (DrawTool::Arc, Step::Arc { end: None, .. }) => "Click the end point".into(),
-            (DrawTool::Arc, Step::Arc { .. }) => "Click a point on the arc · Type a radius".into(),
+            (DrawTool::Arc, Step::Arc { .. }) => "Click a point on the arc · type a radius".into(),
             (DrawTool::Arc, _) => "Click the start point".into(),
             (DrawTool::Polygon, Step::Polygon { .. }) => {
-                "Click a corner · Type a radius, Tab for angle · + / − sides".into()
+                "Click a corner · type a radius · + − sides".into()
             }
-            (DrawTool::Polygon, _) => "Click the centre · + / − sides".into(),
+            (DrawTool::Polygon, _) => "Click the centre · + − sides".into(),
         }
     }
 
@@ -568,7 +569,7 @@ impl Studio {
                         dimension.label()
                     )
                 }
-                _ => format!("{} · {hint}", session.tool.label()),
+                _ => hint,
             };
         }
     }

@@ -426,9 +426,7 @@ impl Studio {
             camera_restore,
             analysis: RefCell::new(None),
         });
-        self.status = format!(
-            "Draw · {label} · L line · R rectangle · C circle · A arc · P polygon · Return to finish"
-        );
+        self.status = format!("Draw · {label} · Return to finish");
         // The ground grid change renders through the GPU frame.
         self.invalidate(false, cx);
     }
