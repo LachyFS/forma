@@ -227,7 +227,7 @@ pub(crate) fn studio_scene() -> Scene {
     if let Some(object) = scene.object_mut(plinth) {
         object.name = "Studio plinth".into();
         object.transform.translation = Vec3::new(0.0, -0.15, 0.0);
-        object.transform.scale = Vec3::new(3.4, 0.15, 2.6);
+        object.transform.scale = Vec3::new(3.25, 0.15, 2.3);
     }
     if let Some(material) = scene.object_material_mut(plinth) {
         // Neutral graphite: reads as a stage in dark and light themes alike.
@@ -315,7 +315,7 @@ pub(crate) fn studio_scene() -> Scene {
     // A little closer than the default view, so the objects fill the frame
     // above the timeline.
     scene.camera.target = Vec3::new(0.0, 0.4, 0.2);
-    scene.camera.distance = 8.6;
+    scene.camera.distance = 8.1;
     scene
 }
 
