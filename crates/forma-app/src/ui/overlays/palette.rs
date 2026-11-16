@@ -27,9 +27,9 @@ const FOOTER: f32 = 36.;
 /// Tallest the list grows before it scrolls: about nine rows and a heading.
 const LIST_MAX: f32 = 380.;
 /// Room for the highlighted command's description beside the footer keys.
-const DETAIL_WIDTH: f32 = 270.;
-/// Shortcuts sit in one right-aligned column so categories line up.
-const SHORTCUT_COLUMN: f32 = 108.;
+const DETAIL_WIDTH: f32 = 380.;
+/// Height of the fade that shows the list continues below.
+const FADE: f32 = 28.;
 
 /// Heading for commands that act on the current selection.
 const FOR_SELECTION: &str = "For selection";
@@ -324,8 +324,8 @@ fn label_text(t: Colors, entry: &PaletteEntry, enabled: bool) -> impl IntoElemen
         ..Default::default()
     };
     div()
-        .flex_1()
         .min_w(px(0.))
+        .flex_shrink()
         .truncate()
         .text_size(px(TEXT_LG))
         .text_color(rgb(ink))
@@ -363,7 +363,7 @@ fn command_row(
         .flex_shrink_0()
         .pl(px(SP_3))
         .pr(px(SP_2 + 2.))
-        .gap(px(SP_3))
+        .gap(px(SP_2 + 2.))
         .rounded(px(R_MD))
         .when(enabled, |d| d.cursor_pointer())
         .bg(if active { selected_fill(t) } else { clear() })
@@ -381,21 +381,26 @@ fn command_row(
             None => div().w(px(ICON_MD)).flex_shrink_0().into_any_element(),
         })
         .child(label_text(t, entry, enabled))
-        .when(enabled && show_category, |d| {
-            d.child(
-                div()
-                    .flex_shrink_0()
-                    .text_size(px(TEXT_MD))
-                    .text_color(rgb(t.text_faint))
-                    .child(command_group(command)),
-            )
-        })
+        // The category reads as the label's subtitle, right beside it. It
+        // is left out where the label already starts with it ("Export
+        // STEP…" under Export).
+        .when(
+            enabled && show_category && !entry.label.starts_with(command_group(command)),
+            |d| {
+                d.child(
+                    div()
+                        .flex_shrink_0()
+                        .text_size(px(TEXT_MD))
+                        .text_color(rgb(if active { t.text_muted } else { t.text_faint }))
+                        .child(command_group(command)),
+                )
+            },
+        )
+        .child(spacer())
         // The reason a command cannot run takes the shortcut's place.
         .child(
             row()
-                .min_w(px(SHORTCUT_COLUMN))
                 .flex_shrink_0()
-                .justify_end()
                 .when(enabled && !entry.shortcut.is_empty(), |d| {
                     d.child(keycaps(t, entry.shortcut))
                 })
@@ -441,7 +446,9 @@ pub(super) fn overlay(
         .overflow_y_scroll()
         .track_scroll(&scroll)
         .px(px(SP_1_5))
-        .py(px(SP_1_5));
+        .pt(px(SP_1_5))
+        // Room under the last row, so it never meets the footer's rule.
+        .pb(px(SP_3));
     for (index, entry) in entries.iter().enumerate() {
         let first_of_section =
             grouped && (index == 0 || entries[index - 1].section != entry.section);
@@ -542,7 +549,30 @@ pub(super) fn overlay(
             )
         });
 
-    // The footer explains the highlighted command; keys stay on the right.
+    // While rows continue below, a short fade into the card says so.
+    let max_scroll = scroll.max_offset().height;
+    let clipped_below = max_scroll > px(0.5) && scroll.offset().y > -max_scroll + px(0.5);
+    let veil = hex(t.overlay);
+    let mut clear_veil = veil;
+    clear_veil.a = 0.;
+    let list = div().relative().child(list).when(clipped_below, |d| {
+        d.child(
+            div()
+                .absolute()
+                .left_0()
+                .right_0()
+                .bottom_0()
+                .h(px(FADE))
+                .bg(linear_gradient(
+                    0.,
+                    linear_color_stop(veil, 0.),
+                    linear_color_stop(clear_veil, 1.),
+                )),
+        )
+    });
+
+    // The footer explains the highlighted command in plain words; the keys
+    // that act on it stay on the right.
     let detail = entries
         .get(selected)
         .filter(|entry| s.command_unavailable(entry.command).is_none())
@@ -567,7 +597,6 @@ pub(super) fn overlay(
                     d.child(fit_text(cx, detail.into(), TEXT_SM, DETAIL_WIDTH))
                 }),
         )
-        .child(hint(t, "↑ ↓", "Navigate"))
         .child(hint(t, "Return", "Run"))
         .child(hint(t, "Esc", "Close"));
 

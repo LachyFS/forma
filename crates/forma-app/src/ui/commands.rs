@@ -63,15 +63,18 @@ pub(crate) fn command_info(command: Command) -> CommandInfo {
             platform_shortcut("⇧ ⌘ S", "Ctrl+Shift+S"),
         ),
         Command::ImportObj => info("Import Wavefront OBJ…"),
-        Command::ImportStl => explained("Import STL…", "Choose the file's units first"),
+        Command::ImportStl => explained(
+            "Import STL…",
+            "Choose the file's units, then place its meshes",
+        ),
         Command::ExportObj => info("Export Wavefront OBJ…"),
         Command::ExportStl => explained(
             "Export STL…",
-            "Selection or visible scene, in the units you choose",
+            "Save the selection, or the visible scene, in your units",
         ),
         Command::ExportImage => explained(
             "Export image…",
-            "PNG of the current viewport mode · keeps rendering while you edit",
+            "Save a PNG of the viewport; it renders while you keep editing",
         ),
         Command::Add(Primitive::Cube) => explained("Cube", MESH_DETAIL),
         Command::Add(Primitive::Sphere) => explained("Sphere", MESH_DETAIL),
@@ -114,15 +117,18 @@ pub(crate) fn command_info(command: Command) -> CommandInfo {
         Command::SelectLinked => keyed("Select linked", "L"),
         Command::BoxSelect => keyed("Box select", "B"),
         Command::Extrude => keyed("Extrude faces", "E"),
-        Command::Subdivide => explained("Subdivide", "Catmull–Clark, one level"),
+        Command::Subdivide => {
+            explained("Subdivide", "Smooth the mesh with one Catmull–Clark level")
+        }
         Command::Bevel => CommandInfo {
             label: "Bevel edges",
             shortcut: Some(platform_shortcut("⌘ B", "Ctrl+B")),
-            detail: Some("Every edge of a closed convex mesh · Object mode"),
+            detail: Some("Bevel every edge of a closed convex mesh at once"),
         },
-        Command::Triangulate => {
-            explained("Triangulate", "Selected faces, or entire selected objects")
-        }
+        Command::Triangulate => explained(
+            "Triangulate",
+            "Split the selected faces, or whole objects, into triangles",
+        ),
         Command::FlipNormals => explained(
             "Flip normals",
             "Reverse the winding of selected faces or objects",
@@ -183,7 +189,7 @@ fn tool_info(command: ToolCommand) -> CommandInfo {
     match command {
         ToolCommand::Extrude => explained_keyed(
             "Extrude",
-            "Pull sketch regions into a part · joins or cuts on a part's face",
+            "Pull sketch regions into a part, or join and cut on its face",
             "E",
         ),
         ToolCommand::Revolve => explained_keyed(
@@ -199,7 +205,7 @@ fn tool_info(command: ToolCommand) -> CommandInfo {
         ToolCommand::Chamfer => CommandInfo {
             label: "Chamfer edges",
             shortcut: Some(platform_shortcut("⌘ B", "Ctrl+B")),
-            detail: Some("Selected straight edges of a part · part edit mode"),
+            detail: Some("Cut a flat bevel along the selected straight edges"),
         },
         ToolCommand::SketchOnFace => explained_keyed(
             "Sketch on face",
@@ -249,7 +255,7 @@ fn timeline_info(command: TimelineCommand) -> CommandInfo {
         TimelineCommand::Edit => keyed("Edit feature", "Return"),
         TimelineCommand::EditSketch => explained_keyed(
             "Edit sketch",
-            "Open the feature's sketch in Draw · the part follows each change",
+            "Open the feature's sketch in Draw; the part follows each change",
             "Return",
         ),
         TimelineCommand::Rename => keyed("Rename feature", "F2"),
@@ -289,7 +295,7 @@ fn cad_info(command: CadCommand) -> CommandInfo {
         CadCommand::AddPart(PartShape::Sphere) => explained("Sphere part", PART_DETAIL),
         CadCommand::ExtrudeSketch => explained(
             "Extrude sketch",
-            "The selected sketch's outer regions, 1 m, as a new part",
+            "Extrude the selected sketch's outer regions 1 m into a new part",
         ),
         CadCommand::Combine(FeatureOperation::Cut) => explained(
             "Cut",
@@ -314,7 +320,7 @@ fn cad_info(command: CadCommand) -> CommandInfo {
         CadCommand::ImportStep => info("Import STEP…"),
         CadCommand::ExportStep => explained(
             "Export STEP…",
-            "Selected parts, or all visible parts, in millimetres",
+            "Save the selected parts, or all visible parts, in millimetres",
         ),
     }
 }
@@ -324,37 +330,42 @@ fn draw_info(command: DrawCommand) -> CommandInfo {
         DrawCommand::NewSketch => CommandInfo {
             label: "New sketch",
             shortcut: Some("D"),
-            detail: Some("On the face under the pointer, the view's plane, or the ground"),
+            detail: Some("Draw on the face under the pointer, the view's plane or the ground"),
         },
-        DrawCommand::NewGroundSketch => {
-            explained("Draw a sketch", "Start Draw on the ground plane")
-        }
+        DrawCommand::NewGroundSketch => explained(
+            "Draw on the ground plane",
+            "Lay out a footprint, then extrude it upward",
+        ),
         DrawCommand::EditSketch => keyed("Edit sketch", "Return"),
         DrawCommand::Finish => keyed("Finish sketch", "Return"),
         DrawCommand::Tool(DrawTool::Select) => explained_keyed(
             "Select",
-            "Click or drag a box · drag points and curves",
+            "Click or drag a box to select; drag points and curves to move them",
             "Q",
         ),
         DrawCommand::Tool(DrawTool::Line) => explained_keyed(
             "Line",
-            "Click points; type a length, Tab for angle · A for a tangent arc",
+            "Click points; type a length, Tab for the angle, A for a tangent arc",
             "L",
         ),
         DrawCommand::Tool(DrawTool::Rectangle) => explained_keyed(
             "Rectangle",
-            "Type width, Tab for height · R for centre",
+            "Type a width, Tab for the height, R to draw from the centre",
             "R",
         ),
-        DrawCommand::Tool(DrawTool::Circle) => {
-            explained_keyed("Circle", "Centre, then radius · type a radius", "C")
-        }
-        DrawCommand::Tool(DrawTool::Arc) => {
-            explained_keyed("Arc", "Start, end, then a point on the arc", "A")
-        }
+        DrawCommand::Tool(DrawTool::Circle) => explained_keyed(
+            "Circle",
+            "Click the centre, then the edge, or type a radius",
+            "C",
+        ),
+        DrawCommand::Tool(DrawTool::Arc) => explained_keyed(
+            "Arc",
+            "Click the start, the end, then a point on the arc",
+            "A",
+        ),
         DrawCommand::Tool(DrawTool::Polygon) => explained_keyed(
             "Polygon",
-            "Centre, then a corner · + and − change sides",
+            "Click the centre, then a corner; + and − change the sides",
             "P",
         ),
         DrawCommand::Tool(DrawTool::Trim) => explained_keyed(
@@ -364,7 +375,7 @@ fn draw_info(command: DrawCommand) -> CommandInfo {
         ),
         DrawCommand::ToggleConstruction => explained_keyed(
             "Construction",
-            "Guides that never form profiles · toggles selected curves",
+            "Draw guides that never form profiles, or toggle selected curves",
             "X",
         ),
         DrawCommand::ToggleRectangleMode => keyed("Corner or centre rectangle", "R"),

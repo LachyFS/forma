@@ -1,8 +1,10 @@
 <!-- Forma icon, drawn on the Lucide 24-unit grid. Part of Forma (MIT OR Apache-2.0). -->
-<!-- A parametric solid: the shape is filled, where a mesh primitive is drawn as edges only. -->
+<!-- A parametric solid: the outline of its mesh primitive over a dimension, the mark every part glyph shares. -->
 <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-  <path d="M21 8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16Z" fill="currentColor" fill-opacity="0.28"/>
-  <path d="M3.3 7 12 12l8.7-5" fill="currentColor" fill-opacity="0.32" stroke="none"/>
-  <path d="m3.3 7 8.7 5 8.7-5"/>
-  <path d="M12 22V12"/>
+  <path d="M12 1.5 19.5 5.5v8L12 17.5l-7.5-4v-8Z"/>
+  <path d="m4.5 5.5 7.5 4 7.5-4"/>
+  <path d="M12 17.5v-8"/>
+  <path d="M4.5 21.5h15"/>
+  <path d="M4.5 20v3"/>
+  <path d="M19.5 20v3"/>
 </svg>

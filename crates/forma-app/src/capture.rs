@@ -337,6 +337,60 @@ pub(crate) fn scenarios() -> Vec<Scenario> {
             enter: |s, w, cx| s.execute(Command::ToggleTheme, w, cx),
             leave: |s, w, cx| s.execute(Command::ToggleTheme, w, cx),
         },
+        // Every overlay in the light theme: the picker previews Paper, the
+        // reference card and the shading pie sit over the light viewport.
+        Scenario {
+            name: "theme-picker-paper",
+            enter: |s, w, cx| {
+                theme(s, Theme::Paper, cx);
+                s.execute(Command::ToggleTheme, w, cx);
+            },
+            leave: |s, w, cx| {
+                s.execute(Command::ToggleTheme, w, cx);
+                theme(s, Theme::Forma, cx);
+            },
+        },
+        Scenario {
+            name: "help-paper",
+            enter: |s, w, cx| {
+                theme(s, Theme::Paper, cx);
+                s.execute(Command::ToggleHelp, w, cx);
+            },
+            leave: |s, w, cx| {
+                s.execute(Command::ToggleHelp, w, cx);
+                theme(s, Theme::Forma, cx);
+            },
+        },
+        Scenario {
+            name: "shading-pie-paper",
+            enter: |s, _, cx| {
+                theme(s, Theme::Paper, cx);
+                let center = s.bounds.get().center();
+                s.open_shading_pie(glam::Vec2::new(center.x.into(), center.y.into()), cx);
+                if let Some(pie) = s.shading_pie.as_mut() {
+                    pie.hovered = Some(RenderMode::Rendered);
+                }
+            },
+            leave: |s, _, cx| {
+                s.close_shading_pie(cx);
+                theme(s, Theme::Forma, cx);
+            },
+        },
+        Scenario {
+            name: "add-menu-filter-paper",
+            enter: |s, _, cx| {
+                theme(s, Theme::Paper, cx);
+                s.open_menu(MenuKind::Add, Anchor::ToolRail, cx);
+                if let Some(menu) = s.panels.menu.as_mut() {
+                    menu.query = "cyl".into();
+                    menu.index = 1;
+                }
+            },
+            leave: |s, _, cx| {
+                s.panels.close_menu();
+                theme(s, Theme::Forma, cx);
+            },
+        },
         Scenario {
             name: "add-menu",
             enter: |s, _, cx| s.open_menu(MenuKind::Add, Anchor::ToolRail, cx),
@@ -486,6 +540,26 @@ pub(crate) fn scenarios() -> Vec<Scenario> {
                 empty_scene(s, cx);
             },
             leave: |s, _, cx| {
+                leave_empty_scene(s, cx);
+                theme(s, Theme::Forma, cx);
+            },
+        },
+        // The start card's "Front plane" row: Draw opens facing the front.
+        Scenario {
+            name: "empty-scene-front-plane",
+            enter: |s, _, cx| {
+                theme(s, Theme::Paper, cx);
+                empty_scene(s, cx);
+                s.enter_draw(
+                    crate::sketch::DrawTarget::Plane(
+                        forma_core::SketchPlane::front(),
+                        "Front plane".into(),
+                    ),
+                    cx,
+                );
+            },
+            leave: |s, w, cx| {
+                s.execute(Command::Draw(crate::sketch::DrawCommand::Finish), w, cx);
                 leave_empty_scene(s, cx);
                 theme(s, Theme::Forma, cx);
             },
