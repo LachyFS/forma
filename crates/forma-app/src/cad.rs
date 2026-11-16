@@ -1097,10 +1097,12 @@ pub(crate) fn demo_scene() -> Scene {
         (
             plate,
             Vec3::new(-2.0, 0.0, 0.25),
+            // Bead-blasted aluminium, as on the startup bracket: a mirror
+            // finish turns every wall near black in the studio.
             Material {
-                base_color: Vec3::new(0.80, 0.82, 0.85),
-                metallic: 0.9,
-                roughness: 0.32,
+                base_color: Vec3::new(0.78, 0.8, 0.82),
+                metallic: 0.55,
+                roughness: 0.42,
                 ..Material::default()
             },
         ),
@@ -1117,10 +1119,11 @@ pub(crate) fn demo_scene() -> Scene {
         (
             block,
             Vec3::new(2.0, 0.0, 0.25),
+            // Satin bronze rather than saturated orange plastic.
             Material {
-                base_color: Vec3::new(0.85, 0.36, 0.12),
-                metallic: 0.0,
-                roughness: 0.3,
+                base_color: Vec3::new(0.78, 0.56, 0.34),
+                metallic: 0.8,
+                roughness: 0.36,
                 ..Material::default()
             },
         ),

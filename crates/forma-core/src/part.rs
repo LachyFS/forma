@@ -453,7 +453,7 @@ impl TessellationQuality {
     pub fn chord_fraction(self) -> f64 {
         match self {
             Self::Coarse => 4.0e-3,
-            Self::Medium => 1.2e-3,
+            Self::Medium => 8.0e-4,
             Self::Fine => 3.0e-4,
         }
     }
@@ -462,7 +462,8 @@ impl TessellationQuality {
     pub fn max_angle(self) -> f64 {
         match self {
             Self::Coarse => 22.0_f64.to_radians(),
-            Self::Medium => 12.0_f64.to_radians(),
+            // Holes and bosses stay round at close range: ~48 facets per circle.
+            Self::Medium => 7.5_f64.to_radians(),
             Self::Fine => 6.0_f64.to_radians(),
         }
     }
