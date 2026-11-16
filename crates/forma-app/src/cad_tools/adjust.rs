@@ -589,7 +589,7 @@ impl Studio {
                 part,
                 stamp: last.stamp,
                 prism: None,
-                quads: edges.iter().map(|e| e.quad(value)).collect(),
+                quads: super::edit::chamfer_faces(edges, value),
                 color: t.accent,
             }),
             _ => {}

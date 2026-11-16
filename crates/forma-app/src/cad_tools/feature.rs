@@ -11,7 +11,7 @@
 //! it (a cut's tool, the part of a rounding cylinder outside the block).
 use super::geometry::{Lathe, Prism};
 use super::overlay::{
-    AreaPaint, ArrowPaint, LabelPaint, LabelStyle, LathePaint, PrismPaint, ToolOverlay,
+    AreaPaint, ArrowPaint, LabelPaint, LabelStyle, LathePaint, LinePaint, PrismPaint, ToolOverlay,
 };
 use super::{AxisDrag, DRAG_PIXELS, HANDLE_PIXELS, PICK_PIXELS, Regions, segment_distance};
 use crate::app::Studio;
@@ -89,6 +89,11 @@ pub(crate) struct FeatureState {
     pub hot: bool,
     ghost: std::cell::RefCell<Option<(GhostKey, Rc<FeatureGhost>)>>,
 }
+
+/// Fill alpha of a tool body ghost at rest and while its value is dragged:
+/// a breath of accent, so the outline carries the shape.
+const TOOL_BODY_FILL: f32 = 0.05;
+const TOOL_BODY_FILL_DRAGGED: f32 = 0.08;
 
 /// Segments of a primitive's circular cross-section.
 const CIRCLE_SEGMENTS: usize = 64;
@@ -326,8 +331,14 @@ impl Studio {
                 outline: 1.5,
             });
         }
-        // A faint body, stronger while its value is being dragged.
-        let fill = if dragging.is_some() { 0.7 } else { 0.4 };
+        // A tool body is an outline over a breath of fill (a little more
+        // while its value is dragged), so it reads as a wireframe operand
+        // beside the shaded result rather than as a solid of tinted glass.
+        let fill = if dragging.is_some() {
+            TOOL_BODY_FILL_DRAGGED
+        } else {
+            TOOL_BODY_FILL
+        };
         if let Some((prism, start, end)) = &ghost.prism
             && end - start > 1.0e-6
         {
@@ -336,16 +347,20 @@ impl Studio {
                 start: *start,
                 end: *end,
                 color: t.accent,
-                emphasis_end: true,
+                emphasis_end: false,
                 fill,
+                tool_body: true,
             });
+            let (edges, hidden) = super::overlay::prism_edges(overlay, prism, *start, *end);
+            self.tool_body_lines(&edges, &hidden, t.accent, overlay);
         }
         if let Some((lathe, angle)) = &ghost.lathe {
+            // A lathe's paint scales its own fill: about 5% at rest.
             overlay.lathes.push(LathePaint {
                 lathe: lathe.clone(),
                 angle: *angle,
                 color: t.accent,
-                fill,
+                fill: fill / TOOL_BODY_FILL * 0.4,
             });
         }
         let Some(handle) = self.facing_handle(&ghost) else {
@@ -355,12 +370,19 @@ impl Studio {
             return;
         };
         let live = dragging.is_some_and(|d| d.moved);
+        let hot = self.cad_tool.feature.hot || dragging.is_some();
         overlay.arrows.push(ArrowPaint {
             base,
             tip,
             color: t.accent,
-            hot: self.cad_tool.feature.hot || live,
+            hot,
         });
+        // The value lives in the panel and the timeline chip; on the canvas
+        // it shows once the handle is hovered or dragged, as for every
+        // handle, so a resting arrow is a quiet manipulator, not a label.
+        if !hot {
+            return;
+        }
         overlay.labels.push(LabelPaint {
             at: tip,
             leader: (tip - base).try_normalize(),
@@ -375,6 +397,81 @@ impl Studio {
                 LabelStyle::Measured
             },
         });
+    }
+
+    /// A tool body's outline as lines: solid where the viewer sees it,
+    /// dashed and faint where the body itself or other geometry hides it
+    /// (a cylinder's foot sunk in the plinth, a cut's tool inside the
+    /// part). Edges are split into short pieces so a silhouette that runs
+    /// into the plinth turns dashed where it enters.
+    fn tool_body_lines(
+        &self,
+        edges: &[Vec<Vec3>],
+        hidden: &[Vec<Vec3>],
+        color: u32,
+        overlay: &mut ToolOverlay,
+    ) {
+        let camera = self.scene.camera;
+        let query = self.visibility_query();
+        let mut seen: Vec<Vec<Vec3>> = Vec::new();
+        let mut unseen: Vec<Vec<Vec3>> = hidden.to_vec();
+        for edge in edges {
+            let [a, b] = [edge[0], *edge.last().unwrap()];
+            let pixels = match (self.world_to_screen(a), self.world_to_screen(b)) {
+                (Some(p), Some(q)) => p.distance(q),
+                _ => 0.0,
+            };
+            let pieces = ((pixels / 18.0).ceil() as usize).clamp(1, 16);
+            let mut run: Option<(bool, Vec<Vec3>)> = None;
+            for k in 0..pieces {
+                let (p, q) = (
+                    a.lerp(b, k as f32 / pieces as f32),
+                    a.lerp(b, (k + 1) as f32 / pieces as f32),
+                );
+                // Tested a pixel or two toward the viewer: a tool body's
+                // edge often lies on the result's own surface (a join's
+                // ghost is the body it adds), where a grazing ray would
+                // read it as hidden.
+                let middle = (p + q) * 0.5;
+                let toward = if camera.orthographic {
+                    camera.view_matrix().inverse().z_axis.truncate()
+                } else {
+                    (camera.position() - middle).normalize_or_zero()
+                };
+                let lifted = middle + toward * self.world_per_pixel(middle) * 2.0;
+                let visible = crate::viewport::visible_in_query(camera, query, lifted);
+                match &mut run {
+                    Some((state, points)) if *state == visible => points.push(q),
+                    _ => {
+                        if let Some((state, points)) = run.take() {
+                            if state { &mut seen } else { &mut unseen }.push(points);
+                        }
+                        run = Some((visible, vec![p, q]));
+                    }
+                }
+            }
+            if let Some((state, points)) = run {
+                if state { &mut seen } else { &mut unseen }.push(points);
+            }
+        }
+        for points in unseen {
+            overlay.lines.push(LinePaint {
+                points,
+                color,
+                alpha: 0.42,
+                width: 1.0,
+                dashed: true,
+            });
+        }
+        for points in seen {
+            overlay.lines.push(LinePaint {
+                points,
+                color,
+                alpha: 0.95,
+                width: 1.5,
+                dashed: false,
+            });
+        }
     }
 
     /// Screen base and tip of the selected feature's arrow, if it has one.

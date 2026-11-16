@@ -132,7 +132,8 @@ pub(crate) struct PendingGhost {
     pub part: u64,
     pub stamp: u64,
     pub prism: Option<(Rc<Prism>, f32, f32)>,
-    pub quads: Vec<[Vec3; 4]>,
+    /// Chamfer faces, as [`edit::chamfer_faces`] gives them.
+    pub quads: Vec<Vec<Vec3>>,
     pub color: u32,
 }
 
