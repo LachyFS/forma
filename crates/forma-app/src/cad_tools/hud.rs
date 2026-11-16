@@ -41,7 +41,8 @@ fn value_well(t: Colors, text: String, typing: bool, invalid: bool, width: f32) 
         .text_size(px(TEXT_MD))
         .font_weight(WEIGHT_MEDIUM)
         .text_color(rgb(if invalid { t.danger } else { t.text }))
-        .child(text)
+        // Typed text stays as typed; live values get a true minus sign.
+        .child(if typing { text } else { typeset_minus(&text) })
         .when(typing, |d| {
             d.child(div().ml(px(1.)).w(px(1.5)).h(px(14.)).bg(rgb(t.focus)))
         })
@@ -219,7 +220,74 @@ fn done_cancel(t: Colors, compact: bool, cx: &mut Context<Studio>) -> Div {
     row().gap(px(2.)).child(cancel).child(done)
 }
 
+/// A feature the running tool adds to a part's history on Done, as the
+/// history list shows it while the tool runs.
+pub(crate) struct PendingFeature {
+    pub icon: Icon,
+    pub name: &'static str,
+    /// The live value, as the tool's HUD and panel show it.
+    pub hint: String,
+    /// Push/Pull adds one feature per picked face of the part.
+    pub count: usize,
+}
+
 impl Studio {
+    /// What the running tool will add to part object `object` on Done, if
+    /// anything. A new part, a mesh face or another part adds nothing here.
+    pub(crate) fn pending_feature(&self, object: u64) -> Option<PendingFeature> {
+        let length = |value: f32| crate::sketch::overlay::format_length(value);
+        match self.cad_tool.tool.as_ref()? {
+            Tool::Chamfer(tool) if tool.object == object => Some(PendingFeature {
+                icon: Icon::Bevel,
+                name: "Chamfer",
+                hint: length(tool.value()),
+                count: 1,
+            }),
+            Tool::Chamfer(_) => None,
+            Tool::PushPull(tool) => {
+                let active = tool.active.as_ref()?;
+                let count = active
+                    .faces
+                    .iter()
+                    .filter(|face| face.object == object && face.is_part())
+                    .count();
+                // A typed value applies on the current side, as Done does.
+                let distance = match active.typed() {
+                    Ok(Some(value)) => value * active.side,
+                    _ => active.distance,
+                };
+                (count > 0).then(|| PendingFeature {
+                    icon: Icon::PushPull,
+                    name: "Push/pull",
+                    hint: length(distance),
+                    count,
+                })
+            }
+            Tool::Sketch(tool) => {
+                tool.target.as_ref().filter(|t| t.object == object)?;
+                let operation = tool.operation();
+                if operation == Operation::NewPart || tool.selected.is_empty() {
+                    return None;
+                }
+                let typed = tool.typed().ok().flatten().map(|value| value * tool.side);
+                let hint = match tool.kind {
+                    SketchToolKind::Extrude => length(typed.unwrap_or(tool.distance)),
+                    SketchToolKind::Revolve => super::format_sweep(typed.unwrap_or(tool.angle)),
+                };
+                Some(PendingFeature {
+                    icon: match (tool.kind, operation) {
+                        (SketchToolKind::Revolve, _) => Icon::Revolve,
+                        (_, Operation::Cut) => Icon::ExtrudeCut,
+                        _ => Icon::Extrude,
+                    },
+                    name: tool.kind.label(),
+                    hint,
+                    count: 1,
+                })
+            }
+        }
+    }
+
     /// The running tool's HUD for `ui::slots::viewport_dock`.
     pub(crate) fn cad_tool_hud(&self, t: Colors, cx: &mut Context<Self>) -> Option<AnyElement> {
         let tool = self.cad_tool.tool.as_ref()?;
@@ -467,7 +535,7 @@ impl Studio {
                                 d.child(div().px(px(SP_1)).child(hint(
                                     t,
                                     "Drag",
-                                    "Apply on release",
+                                    "Done on release",
                                 )))
                             })
                             .child(done_cancel(t, compact, cx));
@@ -832,8 +900,8 @@ impl Studio {
                 d.child(
                     command_button(
                         t,
-                        "cad-panel-apply",
-                        "Apply",
+                        "cad-panel-done",
+                        "Done",
                         Some(Icon::Check),
                         Command::CadTool(ToolCommand::Done),
                         Tone::Primary,
@@ -1011,7 +1079,7 @@ impl Studio {
                     ("S", "Symmetric"),
                     ("F", "Flip"),
                     ("R", "Revolve"),
-                    ("Return", "Apply"),
+                    ("Return", "Done"),
                     ("Ctrl", "Free"),
                 ],
                 SketchToolKind::Revolve => vec![
@@ -1021,7 +1089,7 @@ impl Studio {
                     ("0–9", "Angle"),
                     ("Tab", "Operation"),
                     ("E", "Extrude"),
-                    ("Return", "Apply"),
+                    ("Return", "Done"),
                     ("Ctrl", "Free"),
                 ],
             }),
@@ -1029,14 +1097,14 @@ impl Studio {
                 Some(active) if active.modal => vec![
                     ("Move", "Distance"),
                     ("0–9", "Exact value"),
-                    ("Click", "Apply"),
+                    ("Click", "Done"),
                     ("Esc", "Cancel"),
                     ("Ctrl", "Free"),
                 ],
                 Some(_) => vec![
                     ("Drag", "Arrow"),
                     ("0–9", "Distance"),
-                    ("Return", "Apply"),
+                    ("Return", "Done"),
                     ("F", "Flip"),
                     ("Esc", "Deselect"),
                 ],
@@ -1050,7 +1118,7 @@ impl Studio {
             Some(Tool::Chamfer(_)) => Some(vec![
                 ("Move", "Distance"),
                 ("0–9", "Exact value"),
-                ("Click", "Apply"),
+                ("Click", "Done"),
                 ("Esc", "Cancel"),
                 ("Ctrl", "Free"),
             ]),

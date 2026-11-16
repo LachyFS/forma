@@ -1,9 +1,11 @@
 //! Status bar: contextual input hints on the left, the latest status message,
-//! then selection, render progress, device and update state on the right.
-use super::STATUSBAR_HEIGHT;
+//! then selection, render progress and update state on the right. Developer
+//! telemetry (frame and regeneration times, the GPU) folds into one quiet
+//! performance readout whose tooltip has the breakdown.
 use super::assets::{Icon, icon};
 use super::components::*;
 use super::tokens::*;
+use super::{InspectorTab, STATUSBAR_HEIGHT};
 use crate::app::{Command, EditMode, Studio};
 use crate::platform_shortcut;
 use crate::theme::Colors;
@@ -54,6 +56,14 @@ pub(crate) fn input_hints(s: &Studio) -> Vec<(&'static str, &'static str)> {
     }
     if let Some(hints) = s.timeline_input_hints() {
         return hints;
+    }
+    // An empty scene has nothing to select or transform: only the ways in.
+    if s.scene.objects.is_empty() && s.edit_mode == EditMode::Object {
+        return vec![
+            ("⇧ A", "Add"),
+            ("D", "Sketch"),
+            (platform_shortcut("⌘ O", "Ctrl O"), "Open"),
+        ];
     }
     if s.edit_mode == EditMode::Object {
         vec![
@@ -129,6 +139,23 @@ fn regeneration(s: &Studio) -> Option<(String, String)> {
     super::feature_inspector::regeneration_timing(s, part.id)
 }
 
+/// The performance readout's tooltip: frame time, the active part's last
+/// regeneration and the GPU, one fact per line.
+fn performance_detail(s: &Studio) -> String {
+    let mut lines = vec![format!("Frame {:.1} ms", s.render_ms)];
+    if let Some((total, detail)) = regeneration(s) {
+        lines.push(format!("Part regenerated in {total} · {detail}"));
+    }
+    if s.settings.mode == RenderMode::Rendered {
+        lines.push(format!(
+            "{} of {} samples",
+            s.samples, s.settings.max_samples
+        ));
+    }
+    lines.push(s.device_name.clone());
+    lines.join("\n")
+}
+
 /// Approximate drawn width of a hint pair, for whole-pair truncation.
 fn hint_width(keys: &str, label: &str) -> f32 {
     let caps: f32 = keys
@@ -172,18 +199,12 @@ pub(super) fn statusbar(
     let selection = summary
         .as_ref()
         .map_or(0., |summary| text(summary.len()) + 25.);
-    let regenerated = regeneration(s);
-    let regeneration_width = regenerated
-        .as_ref()
-        .map_or(0., |(total, _)| text(total.len()) + 30.);
-    let device_width = if wide { 260. } else { 150. };
-    let device = text(s.device_name.chars().count()).min(device_width) + 30.;
-    let rendered = if s.settings.mode == RenderMode::Rendered {
-        130.
-    } else {
-        0.
-    };
-    let mut budget = width - message - selection - regeneration_width - device - rendered - 190.;
+    // Render progress shows here only while the Render tab, which has its
+    // own bar, is not open.
+    let progress = s.settings.mode == RenderMode::Rendered && s.panels.tab != InspectorTab::Render;
+    let performance = 64.;
+    let progress_width = if progress { 96. } else { 0. };
+    let mut budget = width - message - selection - performance - progress_width - 150.;
     let hints: Vec<_> = input_hints(s)
         .into_iter()
         .take_while(|(keys, label)| {
@@ -197,15 +218,13 @@ pub(super) fn statusbar(
         State::Available(_) => Some(("Update available", BadgeTone::Accent)),
         _ => None,
     };
-    let rendered = s.settings.mode == RenderMode::Rendered;
     let message_width = if wide { 420. } else { 260. };
     // The dot and its gap sit inside the message's width.
-    let status = fit_text(cx, s.status.clone().into(), TEXT_SM, message_width - 12.);
-    let device_name = fit_text(
+    let status = fit_text(
         cx,
-        s.device_name.clone().into(),
+        typeset_minus(&s.status).into(),
         TEXT_SM,
-        device_width - 16.,
+        message_width - 12.,
     );
     row()
         .h(px(STATUSBAR_HEIGHT))
@@ -255,9 +274,10 @@ pub(super) fn statusbar(
         .when_some(summary, |d, summary| {
             d.child(segment_text(t, summary)).child(vrule(t, 12.))
         })
-        .when(rendered, |d| {
+        .when(progress, |d| {
             d.child(
                 row()
+                    .id("render-progress")
                     .gap(px(SP_1_5))
                     .flex_shrink_0()
                     .child(
@@ -275,51 +295,33 @@ pub(super) fn statusbar(
                     )
                     .child(segment_text(
                         t,
-                        format!("{}/{} spp", s.samples, s.settings.max_samples),
-                    )),
-            )
-        })
-        // Moved here from the timeline strip: a part's regeneration time.
-        .when_some(regenerated, |d, (total, detail)| {
-            d.child(
-                row()
-                    .id("regeneration-time")
-                    .gap(px(SP_1))
-                    .flex_shrink_0()
-                    .child(icon(Icon::History, 12., t.text_faint))
-                    .child(segment_text(t, total.clone()))
+                        format!("{}/{}", s.samples, s.settings.max_samples),
+                    ))
                     .tooltip(tip_detail(
                         t,
-                        format!("Part regenerated in {total}"),
-                        detail,
+                        "Render progress",
+                        "Samples so far of the target · Render tab for settings",
                         None,
                     )),
             )
+            .child(vrule(t, 12.))
         })
+        // Developer telemetry, kept quiet: the frame time in faint text,
+        // everything else on hover.
         .child(
             row()
-                .id("render-time")
+                .id("performance")
                 .gap(px(SP_1))
                 .flex_shrink_0()
                 .child(icon(Icon::Timer, 12., t.text_faint))
-                .child(segment_text(t, format!("{:.1} ms", s.render_ms)))
-                .tooltip(tip(t, "Last frame render time", None)),
-        )
-        .child(
-            row()
-                .id("render-device")
-                .gap(px(SP_1))
-                .flex_shrink_0()
-                .max_w(px(device_width))
-                .child(icon(Icon::Device, 12., t.text_faint))
                 .child(
                     div()
-                        .min_w(px(0.))
-                        .overflow_hidden()
                         .whitespace_nowrap()
-                        .child(device_name),
+                        .tabular()
+                        .text_color(rgb(t.text_faint))
+                        .child(format!("{:.1} ms", s.render_ms)),
                 )
-                .tooltip(tip(t, s.device_name.clone(), None)),
+                .tooltip(tip_detail(t, "Performance", performance_detail(s), None)),
         )
         .child(match update {
             Some((label, tone)) => on_command(

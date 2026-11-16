@@ -27,6 +27,21 @@ pub(crate) fn kind_icon(kind: &str) -> Icon {
     }
 }
 
+/// Emission at or above this (white diffuse is 1) makes a mesh read as a
+/// light: an emissive plane is how scenes carry area lights.
+const LIGHT_EMISSION: f32 = 1.0;
+
+/// The kind an object is shown as. A mesh that emits light is listed as a
+/// light; everything else is its data kind.
+pub(crate) fn object_kind<'a>(scene: &Scene, object: &'a Object) -> &'a str {
+    let kind = object.kind();
+    let emits = kind == "mesh"
+        && scene
+            .object_material(object.id)
+            .is_some_and(|material| material.emission.max_element() >= LIGHT_EMISSION);
+    if emits { "light" } else { kind }
+}
+
 /// Human name for an object kind, for badges and tooltips.
 pub(crate) fn kind_label(kind: &str) -> &'static str {
     match kind {
@@ -128,7 +143,7 @@ fn object_row(
     let selected = tree.selected.contains(&id);
     let active = tree.active == Some(id);
     let visible = object.visible;
-    let kind = object.kind();
+    let kind = object_kind(tree.scene, object);
     let renaming = active && s.panels.rename_in_outliner && s.field_is_active(Field::Name);
     let ink = if visible { t.text } else { t.text_faint };
     let glyph_ink = if !visible {
@@ -412,9 +427,23 @@ pub(super) fn outliner(t: Colors, s: &Studio, cx: &mut Context<Studio>) -> Div {
 
 #[cfg(test)]
 mod tests {
-    use super::Tree;
-    use forma_core::{Primitive, Scene};
+    use super::{Tree, object_kind};
+    use forma_core::{Primitive, Scene, Vec3};
     use std::collections::BTreeSet;
+
+    #[test]
+    fn emissive_meshes_list_as_lights() {
+        let mut scene = Scene::empty();
+        let lamp = scene.add(Primitive::Plane);
+        let glow = scene.add(Primitive::Cube);
+        let plain = scene.add(Primitive::Cube);
+        scene.object_material_mut(lamp).unwrap().emission = Vec3::new(12.0, 10.5, 9.0);
+        scene.object_material_mut(glow).unwrap().emission = Vec3::splat(0.2);
+        let kind = |id| object_kind(&scene, scene.object(id).unwrap()).to_owned();
+        assert_eq!(kind(lamp), "light");
+        assert_eq!(kind(glow), "mesh", "a faint glow is still a mesh");
+        assert_eq!(kind(plain), "mesh");
+    }
 
     #[test]
     fn children_are_grouped_once_and_stay_in_their_collection() {

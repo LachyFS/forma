@@ -448,6 +448,13 @@ pub(crate) fn scenarios() -> Vec<Scenario> {
             },
         },
         Scenario {
+            // Rendered shading with the Object page open: the status bar
+            // carries the render progress the Render tab would show.
+            name: "rendered-object-tab",
+            enter: |s, w, cx| s.execute(Command::SetMode(RenderMode::Rendered), w, cx),
+            leave: |s, w, cx| s.execute(Command::SetMode(RenderMode::MaterialPreview), w, cx),
+        },
+        Scenario {
             // A mesh's surface: the torus selected in Material Preview.
             name: "material-preview",
             enter: |s, _, cx| {
@@ -662,6 +669,21 @@ pub(crate) fn scenarios() -> Vec<Scenario> {
         Scenario {
             name: "draw-profiles",
             enter: demo::profiles,
+            leave: demo::restore,
+        },
+        Scenario {
+            // The Draw panel's selection readout: three curves of the
+            // profiles sketch, one of them a circle.
+            name: "draw-selection",
+            enter: |s, w, cx| {
+                demo::profiles(s, w, cx);
+                let revision = s.scene_revision;
+                if let Some(session) = s.sketch.session.as_mut() {
+                    session.selection = [0, 1, 4].into_iter().collect();
+                    session.selection_revision = revision;
+                }
+                cx.notify();
+            },
             leave: demo::restore,
         },
         Scenario {
