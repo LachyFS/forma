@@ -130,6 +130,420 @@ fn header(t: Colors, s: &Studio, cx: &mut Context<Studio>) -> Div {
         )
 }
 
+// ---------------------------------------------------------------------------
+// Context blocks: the top of the Object page says what the user is doing
+// (editing a part's faces or edges, editing a mesh) and offers its actions.
+
+fn context_block(t: Colors) -> Div {
+    col()
+        .flex_shrink_0()
+        .px(px(SP_3))
+        .pt(px(SP_3))
+        .pb(px(SP_3))
+        .gap(px(SP_2 + 2.))
+        .border_b_1()
+        .border_color(rgb(t.hairline))
+}
+
+/// Icon tile, title and one line of facts.
+fn context_title(t: Colors, glyph: Icon, title: String, detail: String) -> Div {
+    row()
+        .gap(px(SP_2 + 2.))
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .justify_center()
+                .size(px(32.))
+                .flex_shrink_0()
+                .rounded(px(R_MD))
+                .bg(rgb(t.accent_soft))
+                .child(icon(glyph, ICON_LG, t.accent_text)),
+        )
+        .child(
+            col()
+                .flex_1()
+                .min_w(px(0.))
+                .gap(px(1.))
+                .child(
+                    div()
+                        .truncate()
+                        .text_size(px(TEXT_XL))
+                        .font_weight(WEIGHT_SEMIBOLD)
+                        .text_color(rgb(t.text))
+                        .child(title),
+                )
+                .child(
+                    div()
+                        .truncate()
+                        .tabular()
+                        .text_size(px(TEXT_SM))
+                        .text_color(rgb(t.text_muted))
+                        .child(detail),
+                ),
+        )
+}
+
+/// A tool button: icon, label and the command's shortcut as keycaps. Unavailable tools stay visible, dimmed, with the reason on hover.
+fn action_button(
+    t: Colors,
+    id: &'static str,
+    glyph: Icon,
+    label: &'static str,
+    command: Command,
+    unavailable: Option<&'static str>,
+    cx: &mut Context<Studio>,
+) -> AnyElement {
+    let shortcut = super::commands::command_info(command).shortcut;
+    let button = row()
+        .id(id)
+        .h(px(H_MD))
+        .min_w(px(0.))
+        .pl(px(SP_2))
+        .pr(px(SP_1_5))
+        .gap(px(SP_2))
+        .rounded(px(R_SM + 1.))
+        .bg(rgb(t.control))
+        .border_1()
+        .border_color(rgb(t.border))
+        .child(icon(glyph, ICON_SM, t.text_muted))
+        .child(
+            div()
+                .flex_1()
+                .min_w(px(0.))
+                .truncate()
+                .font_weight(WEIGHT_MEDIUM)
+                .text_color(rgb(t.text))
+                .child(label),
+        )
+        .when_some(shortcut, |d, shortcut| d.child(keycaps(t, shortcut)));
+    match unavailable {
+        Some(reason) => disabled(button)
+            .tooltip(tip_detail(t, label, reason, None))
+            .into_any_element(),
+        None => on_command(
+            button
+                .cursor_pointer()
+                .hover(move |d| d.bg(rgb(t.control_hover)))
+                .active(move |d| d.bg(rgb(t.control_active)))
+                .tooltip(command_tip(t, command)),
+            command,
+            cx,
+        )
+        .into_any_element(),
+    }
+}
+
+/// Facts about the selected faces and edges of the part being edited.
+#[derive(Default)]
+struct PartSelection {
+    faces: usize,
+    planar: usize,
+    /// World area of the selected faces.
+    area: f32,
+    edges: usize,
+    straight: usize,
+    /// World length of the selected edges.
+    length: f32,
+}
+
+fn part_selection_facts(s: &Studio, id: u64) -> Option<PartSelection> {
+    use crate::cad_tools::geometry;
+    let mesh = s.scene.object_mesh(id)?;
+    let matrix = s.scene.world_transform(id).unwrap_or_default();
+    let world = |i: u32| matrix.transform_point3(mesh.positions[i as usize]);
+    let groups: Vec<u32> = s
+        .selected_edit_faces(id)
+        .into_iter()
+        .map(|(group, _)| group)
+        .collect();
+    let mut facts = PartSelection {
+        faces: groups.len(),
+        ..Default::default()
+    };
+    if !groups.is_empty() {
+        // One pass over the tessellation for every selected group.
+        let mut members: std::collections::BTreeMap<u32, Vec<usize>> =
+            groups.iter().map(|&g| (g, Vec::new())).collect();
+        for face in 0..mesh.faces.len() {
+            let group = if mesh.has_groups() {
+                mesh.groups[face]
+            } else {
+                face as u32
+            };
+            if let Some(list) = members.get_mut(&group) {
+                list.push(face);
+            }
+        }
+        for faces in members.values() {
+            if geometry::group_plane(mesh, faces).is_some() {
+                facts.planar += 1;
+            }
+            for &f in faces {
+                let polygon = &mesh.faces[f];
+                let Some(&first) = polygon.first() else {
+                    continue;
+                };
+                let a = world(first);
+                for pair in polygon.windows(2).skip(1) {
+                    facts.area += 0.5 * (world(pair[0]) - a).cross(world(pair[1]) - a).length();
+                }
+            }
+        }
+    }
+    let edges = s.selected_edit_edges(id);
+    facts.edges = edges.len();
+    if let Some(topology) = (!edges.is_empty()).then(|| s.part_topology(id)).flatten() {
+        for edge in edges.iter().filter_map(|&e| topology.edges.get(e)) {
+            facts.straight += usize::from(edge.straight);
+            facts.length += edge
+                .points
+                .windows(2)
+                .map(|pair| world(pair[0]).distance(world(pair[1])))
+                .sum::<f32>();
+        }
+    }
+    Some(facts)
+}
+
+fn plural(n: usize, one: &str, many: &str) -> String {
+    format!("{n} {}", if n == 1 { one } else { many })
+}
+
+fn measure(value: f32) -> String {
+    compact_number(crate::transform::format_precision_value(value), 4)
+}
+
+/// "Planar", "Curved" or "1 planar, 2 curved".
+fn mix(count: usize, matching: usize, yes: &str, no: &str) -> String {
+    let capital = |word: &str| {
+        let mut chars = word.chars();
+        chars
+            .next()
+            .map(|c| c.to_uppercase().chain(chars).collect())
+            .unwrap_or_default()
+    };
+    if matching == count {
+        capital(yes)
+    } else if matching == 0 {
+        capital(no)
+    } else {
+        format!("{matching} {yes}, {} {no}", count - matching)
+    }
+}
+
+/// Part edit mode: what is selected, measured, and what can be done to it.
+fn part_selection(t: Colors, s: &Studio, id: u64, cx: &mut Context<Studio>) -> Option<Div> {
+    use crate::cad_tools::ToolCommand;
+    let facts = part_selection_facts(s, id)?;
+    let edges_mode = s.edit_mode == crate::app::EditMode::Edge;
+    let (glyph, title, detail) = match (facts.faces, facts.edges) {
+        (0, 0) if edges_mode => (
+            Icon::Edge,
+            "No edges selected".to_owned(),
+            "Click an edge · Shift adds".to_owned(),
+        ),
+        (0, 0) => (
+            Icon::Face,
+            "No faces selected".to_owned(),
+            "Click a face · Shift adds".to_owned(),
+        ),
+        (faces, 0) => (
+            Icon::Face,
+            plural(faces, "face", "faces"),
+            format!(
+                "{} · {} m²",
+                mix(faces, facts.planar, "planar", "curved"),
+                measure(facts.area)
+            ),
+        ),
+        (0, edges) => (
+            Icon::Edge,
+            plural(edges, "edge", "edges"),
+            format!(
+                "{} · {} m{}",
+                mix(edges, facts.straight, "straight", "curved"),
+                measure(facts.length),
+                if edges == 1 { " long" } else { " in total" }
+            ),
+        ),
+        (faces, edges) => (
+            Icon::Face,
+            format!(
+                "{} · {}",
+                plural(faces, "face", "faces"),
+                plural(edges, "edge", "edges")
+            ),
+            format!(
+                "{} m² · {} m of edges",
+                measure(facts.area),
+                measure(facts.length)
+            ),
+        ),
+    };
+    let any = facts.faces + facts.edges > 0;
+    let title = context_title(t, glyph, title, detail).when(any, |d| {
+        d.child(
+            on_command(
+                icon_button(t, "part-selection-clear", Icon::Close, false, H_SM)
+                    .tooltip(command_tip(t, Command::DeselectAll)),
+                Command::DeselectAll,
+                cx,
+            )
+            .flex_shrink_0(),
+        )
+    });
+    let face_actions = facts.faces > 0 || !edges_mode;
+    let edge_actions = facts.edges > 0 || edges_mode;
+    let mut actions = col().gap(px(SP_1));
+    if face_actions {
+        actions = actions
+            .child(action_button(
+                t,
+                "part-selection-push-pull",
+                Icon::PushPull,
+                "Push/Pull",
+                Command::CadTool(ToolCommand::PushPull),
+                (facts.faces > 0 && facts.planar < facts.faces)
+                    .then_some("Curved faces can't be pushed · select flat faces"),
+                cx,
+            ))
+            .child(action_button(
+                t,
+                "part-selection-sketch",
+                Icon::DrawMode,
+                "Sketch on face",
+                Command::CadTool(ToolCommand::SketchOnFace),
+                (facts.faces > 0 && facts.planar == 0)
+                    .then_some("Sketches need a flat face · select a planar face"),
+                cx,
+            ));
+    }
+    if edge_actions {
+        actions = actions.child(action_button(
+            t,
+            "part-selection-chamfer",
+            Icon::Bevel,
+            "Chamfer",
+            Command::CadTool(ToolCommand::Chamfer),
+            if facts.edges == 0 {
+                Some("Select straight edges first · Click an edge, Shift adds")
+            } else if facts.straight < facts.edges {
+                Some("Chamfer works on straight edges between flat faces")
+            } else {
+                None
+            },
+            cx,
+        ));
+    }
+    Some(context_block(t).child(title).child(actions))
+}
+
+/// Mesh edit mode: the polygon tools, with their shortcuts, and selection
+/// helpers. Counts live in the status bar, never here.
+fn mesh_edit_tools(t: Colors, s: &Studio, cx: &mut Context<Studio>) -> Div {
+    let mode = s.edit_mode.label();
+    let no_faces = s
+        .selected_faces()
+        .is_empty()
+        .then_some("Select faces first · 3 for face mode, A selects all");
+    let tools = [
+        (
+            "mesh-tool-extrude",
+            Icon::Extrude,
+            "Extrude",
+            Command::Extrude,
+            no_faces,
+        ),
+        (
+            "mesh-tool-inset",
+            Icon::Inset,
+            "Inset",
+            Command::Inset,
+            no_faces,
+        ),
+        (
+            "mesh-tool-subdivide",
+            Icon::Subdivide,
+            "Subdivide",
+            Command::Subdivide,
+            None,
+        ),
+        (
+            "mesh-tool-triangulate",
+            Icon::Triangulate,
+            "Triangulate",
+            Command::Triangulate,
+            None,
+        ),
+        (
+            "mesh-tool-flip",
+            Icon::FlipNormals,
+            "Flip normals",
+            Command::FlipNormals,
+            None,
+        ),
+        (
+            "mesh-tool-normals",
+            Icon::NormalsOutside,
+            "Normals out",
+            Command::RecalculateNormals,
+            None,
+        ),
+    ];
+    let select = [
+        ("mesh-select-all", "All", Command::SelectAll),
+        ("mesh-select-linked", "Linked", Command::SelectLinked),
+        ("mesh-select-invert", "Invert", Command::InvertSelection),
+    ];
+    context_block(t)
+        .child(context_title(
+            t,
+            Icon::EditMode,
+            "Edit mesh".to_owned(),
+            format!("{mode} mode · Tab returns to Object mode"),
+        ))
+        .child(
+            div()
+                .grid()
+                .grid_cols(2)
+                .gap(px(SP_1))
+                .children(
+                    tools
+                        .into_iter()
+                        .map(|(id, glyph, label, command, unavailable)| {
+                            action_button(t, id, glyph, label, command, unavailable, cx)
+                        }),
+                ),
+        )
+        .child(property_row(
+            t,
+            "Select",
+            row()
+                .flex_1()
+                .gap(px(SP_1))
+                .children(select.into_iter().map(|(id, label, command)| {
+                    command_button(t, id, label, None, command, Tone::Secondary, cx)
+                        .flex_1()
+                        .min_w(px(0.))
+                        .px(px(SP_1_5))
+                })),
+        ))
+}
+
+/// The context block for the Object page, if the user is editing components.
+fn context(t: Colors, s: &Studio, cx: &mut Context<Studio>) -> Option<Div> {
+    if s.cad_tool_active() || !s.edit_mode.is_component() {
+        return None;
+    }
+    if let Some(id) = s.part_editing() {
+        return part_selection(t, s, id, cx);
+    }
+    s.selected_object()
+        .filter(|object| object.data.is_editable_mesh())
+        .map(|_| mesh_edit_tools(t, s, cx))
+}
+
 fn tab_button(
     t: Colors,
     page: InspectorTab,
@@ -235,13 +649,6 @@ fn transform(t: Colors, s: &Studio, stacked: bool, cx: &mut Context<Studio>) -> 
             .flex_1()
             .min_w(px(0.)),
         ))
-        .child(
-            div()
-                .pt(px(SP_1_5))
-                .text_size(px(TEXT_SM))
-                .text_color(rgb(t.text_faint))
-                .child("Type exact values: 25mm · 1/8in · (2+3)*10cm"),
-        )
 }
 
 fn surface(
@@ -284,7 +691,7 @@ fn surface(
                             )
                             .child(
                                 div()
-                                    .text_size(px(TEXT_XS))
+                                    .text_size(px(TEXT_SM))
                                     .text_color(rgb(if applied {
                                         t.accent_text
                                     } else {
@@ -378,7 +785,7 @@ fn surface(
                                 s,
                                 SharedString::from(format!("base-color-{axis}")),
                                 Field::Color(axis),
-                                FieldMark::Axis(axis),
+                                FieldMark::Text(["R", "G", "B"][axis]),
                                 ["Red · sRGB", "Green · sRGB", "Blue · sRGB"][axis],
                                 cx,
                             )
@@ -635,10 +1042,6 @@ fn geometry(
     ];
     col()
         .gap(px(SP_2))
-        .child(stat_tiles([
-            stat_tile(t, "Vertices", object.mesh.positions.len().to_string()),
-            stat_tile(t, "Faces", object.mesh.faces.len().to_string()),
-        ]))
         .child(
             div()
                 .grid()
@@ -683,7 +1086,7 @@ fn object_page(t: Colors, s: &Studio, stacked: bool, cx: &mut Context<Studio>) -
     let part = s.scene.object_part(object.id).map(|part| {
         let (contents, detail) =
             super::feature_inspector::part_section(t, s, object.id, part, stacked, cx);
-        section(t, s, PanelSection::Part, "Part", Some(detail), contents, cx)
+        section(t, s, PanelSection::Part, "Part", detail, contents, cx)
     });
     let is_part = part.is_some();
     col()
@@ -718,14 +1121,22 @@ fn object_page(t: Colors, s: &Studio, stacked: bool, cx: &mut Context<Studio>) -
             textures(t, s, material, cx),
             cx,
         ))
-        // Parts show their feature history instead of polygon tools.
-        .when(!is_part, |page| {
+        // Parts show their feature history instead of polygon tools, and in
+        // edit mode the polygon tools lead the page instead.
+        .when(!is_part && !s.edit_mode.is_component(), |page| {
             page.child(section(
                 t,
                 s,
                 PanelSection::Geometry,
                 "Geometry",
-                Some(format!("{} faces", object.mesh.faces.len()).into()),
+                Some(
+                    format!(
+                        "{} · {}",
+                        plural(object.mesh.positions.len(), "vertex", "vertices"),
+                        plural(object.mesh.faces.len(), "face", "faces")
+                    )
+                    .into(),
+                ),
                 geometry(t, s, &object, cx),
                 cx,
             ))
@@ -1102,17 +1513,50 @@ pub(super) fn inspector(t: Colors, s: &Studio, width: f32, cx: &mut Context<Stud
         return panel;
     }
     let stacked = width < STACK_BELOW;
+    // An empty scene has nothing to inspect: one quiet line, no tabs.
+    if s.selected.is_none() && s.scene.objects.is_empty() {
+        return col().flex_1().min_h(px(0.)).child(
+            div()
+                .px(px(SP_3))
+                .py(px(SP_4))
+                .text_size(px(TEXT_SM))
+                .line_height(px(16.))
+                .text_color(rgb(t.text_faint))
+                .child("Properties of the selected object appear here."),
+        );
+    }
+    let object_tab = s.panels.tab == InspectorTab::Object;
+    // A running tool leads, pinned above the page, and the page beneath it
+    // dims: it describes the object, not the operation in progress.
+    let live = object_tab
+        .then(|| s.cad_tool_panel(t, stacked, cx))
+        .flatten();
+    let context = object_tab.then(|| context(t, s, cx)).flatten();
+    let dimmed = live.is_some();
     let page = match s.panels.tab {
+        // With nothing selected, the running tool is all there is to show.
+        InspectorTab::Object if dimmed && s.selected.is_none() => col(),
         InspectorTab::Object => object_page(t, s, stacked, cx),
         InspectorTab::Render => render_page(t, s, cx),
     };
-    col().flex_1().min_h(px(0.)).child(header(t, s, cx)).child(
-        col()
-            .id("properties-scroll")
-            .flex_1()
-            .min_h(px(0.))
-            .overflow_y_scroll()
-            .track_scroll(&s.panels.inspector_scroll)
-            .child(page.flex_shrink_0().pb(px(SP_4))),
-    )
+    col()
+        .flex_1()
+        .min_h(px(0.))
+        .child(header(t, s, cx))
+        .children(live)
+        .child(
+            col()
+                .id("properties-scroll")
+                .flex_1()
+                .min_h(px(0.))
+                .overflow_y_scroll()
+                .track_scroll(&s.panels.inspector_scroll)
+                .child(
+                    col()
+                        .flex_shrink_0()
+                        .pb(px(SP_4))
+                        .children(context)
+                        .child(page.flex_shrink_0().when(dimmed, |d| d.opacity(0.4))),
+                ),
+        )
 }

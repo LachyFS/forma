@@ -1406,8 +1406,7 @@ impl Studio {
                         }
                     };
                     self.set_components(elements);
-                    self.status =
-                        format!("{} components selected", self.component_elements().len());
+                    self.status = self.component_summary();
                     cx.notify();
                 } else {
                     let all: std::collections::BTreeSet<_> = self

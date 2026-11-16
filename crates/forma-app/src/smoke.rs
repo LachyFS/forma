@@ -908,18 +908,25 @@ async fn check_theme_workflow(
                 && s.history.can_redo() == redo,
             "theme changes modified the document or undo history"
         );
-        // The viewport backdrop and selection colour follow the theme, so a
-        // theme change re-renders the frame; no other render setting changes.
-        let themed = |mut settings: forma_render::RenderSettings| {
-            settings.light_viewport = false;
-            settings.selection_rgb = 0;
-            settings
-        };
+        // The viewport backdrop and selection outline follow the theme, so
+        // a theme change may re-render the frame; no other render setting
+        // may change.
+        let mut expected = settings.clone();
+        expected.light_viewport = s.settings.light_viewport;
+        expected.selection_rgb = s.settings.selection_rgb;
         ensure!(
-            themed(s.settings.clone()) == themed(settings.clone()),
-            "theme changes altered the render settings"
+            s.settings == expected,
+            "theme changes altered render settings beyond the backdrop and selection color"
         );
         s.apply_theme(original, cx);
+        Ok(())
+    })??;
+    prepare_capture(window, cx).await?;
+    window.update(cx, |s, _, _| -> Result<()> {
+        ensure!(
+            s.settings == settings,
+            "restoring the theme did not restore the viewport backdrop and selection color"
+        );
         Ok(())
     })??;
     let original_size = window.update(cx, |s, w, cx| {

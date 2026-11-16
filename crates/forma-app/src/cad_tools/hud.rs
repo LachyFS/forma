@@ -18,15 +18,16 @@ pub(crate) fn operation_icon(operation: Operation) -> Icon {
     }
 }
 
-/// A read-only value well, styled like the numeric fields: the typed text
-/// with a caret, or the live value.
+/// The live value, styled like the inspector's numeric fields: the typed
+/// text with a caret, or the live value. Its resting outline says it takes
+/// typing (digits go straight to it while the tool runs).
 fn value_well(t: Colors, text: String, typing: bool, invalid: bool, width: f32) -> Div {
     row()
         .min_w(px(width))
-        .h(px(H_SM))
-        .px(px(SP_2))
+        .h(px(H_MD))
+        .px(px(SP_2 + 2.))
         .justify_end()
-        .rounded(px(R_SM))
+        .rounded(px(R_SM + 1.))
         .bg(rgb(if typing { t.sunken } else { t.field }))
         .border_1()
         .border_color(rgb(if invalid {
@@ -34,10 +35,11 @@ fn value_well(t: Colors, text: String, typing: bool, invalid: bool, width: f32) 
         } else if typing {
             t.focus
         } else {
-            t.hairline
+            t.border_strong
         }))
         .tabular()
         .text_size(px(TEXT_MD))
+        .font_weight(WEIGHT_MEDIUM)
         .text_color(rgb(if invalid { t.danger } else { t.text }))
         .child(text)
         .when(typing, |d| {
@@ -45,12 +47,134 @@ fn value_well(t: Colors, text: String, typing: bool, invalid: bool, width: f32) 
         })
 }
 
+/// Quiet text in the HUD naming what the tool acts on.
+fn hud_detail(t: Colors, text: impl Into<SharedString>) -> Div {
+    div()
+        .px(px(SP_1))
+        .max_w(px(220.))
+        .overflow_hidden()
+        .whitespace_nowrap()
+        .text_ellipsis()
+        .text_size(px(TEXT_SM))
+        .text_color(rgb(t.text_muted))
+        .child(text.into())
+}
+
+fn plural(n: usize, one: &str, many: &str) -> String {
+    format!("{n} {}", if n == 1 { one } else { many })
+}
+
+/// The operation panel's title: what is running and what it acts on.
+fn panel_header(t: Colors, glyph: Icon, name: &'static str, subject: String) -> Div {
+    row()
+        .gap(px(SP_2 + 2.))
+        .pb(px(SP_2))
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .justify_center()
+                .size(px(32.))
+                .flex_shrink_0()
+                .rounded(px(R_MD))
+                .bg(rgb(t.accent_soft))
+                .child(icon(glyph, ICON_LG, t.accent_text)),
+        )
+        .child(
+            col()
+                .flex_1()
+                .min_w(px(0.))
+                .gap(px(1.))
+                .child(
+                    div()
+                        .text_size(px(TEXT_XL))
+                        .font_weight(WEIGHT_SEMIBOLD)
+                        .text_color(rgb(t.text))
+                        .child(name),
+                )
+                .child(
+                    div()
+                        .truncate()
+                        .text_size(px(TEXT_SM))
+                        .text_color(rgb(t.text_muted))
+                        .child(subject),
+                ),
+        )
+}
+
+/// A labelled row of the operation panel.
+fn panel_row(t: Colors, label: &'static str, unit: &'static str, value: impl IntoElement) -> Div {
+    row()
+        .min_h(px(ROW_H))
+        .gap(px(SP_2))
+        .child(
+            div()
+                .w(px(LABEL_W))
+                .flex_shrink_0()
+                .text_color(rgb(t.text_muted))
+                .child(unit_label(t, label, unit)),
+        )
+        .child(row().flex_1().min_w(px(0.)).gap(px(SP_1)).child(value))
+}
+
+/// A label above a full-width choice, with an optional note on the right.
+fn stacked_row(
+    t: Colors,
+    label: &'static str,
+    note: Option<&'static str>,
+    control: impl IntoElement,
+) -> Div {
+    col()
+        .gap(px(SP_1))
+        .pt(px(SP_1))
+        .pb(px(SP_1))
+        .child(
+            row()
+                .child(div().flex_1().text_color(rgb(t.text_muted)).child(label))
+                .when_some(note, |d, note| {
+                    d.child(caption(t, note).text_color(rgb(t.text_faint)))
+                }),
+        )
+        .child(control)
+}
+
+/// What the operation acts on, as a tinted chip ("2 edges").
+fn selection_chip(t: Colors, glyph: Icon, text: String) -> Div {
+    row()
+        .h(px(H_SM))
+        .px(px(SP_2))
+        .gap(px(SP_1_5))
+        .flex_shrink_0()
+        .rounded(px(R_SM))
+        .bg(rgb(t.accent_soft))
+        .text_size(px(TEXT_SM))
+        .font_weight(WEIGHT_MEDIUM)
+        .text_color(rgb(t.accent_text))
+        .child(icon(glyph, 13., t.accent_text))
+        .child(text)
+}
+
+/// The live value in the operation panel. Typing goes to the tool from
+/// anywhere, so the well shows the typed text and caret without a click.
+fn live_value(t: Colors, text: String, typing: bool, invalid: bool) -> gpui::Stateful<Div> {
+    value_well(t, text, typing, invalid, 0.)
+        .h(px(H_SM))
+        .flex_1()
+        .id("cad-panel-value")
+        .tooltip(tip_detail(
+            t,
+            "Live value",
+            "Type a number or expression such as 25mm or (2+3)*10cm · Return applies",
+            None,
+        ))
+}
+
 fn title(t: Colors, glyph: Icon, label: &'static str) -> Div {
     row()
         .h(px(H_MD))
         .pl(px(SP_2))
-        .pr(px(SP_1))
-        .gap(px(SP_1_5))
+        .pr(px(SP_1_5))
+        .gap(px(SP_2))
         .child(icon(glyph, ICON_MD, t.accent_text))
         .child(
             div()
@@ -104,6 +228,8 @@ impl Studio {
         let bar = hud(t)
             .id("cad-tool-hud")
             .items_center()
+            .p(px(SP_1))
+            .gap(px(SP_1_5))
             .on_mouse_move(cx.listener(|studio, event: &MouseMoveEvent, _, cx| {
                 if studio.navigation.is_none() && event.pressed_button.is_none() {
                     cx.stop_propagation();
@@ -176,10 +302,9 @@ impl Studio {
                     .when(tool.inferred() && !compact, |d| {
                         d.child(
                             div()
-                                .px(px(SP_1))
-                                .text_size(px(TEXT_XS))
+                                .text_size(px(TEXT_SM))
                                 .text_color(rgb(t.text_faint))
-                                .child("auto"),
+                                .child("Auto"),
                         )
                     })
                     .child(vrule(t, 18.));
@@ -272,7 +397,7 @@ impl Studio {
                     }
                 };
                 bar.child(vrule(t, 18.))
-                    .child(value_well(t, value_text, typing, invalid, 84.))
+                    .child(value_well(t, value_text, typing, invalid, 96.))
                     .child(vrule(t, 18.))
                     .child(done_cancel(t, compact, cx))
             }
@@ -322,17 +447,7 @@ impl Studio {
                 let mut bar = bar
                     .child(title(t, Icon::PushPull, "Push/Pull"))
                     .child(vrule(t, 18.))
-                    .child(
-                        div()
-                            .px(px(SP_2))
-                            .max_w(px(220.))
-                            .overflow_hidden()
-                            .whitespace_nowrap()
-                            .text_ellipsis()
-                            .text_size(px(TEXT_SM))
-                            .text_color(rgb(t.text_muted))
-                            .child(detail),
-                    );
+                    .child(hud_detail(t, detail));
                 match value {
                     Some((text, typing, invalid, modal)) => {
                         bar = bar
@@ -346,7 +461,7 @@ impl Studio {
                                 H_MD,
                                 cx,
                             ))
-                            .child(value_well(t, text, typing, invalid, 84.))
+                            .child(value_well(t, text, typing, invalid, 96.))
                             .child(vrule(t, 18.))
                             .when(!modal && !compact, |d| {
                                 d.child(div().px(px(SP_1)).child(hint(
@@ -381,17 +496,8 @@ impl Studio {
                 };
                 bar.child(title(t, Icon::Bevel, "Chamfer"))
                     .child(vrule(t, 18.))
-                    .child(badge(
-                        t,
-                        format!(
-                            "{} edge{}",
-                            tool.edges.len(),
-                            if tool.edges.len() == 1 { "" } else { "s" }
-                        ),
-                        BadgeTone::Accent,
-                    ))
-                    .child(div().w(px(SP_1)))
-                    .child(value_well(t, text, typing, tool.typed().is_err(), 84.))
+                    .child(hud_detail(t, plural(tool.edges.len(), "edge", "edges")))
+                    .child(value_well(t, text, typing, tool.typed().is_err(), 96.))
                     .child(vrule(t, 18.))
                     .child(done_cancel(t, compact, cx))
             }
@@ -412,6 +518,361 @@ impl Studio {
                 )
             });
         Some(card.into_any_element())
+    }
+
+    /// The running tool as the inspector's top panel: what it does, what it
+    /// acts on, the live value and the options the tool really has. It
+    /// mirrors the HUD pill, which stays beside the work in the viewport.
+    /// `narrow` drops segment labels a narrow sidebar cannot fit.
+    pub(crate) fn cad_tool_panel(
+        &self,
+        t: Colors,
+        narrow: bool,
+        cx: &mut Context<Self>,
+    ) -> Option<Div> {
+        let tool = self.cad_tool.tool.as_ref()?;
+        let mut rows = col();
+        let (glyph, name, subject, error, can_apply);
+        match tool {
+            Tool::Chamfer(tool) => {
+                glyph = Icon::Bevel;
+                name = "Chamfer";
+                subject = "Equal distance on both faces".to_owned();
+                error = tool.error.clone();
+                can_apply = true;
+                let typing = !tool.numeric.is_empty();
+                let text = if typing {
+                    tool.numeric.clone()
+                } else {
+                    crate::sketch::overlay::format_length(tool.distance)
+                };
+                rows = rows
+                    .child(panel_row(
+                        t,
+                        "Edges",
+                        "",
+                        selection_chip(t, Icon::Edge, plural(tool.edges.len(), "edge", "edges")),
+                    ))
+                    .child(panel_row(
+                        t,
+                        "Distance",
+                        "",
+                        live_value(t, text, typing, tool.typed().is_err()),
+                    ));
+            }
+            Tool::PushPull(tool) => {
+                glyph = Icon::PushPull;
+                name = "Push/Pull";
+                error = tool.active.as_ref().and_then(|a| a.error.clone());
+                match &tool.active {
+                    Some(active) => {
+                        let face = &active.faces[0];
+                        subject = format!(
+                            "{} face{} along {} normal",
+                            if face.is_part() { "Part" } else { "Mesh" },
+                            if active.faces.len() == 1 { "" } else { "s" },
+                            if active.faces.len() == 1 {
+                                "its"
+                            } else {
+                                "their"
+                            },
+                        );
+                        can_apply = true;
+                        let typing = !active.numeric.is_empty();
+                        let text = if typing {
+                            active.numeric.clone()
+                        } else {
+                            crate::sketch::overlay::format_length(active.distance)
+                        };
+                        rows = rows
+                            .child(panel_row(
+                                t,
+                                "Faces",
+                                "",
+                                selection_chip(
+                                    t,
+                                    Icon::Face,
+                                    plural(active.faces.len(), "face", "faces"),
+                                ),
+                            ))
+                            .child(panel_row(
+                                t,
+                                "Distance",
+                                "",
+                                live_value(t, text, typing, active.typed().is_err()),
+                            ))
+                            .child(panel_row(
+                                t,
+                                "Direction",
+                                "",
+                                command_button(
+                                    t,
+                                    "cad-panel-flip",
+                                    "Flip",
+                                    Some(Icon::FlipDirection),
+                                    Command::CadTool(ToolCommand::Flip),
+                                    Tone::Secondary,
+                                    cx,
+                                )
+                                .flex_1(),
+                            ));
+                    }
+                    None => {
+                        subject = "Pick a face".to_owned();
+                        can_apply = false;
+                        let hint = match &tool.hover {
+                            Some(face) if !face.planar => "Curved faces can't be pushed".to_owned(),
+                            Some(face) => format!("{} · drag to push or pull", face.name),
+                            None => "Point at a flat face of a part or mesh, then drag".to_owned(),
+                        };
+                        rows = rows.child(
+                            div()
+                                .py(px(SP_1))
+                                .text_size(px(TEXT_SM))
+                                .line_height(px(16.))
+                                .text_color(rgb(t.text_muted))
+                                .child(hint),
+                        );
+                    }
+                }
+            }
+            Tool::Sketch(tool) => {
+                glyph = match tool.kind {
+                    SketchToolKind::Extrude => Icon::Extrude,
+                    SketchToolKind::Revolve => Icon::Revolve,
+                };
+                name = tool.kind.label();
+                subject = match &tool.target {
+                    Some(target) => format!("Sketch on {}", target.name),
+                    None => "Sketch regions into a new part".to_owned(),
+                };
+                error = tool
+                    .error
+                    .clone()
+                    .or_else(|| tool.revolve_problem().map(str::to_owned))
+                    .or_else(|| self.preview_issue());
+                can_apply = !tool.selected.is_empty();
+                let typing = !tool.numeric.is_empty();
+                let invalid = tool.typed().is_err();
+                let regions = tool.selected.len();
+                rows = rows.child(panel_row(
+                    t,
+                    "Profile",
+                    "",
+                    if regions == 0 {
+                        caption(t, "Click a region").text_color(rgb(t.text_faint))
+                    } else {
+                        selection_chip(t, Icon::Sketch, plural(regions, "region", "regions"))
+                    },
+                ));
+                let operation = tool.operation();
+                let mut ops = segmented(t).w_full();
+                for candidate in Operation::ALL {
+                    let available = candidate == Operation::NewPart || tool.target.is_some();
+                    let active = operation == candidate;
+                    let command = Command::CadTool(ToolCommand::SetOperation(candidate));
+                    let element = segment(
+                        t,
+                        SharedString::from(format!("cad-panel-op-{}", candidate.label())),
+                        active,
+                        22.,
+                    )
+                    .flex_1()
+                    .min_w(px(0.))
+                    .when(narrow, |d| {
+                        d.child(icon(
+                            operation_icon(candidate),
+                            ICON_SM,
+                            if active { t.text } else { t.text_muted },
+                        ))
+                    })
+                    .when(!narrow, |d| d.child(candidate.label()))
+                    .tooltip(command_tip(t, command));
+                    ops = ops.child(if available {
+                        on_command(element, command, cx).into_any_element()
+                    } else {
+                        disabled(element).into_any_element()
+                    });
+                }
+                rows = rows.child(stacked_row(
+                    t,
+                    "Operation",
+                    tool.inferred().then_some("Auto from direction"),
+                    ops,
+                ));
+                match tool.kind {
+                    SketchToolKind::Extrude => {
+                        let extent = segmented(t).w_full().children(
+                            [(false, "One side"), (true, "Symmetric")].into_iter().map(
+                                |(symmetric, label)| {
+                                    let active = tool.symmetric == symmetric;
+                                    let element = segment(
+                                        t,
+                                        SharedString::from(format!("cad-panel-extent-{label}")),
+                                        active,
+                                        22.,
+                                    )
+                                    .flex_1()
+                                    .min_w(px(0.))
+                                    .child(label)
+                                    .tooltip(command_tip(
+                                        t,
+                                        Command::CadTool(ToolCommand::ToggleSymmetric),
+                                    ));
+                                    if active {
+                                        element
+                                    } else {
+                                        on_command(
+                                            element,
+                                            Command::CadTool(ToolCommand::ToggleSymmetric),
+                                            cx,
+                                        )
+                                    }
+                                },
+                            ),
+                        );
+                        rows = rows.child(stacked_row(t, "Extent", None, extent));
+                    }
+                    SketchToolKind::Revolve => {
+                        let axis = tool.axis.map(|a| a.source);
+                        let line = matches!(axis, Some(super::sketch_tool::AxisSource::Line(_)));
+                        let mut axes = segmented(t).w_full().child(
+                            segment(t, "cad-panel-axis-line", line, 22.)
+                                .flex_1()
+                                .min_w(px(0.))
+                                .child(icon(
+                                    Icon::DrawLine,
+                                    ICON_SM,
+                                    if line { t.text } else { t.text_muted },
+                                ))
+                                .when(!narrow, |d| d.child("Line"))
+                                .tooltip(tip_detail(
+                                    t,
+                                    "Sketch line",
+                                    "Click a straight line of the sketch",
+                                    None,
+                                )),
+                        );
+                        for (y, label, source) in [
+                            (false, "X", super::sketch_tool::AxisSource::SketchX),
+                            (true, "Y", super::sketch_tool::AxisSource::SketchY),
+                        ] {
+                            let command = Command::CadTool(ToolCommand::SketchAxis(y));
+                            axes = axes.child(on_command(
+                                segment(
+                                    t,
+                                    SharedString::from(format!("cad-panel-axis-{label}")),
+                                    axis == Some(source),
+                                    22.,
+                                )
+                                .flex_1()
+                                .min_w(px(0.))
+                                .child(label)
+                                .tooltip(command_tip(t, command)),
+                                command,
+                                cx,
+                            ));
+                        }
+                        rows = rows.child(stacked_row(t, "Axis", None, axes));
+                    }
+                }
+                let (label, text) = match tool.kind {
+                    SketchToolKind::Extrude => (
+                        "Distance",
+                        crate::sketch::overlay::format_length(tool.distance),
+                    ),
+                    SketchToolKind::Revolve => ("Angle", super::format_sweep(tool.angle)),
+                };
+                rows = rows
+                    .child(panel_row(
+                        t,
+                        label,
+                        "",
+                        live_value(
+                            t,
+                            if typing { tool.numeric.clone() } else { text },
+                            typing,
+                            invalid,
+                        ),
+                    ))
+                    .child(panel_row(
+                        t,
+                        "Direction",
+                        "",
+                        command_button(
+                            t,
+                            "cad-panel-flip",
+                            "Flip",
+                            Some(Icon::FlipDirection),
+                            Command::CadTool(ToolCommand::Flip),
+                            Tone::Secondary,
+                            cx,
+                        )
+                        .flex_1(),
+                    ));
+            }
+        }
+        let footer = row()
+            .gap(px(SP_1))
+            .pt(px(SP_2))
+            .child(
+                command_button(
+                    t,
+                    "cad-panel-cancel",
+                    if can_apply { "Cancel" } else { "Close" },
+                    None,
+                    Command::CadTool(ToolCommand::Cancel),
+                    Tone::Secondary,
+                    cx,
+                )
+                .h(px(H_MD))
+                .flex_1(),
+            )
+            .when(can_apply, |d| {
+                d.child(
+                    command_button(
+                        t,
+                        "cad-panel-apply",
+                        "Apply",
+                        Some(Icon::Check),
+                        Command::CadTool(ToolCommand::Done),
+                        Tone::Primary,
+                        cx,
+                    )
+                    .h(px(H_MD))
+                    .flex_1(),
+                )
+            });
+        Some(
+            col()
+                .flex_shrink_0()
+                .px(px(SP_3))
+                .pt(px(SP_3))
+                .pb(px(SP_3))
+                .border_b_1()
+                .border_color(rgb(t.hairline))
+                .child(panel_header(t, glyph, name, subject))
+                .child(rows.gap(px(2.)))
+                .when_some(error, |d, error| {
+                    d.child(
+                        row()
+                            .items_start()
+                            .gap(px(SP_1_5))
+                            .pt(px(SP_2))
+                            .child(div().pt(px(1.)).child(icon(Icon::Error, ICON_SM, t.danger)))
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w(px(0.))
+                                    .text_size(px(TEXT_SM))
+                                    .line_height(px(16.))
+                                    .text_color(rgb(t.danger))
+                                    .child(error),
+                            ),
+                    )
+                })
+                .child(footer),
+        )
     }
 
     /// The kernel's message for the previewed feature, if it failed.

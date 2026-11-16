@@ -78,27 +78,33 @@ pub(crate) fn input_hints(s: &Studio) -> Vec<(&'static str, &'static str)> {
     }
 }
 
+impl Studio {
+    /// The mesh component selection in the edit mode's own words, e.g.
+    /// "768 faces selected". The status message and the selection readout
+    /// use the same text, so the status bar shows it once.
+    pub(crate) fn component_summary(&self) -> String {
+        let count = self.component_elements().len();
+        let (one, many) = match self.edit_mode {
+            EditMode::Vertex => ("vertex", "vertices"),
+            EditMode::Edge => ("edge", "edges"),
+            _ => ("face", "faces"),
+        };
+        match count {
+            0 => format!("No {one} selected"),
+            1 => format!("1 {one} selected"),
+            _ => format!("{count} {many} selected"),
+        }
+    }
+}
+
+/// What is selected. Object facts (face counts, features) belong to the
+/// inspector, so a single mesh or part adds nothing here.
 fn selection_summary(s: &Studio) -> Option<String> {
     if let Some(summary) = s.cad_tool_summary() {
         return Some(summary);
     }
     if s.edit_mode.is_component() {
-        let count = s.component_elements().len();
-        let kind = match s.edit_mode {
-            EditMode::Vertex => "vertex",
-            EditMode::Edge => "edge",
-            _ => "face",
-        };
-        let plural = match s.edit_mode {
-            EditMode::Vertex => "vertices",
-            EditMode::Edge => "edges",
-            _ => "faces",
-        };
-        return Some(match count {
-            0 => format!("No {kind} selected"),
-            1 => format!("1 {kind} selected"),
-            _ => format!("{count} {plural} selected"),
-        });
+        return Some(s.component_summary());
     }
     if let Some(summary) = s.draw_summary() {
         return Some(summary);
@@ -106,15 +112,21 @@ fn selection_summary(s: &Studio) -> Option<String> {
     let objects = s.selected_ids().len();
     match objects {
         0 => None,
-        1 => s
-            .selected_object()
-            .map(|object| format!("{} faces", object.mesh.faces.len()))
-            .or_else(|| {
-                let sketch = s.scene.object_sketch(s.selected?)?;
-                Some(format!("{} curves", sketch.entities.len()))
-            }),
+        1 => {
+            let sketch = s.scene.object_sketch(s.selected?)?;
+            Some(format!("{} curves", sketch.entities.len()))
+        }
         count => Some(format!("{count} objects selected")),
     }
+}
+
+/// The active part's last regeneration time and its breakdown.
+fn regeneration(s: &Studio) -> Option<(String, String)> {
+    let (_, part) = s.timeline_part()?;
+    if part.is_pending() {
+        return None;
+    }
+    super::feature_inspector::regeneration_timing(s, part.id)
 }
 
 /// Approximate drawn width of a hint pair, for whole-pair truncation.
@@ -155,7 +167,15 @@ pub(super) fn statusbar(
     let width = f32::from(window.viewport_size().width);
     let text = |chars: usize| chars as f32 * 6.2;
     let message = text(s.status.chars().count()).min(if wide { 420. } else { 260. }) + 24.;
-    let selection = selection_summary(s).map_or(0., |summary| text(summary.len()) + 25.);
+    // A status message that repeats the selection readout is shown once.
+    let summary = selection_summary(s).filter(|summary| *summary != s.status);
+    let selection = summary
+        .as_ref()
+        .map_or(0., |summary| text(summary.len()) + 25.);
+    let regenerated = regeneration(s);
+    let regeneration_width = regenerated
+        .as_ref()
+        .map_or(0., |(total, _)| text(total.len()) + 30.);
     let device_width = if wide { 260. } else { 150. };
     let device = text(s.device_name.chars().count()).min(device_width) + 30.;
     let rendered = if s.settings.mode == RenderMode::Rendered {
@@ -163,7 +183,7 @@ pub(super) fn statusbar(
     } else {
         0.
     };
-    let mut budget = width - message - selection - device - rendered - 190.;
+    let mut budget = width - message - selection - regeneration_width - device - rendered - 190.;
     let hints: Vec<_> = input_hints(s)
         .into_iter()
         .take_while(|(keys, label)| {
@@ -232,7 +252,7 @@ pub(super) fn statusbar(
                 .tooltip(tip(t, s.status.clone(), None)),
         )
         .child(vrule(t, 12.))
-        .when_some(selection_summary(s), |d, summary| {
+        .when_some(summary, |d, summary| {
             d.child(segment_text(t, summary)).child(vrule(t, 12.))
         })
         .when(rendered, |d| {
@@ -256,6 +276,23 @@ pub(super) fn statusbar(
                     .child(segment_text(
                         t,
                         format!("{}/{} spp", s.samples, s.settings.max_samples),
+                    )),
+            )
+        })
+        // Moved here from the timeline strip: a part's regeneration time.
+        .when_some(regenerated, |d, (total, detail)| {
+            d.child(
+                row()
+                    .id("regeneration-time")
+                    .gap(px(SP_1))
+                    .flex_shrink_0()
+                    .child(icon(Icon::History, 12., t.text_faint))
+                    .child(segment_text(t, total.clone()))
+                    .tooltip(tip_detail(
+                        t,
+                        format!("Part regenerated in {total}"),
+                        detail,
+                        None,
                     )),
             )
         })

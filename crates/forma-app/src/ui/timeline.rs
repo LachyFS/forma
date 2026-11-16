@@ -225,7 +225,7 @@ fn chip(
                     if selected {
                         t.accent_text
                     } else {
-                        t.text_faint
+                        t.text_muted
                     },
                 ))
             })
@@ -233,11 +233,11 @@ fn chip(
                 div()
                     .flex_shrink_0()
                     .tabular()
-                    .text_size(px(TEXT_XS))
+                    .text_size(px(TEXT_SM))
                     .text_color(rgb(if selected {
                         t.accent_text
                     } else {
-                        t.text_faint
+                        t.text_muted
                     }))
                     .child(chip_hint(feature)),
             )
@@ -295,29 +295,47 @@ fn slot(
         let dragging = s.panels.timeline.marker.is_some();
         let at_end = index == count;
         let ink = if dragging { t.accent_hover } else { t.accent };
-        return col()
+        // A full-height bar with a grab tab at its middle, like a splitter:
+        // it divides evaluated features from rolled-back ones.
+        return div()
             .id(id)
+            .relative()
             .w(px(14.))
-            .h(px(H_MD))
+            .h(px(H_MD + 6.))
+            .my(px(-3.))
             .flex_shrink_0()
+            .flex()
             .items_center()
             .justify_center()
             .cursor(CursorStyle::ResizeLeftRight)
             .group("timeline-marker")
             .child(
                 div()
-                    .size(px(7.))
+                    .absolute()
+                    .top_0()
+                    .bottom_0()
+                    .left(px(6.))
+                    .w(px(2.))
                     .rounded_full()
                     .bg(rgb(ink))
                     .group_hover("timeline-marker", move |d| d.bg(rgb(t.accent_hover))),
             )
             .child(
-                div()
-                    .w(px(2.))
-                    .h(px(15.))
-                    .rounded_full()
+                row()
+                    .w(px(10.))
+                    .h(px(18.))
+                    .gap(px(2.))
+                    .justify_center()
+                    .rounded(px(R_XS))
                     .bg(rgb(ink))
-                    .group_hover("timeline-marker", move |d| d.bg(rgb(t.accent_hover))),
+                    .group_hover("timeline-marker", move |d| d.bg(rgb(t.accent_hover)))
+                    .children((0..2).map(|_| {
+                        div()
+                            .w(px(1.))
+                            .h(px(8.))
+                            .rounded_full()
+                            .bg(tint(t.on_accent, 0.6))
+                    })),
             )
             .tooltip(tip_detail(
                 t,
@@ -400,25 +418,14 @@ fn status(t: Colors, s: &Studio, part: &PartData, tight: bool, cx: &mut Context<
                 ))
             });
     } else {
-        let time = s
-            .cad
-            .last_stats
-            .as_ref()
-            .filter(|(id, _)| *id == part.id)
-            .map(|(_, stats)| stats.total_ms);
-        cluster = cluster.child(dot(t.success, 6.)).when(!tight, |d| {
-            d.child(
-                caption(
-                    t,
-                    match time {
-                        Some(ms) if ms < 1000. => format!("{ms:.0} ms"),
-                        Some(ms) => format!("{:.1} s", ms / 1000.),
-                        None => "Up to date".into(),
-                    },
-                )
-                .tabular(),
-            )
-        });
+        // Timings live in the status bar; the strip only says it is current.
+        cluster = cluster.child(
+            div()
+                .id("timeline-up-to-date")
+                .p(px(SP_1))
+                .child(dot(t.success, 6.))
+                .tooltip(tip(t, "Up to date", None)),
+        );
     }
     if marker < count {
         cluster = cluster.child(on_command(

@@ -152,6 +152,46 @@ fn tool_scenarios() -> Vec<Scenario> {
             enter: demo::extrude_light,
             leave: demo::restore_theme,
         },
+        // The inspector's selection and live-operation panels in the light
+        // theme and in a narrow window.
+        Scenario {
+            name: "tools-chamfer-light",
+            enter: |s, w, cx| {
+                theme(s, Theme::Paper, cx);
+                demo::chamfer(s, w, cx);
+            },
+            leave: demo::restore_theme,
+        },
+        Scenario {
+            name: "tools-part-edit-faces-light",
+            enter: |s, w, cx| {
+                theme(s, Theme::Paper, cx);
+                demo::part_edit_faces(s, w, cx);
+            },
+            leave: demo::restore_theme,
+        },
+        Scenario {
+            name: "tools-chamfer-narrow",
+            enter: |s, w, cx| {
+                resize(w, 1000., 650.);
+                demo::chamfer(s, w, cx);
+            },
+            leave: |s, w, cx| {
+                demo::restore(s, w, cx);
+                restore_size(s, w, cx);
+            },
+        },
+        Scenario {
+            name: "tools-part-edit-faces-narrow",
+            enter: |s, w, cx| {
+                resize(w, 1000., 650.);
+                demo::part_edit_faces(s, w, cx);
+            },
+            leave: |s, w, cx| {
+                demo::restore(s, w, cx);
+                restore_size(s, w, cx);
+            },
+        },
     ]
 }
 
@@ -255,6 +295,18 @@ pub(crate) fn scenarios() -> Vec<Scenario> {
                 s.execute(Command::SelectAll, w, cx);
             },
             leave: leave_edit,
+        },
+        Scenario {
+            name: "edit-mode-light",
+            enter: |s, w, cx| {
+                theme(s, Theme::Paper, cx);
+                edit_torus(s, w, cx, EditMode::Face);
+                s.execute(Command::SelectAll, w, cx);
+            },
+            leave: |s, w, cx| {
+                leave_edit(s, w, cx);
+                theme(s, Theme::Forma, cx);
+            },
         },
         Scenario {
             name: "transform",

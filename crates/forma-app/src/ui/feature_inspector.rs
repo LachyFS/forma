@@ -111,11 +111,15 @@ fn operation_control(
                 )
                 .flex_1()
                 .min_w(px(0.))
-                .child(icon(
-                    operation_icon(operation),
-                    ICON_SM,
-                    if active { t.text } else { t.text_muted },
-                ))
+                // Four labelled segments only fit as text; a narrow sidebar
+                // keeps the icons, named by their tooltips.
+                .when(icons_only, |d| {
+                    d.child(icon(
+                        operation_icon(operation),
+                        ICON_SM,
+                        if active { t.text } else { t.text_muted },
+                    ))
+                })
                 .when(!icons_only, |d| d.child(label))
                 .tooltip(command_tip(t, command)),
                 command,
@@ -523,27 +527,60 @@ fn feature_page(
     let part = selected.part;
     let rolled_back = selected.index >= timeline::marker(part);
     let state = chip_state(s, part, feature);
-    let (badge_text, tone) = match (&state, feature.suppressed, rolled_back) {
-        (ChipState::Error(_), _, _) => ("Failed", BadgeTone::Danger),
-        (_, true, _) => ("Suppressed", BadgeTone::Neutral),
-        (_, _, true) => ("Rolled back", BadgeTone::Neutral),
-        _ if part.is_pending() => ("Regenerating", BadgeTone::Accent),
-        (ChipState::Warning(_), _, _) => ("Check", BadgeTone::Neutral),
-        _ => ("Active", BadgeTone::Neutral),
-    };
+    // One header: a breadcrumb back to the part with the feature's kind and
+    // place in the history, then the feature's icon and editable name.
+    // States that need attention get a notice below, never a pill.
+    let part_name = s
+        .selected
+        .and_then(|id| s.scene.object(id))
+        .map(|object| object.name.clone())
+        .unwrap_or_default();
+    let crumb = row()
+        .h(px(H_SM))
+        .gap(px(SP_1))
+        .child(on_command(
+            row()
+                .id("feature-back")
+                .h(px(H_SM - 4.))
+                .px(px(SP_1_5))
+                .ml(px(-SP_1_5))
+                .min_w(px(0.))
+                .rounded(px(R_SM))
+                .cursor_pointer()
+                .text_size(px(TEXT_SM))
+                .font_weight(WEIGHT_MEDIUM)
+                .text_color(rgb(t.text_muted))
+                .hover(move |d| d.bg(rgb(t.control_hover)).text_color(rgb(t.text)))
+                .child(div().truncate().child(part_name))
+                .tooltip(tip(t, "Back to the part summary", Some("Esc"))),
+            Command::Timeline(TimelineCommand::Deselect),
+            cx,
+        ))
+        .child(icon(Icon::ChevronRight, 12., t.text_faint))
+        .child(caption(t, feature.kind.label()))
+        .child(spacer())
+        .child(
+            caption(
+                t,
+                format!("Step {} of {}", selected.index + 1, part.features.len()),
+            )
+            .tabular()
+            .text_color(rgb(t.text_faint)),
+        );
     let header = row()
         .gap(px(SP_2))
-        .pb(px(SP_1))
+        .pt(px(SP_1))
+        .pb(px(SP_1_5))
         .child(
             div()
                 .flex()
                 .items_center()
                 .justify_center()
-                .size(px(H_SM))
+                .size(px(H_MD))
                 .flex_shrink_0()
-                .rounded(px(R_SM + 1.))
+                .rounded(px(R_MD))
                 .bg(rgb(t.accent_soft))
-                .child(icon(feature_icon(feature), ICON_SM, t.accent_text)),
+                .child(icon(feature_icon(feature), ICON_MD, t.accent_text)),
         )
         .child(
             numeric_field(
@@ -555,30 +592,15 @@ fn feature_page(
                 "Feature name",
                 cx,
             )
+            .h(px(H_MD))
             .flex_1()
             .min_w(px(0.))
+            .text_size(px(TEXT_LG))
             .font_weight(WEIGHT_MEDIUM),
         )
-        .child(badge(t, badge_text, tone))
-        .child(on_command(
-            icon_button(t, "feature-deselect", Icon::Close, false, H_SM).tooltip(tip(
-                t,
-                "Back to the part",
-                Some("Esc"),
-            )),
-            Command::Timeline(TimelineCommand::Deselect),
-            cx,
-        ));
-    let meta = caption(
-        t,
-        format!(
-            "{} · step {} of {}",
-            feature.kind.label(),
-            selected.index + 1,
-            part.features.len()
-        ),
-    )
-    .pb(px(SP_1));
+        .when(part.is_pending(), |d| {
+            d.child(badge(t, "Regenerating", BadgeTone::Accent))
+        });
     let notice_row = match &state {
         ChipState::Error(message) => {
             let (title, detail) = match message.split_once(" · ") {
@@ -618,7 +640,6 @@ fn feature_page(
     };
     let actions = row()
         .gap(px(SP_1))
-        .pt(px(SP_2))
         .child(
             command_button(
                 t,
@@ -658,20 +679,64 @@ fn feature_page(
             .flex_1()
             .min_w(px(0.))
             .px(px(SP_1_5)),
-        )
-        .child(on_command(
-            icon_button(t, "feature-delete", Icon::Delete, false, H_SM)
-                .tooltip(command_tip(t, Command::Timeline(TimelineCommand::Delete))),
-            Command::Timeline(TimelineCommand::Delete),
-            cx,
-        ));
+        );
+    // Destructive, so apart from the history actions and in danger ink.
+    let delete = on_command(
+        row()
+            .id("feature-delete")
+            .h(px(H_SM))
+            .w_full()
+            .justify_center()
+            .gap(px(SP_1_5))
+            .rounded(px(R_SM + 1.))
+            .cursor_pointer()
+            .text_size(px(TEXT_MD))
+            .font_weight(WEIGHT_MEDIUM)
+            .text_color(rgb(t.danger))
+            .hover(move |d| d.bg(tint(t.danger, 0.1)))
+            .active(move |d| d.bg(tint(t.danger, 0.16)))
+            .child(icon(Icon::Delete, ICON_SM, t.danger))
+            .child("Delete feature")
+            .tooltip(command_tip(t, Command::Timeline(TimelineCommand::Delete))),
+        Command::Timeline(TimelineCommand::Delete),
+        cx,
+    );
     col()
+        .child(crumb)
         .child(header)
-        .child(meta)
         .when_some(notice_row, |d, notice| d.child(notice.mb(px(SP_1))))
         .child(parameters(t, s, feature, stacked, cx))
         .when_some(sketch_link(t, s, feature, cx), |d, link| d.child(link))
-        .child(actions)
+        .child(
+            col()
+                .gap(px(SP_1))
+                .mt(px(SP_3))
+                .pt(px(SP_3))
+                .border_t_1()
+                .border_color(rgb(t.hairline))
+                .child(actions)
+                .child(delete),
+        )
+}
+
+/// The last regeneration of part `id`: its total time ("725 ms") and the
+/// breakdown, for the part summary's tooltip and the status bar.
+pub(super) fn regeneration_timing(s: &Studio, id: u64) -> Option<(String, String)> {
+    let (_, stats) = s.cad.last_stats.as_ref().filter(|(part, _)| *part == id)?;
+    let total = if stats.total_ms < 1000. {
+        format!("{:.0} ms", stats.total_ms)
+    } else {
+        format!("{:.1} s", stats.total_ms / 1000.)
+    };
+    let detail = if stats.evaluate_ms < 0.5 {
+        "History reused · tessellation only".to_owned()
+    } else {
+        format!(
+            "Solid {:.0} ms · mesh {:.0} ms",
+            stats.evaluate_ms, stats.tessellate_ms
+        )
+    };
+    Some((total, detail))
 }
 
 /// One feature row in the summary's history list.
@@ -700,7 +765,7 @@ fn history_row(
                 .w(px(14.))
                 .flex_shrink_0()
                 .tabular()
-                .text_size(px(TEXT_XS))
+                .text_size(px(TEXT_SM))
                 .text_color(rgb(t.text_faint))
                 .child((index + 1).to_string()),
         )
@@ -729,7 +794,6 @@ fn history_row(
         .child(
             caption(t, chip_hint(feature))
                 .tabular()
-                .text_size(px(TEXT_XS))
                 .text_color(rgb(t.text_faint)),
         )
         .map(|d| match &state {
@@ -757,18 +821,15 @@ fn part_summary(
     cx: &mut Context<Studio>,
 ) -> Div {
     let issues = part.issues();
-    let (status, tone) = if part.is_pending() {
-        ("Regenerating…".to_owned(), BadgeTone::Accent)
+    let (status, ink) = if part.is_pending() {
+        ("Regenerating…".to_owned(), t.accent)
     } else if part.regeneration_failed() {
         // Viewport, OBJ/STL and STEP/convert would otherwise disagree silently.
-        (
-            "Failed · showing the previous result".to_owned(),
-            BadgeTone::Danger,
-        )
+        ("Failed · showing the previous result".to_owned(), t.danger)
     } else if issues.is_empty() {
-        ("Up to date".to_owned(), BadgeTone::Neutral)
+        ("Up to date".to_owned(), t.success)
     } else if issues.iter().all(|issue| issue.warning) {
-        (format!("{} approximated", issues.len()), BadgeTone::Neutral)
+        (format!("{} approximated", issues.len()), t.warning)
     } else {
         (
             format!(
@@ -776,67 +837,60 @@ fn part_summary(
                 issues.len(),
                 if issues.len() == 1 { "" } else { "s" }
             ),
-            BadgeTone::Danger,
+            t.danger,
         )
     };
     let suppressed = part.features.iter().filter(|f| f.suppressed).count();
     let faces = s.cad.faces.get(&part.id).map(Vec::len);
     let triangles = s.scene.object_mesh(object).map(|mesh| mesh.faces.len());
-    let stats = s
-        .cad
-        .last_stats
-        .as_ref()
-        .filter(|(id, _)| *id == part.id)
-        .map(|(_, stats)| stats.clone());
     let marker = timeline::marker(part);
-    let mut summary = col()
-        .gap(px(SP_1))
-        .child(property_row(
-            t,
-            "Status",
-            row().gap(px(SP_1_5)).child(badge(t, status, tone)).when(
-                marker < part.features.len(),
-                |d| {
-                    d.child(badge(
-                        t,
-                        format!("Rolled back · {marker} of {}", part.features.len()),
-                        BadgeTone::Neutral,
-                    ))
-                },
-            ),
-        ))
+    // One line of facts after a status dot; timings are on hover.
+    let mut facts = vec![status];
+    if marker < part.features.len() {
+        facts.push(format!(
+            "rolled back to {marker} of {}",
+            part.features.len()
+        ));
+    }
+    if suppressed > 0 {
+        facts.push(format!("{suppressed} suppressed"));
+    }
+    if let Some(faces) = faces {
+        facts.push(format!(
+            "{} face{}",
+            thousands(faces),
+            if faces == 1 { "" } else { "s" }
+        ));
+    }
+    if let Some(triangles) = triangles {
+        facts.push(format!("{} triangles", thousands(triangles)));
+    }
+    let timing = regeneration_timing(s, part.id);
+    let meta = row()
+        .id("part-meta")
+        .items_start()
+        .gap(px(SP_2))
+        .pb(px(SP_1))
+        .child(div().pt(px(5.)).child(dot(ink, 7.)))
         .child(
-            stat_tiles([
-                stat_tile(
-                    t,
-                    "Features",
-                    if suppressed > 0 {
-                        format!("{} · {suppressed} off", part.features.len())
-                    } else {
-                        part.features.len().to_string()
-                    },
-                ),
-                stat_tile(t, "Faces", faces.map_or("—".into(), thousands)),
-                stat_tile(t, "Triangles", triangles.map_or("—".into(), thousands)),
-            ])
-            .py(px(SP_1)),
+            div()
+                .flex_1()
+                .min_w(px(0.))
+                .tabular()
+                .text_size(px(TEXT_SM))
+                .line_height(px(17.))
+                .text_color(rgb(t.text_muted))
+                .child(facts.join(" · ")),
         )
-        .when_some(stats, |d, stats| {
-            d.child(caption(
+        .when_some(timing, |d, (total, detail)| {
+            d.tooltip(tip_detail(
                 t,
-                if stats.evaluate_ms < 0.5 {
-                    format!(
-                        "Regenerated in {:.0} ms · history reused, tessellation only",
-                        stats.total_ms
-                    )
-                } else {
-                    format!(
-                        "Regenerated in {:.0} ms · solid {:.0} ms · mesh {:.0} ms",
-                        stats.total_ms, stats.evaluate_ms, stats.tessellate_ms
-                    )
-                },
+                format!("Regenerated in {total}"),
+                detail,
+                None,
             ))
         });
+    let mut summary = col().gap(px(SP_1)).child(meta);
     for issue in issues {
         let target = part
             .features
@@ -1057,20 +1111,20 @@ pub(super) fn part_section(
     part: &PartData,
     stacked: bool,
     cx: &mut Context<Studio>,
-) -> (Div, SharedString) {
+) -> (Div, Option<SharedString>) {
     match s.selected_feature() {
-        Some(selected) => {
-            let detail = format!("Feature {} of {}", selected.index + 1, part.features.len());
-            (feature_page(t, s, &selected, stacked, cx), detail.into())
-        }
+        // The feature's breadcrumb says where it sits in the history.
+        Some(selected) => (feature_page(t, s, &selected, stacked, cx), None),
         None => (
             part_summary(t, s, object, part, cx),
-            format!(
-                "{} feature{}",
-                part.features.len(),
-                if part.features.len() == 1 { "" } else { "s" }
-            )
-            .into(),
+            Some(
+                format!(
+                    "{} feature{}",
+                    part.features.len(),
+                    if part.features.len() == 1 { "" } else { "s" }
+                )
+                .into(),
+            ),
         ),
     }
 }
