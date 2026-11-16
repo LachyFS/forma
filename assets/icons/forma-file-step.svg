@@ -1,0 +1,9 @@
+<!-- Forma icon, drawn on the Lucide 24-unit grid. Part of Forma (MIT OR Apache-2.0). -->
+<!-- A file holding a solid: a STEP part. -->
+<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+  <path d="M4 10V4a2 2 0 0 1 2-2h8l6 6v12a2 2 0 0 1-2 2h-5"/>
+  <path d="M14 2v4a2 2 0 0 0 2 2h4"/>
+  <path d="M6.5 12.5 11 15v4.8l-4.5 2.5L2 19.8V15Z"/>
+  <path d="m2 15 4.5 2.5L11 15"/>
+  <path d="M6.5 17.5v4.8"/>
+</svg>

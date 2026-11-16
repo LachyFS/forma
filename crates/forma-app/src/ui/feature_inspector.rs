@@ -6,7 +6,7 @@
 use super::assets::{Icon, icon};
 use super::commands::operation_icon;
 use super::components::*;
-use super::timeline::{ChipState, chip_hint, chip_state, feature_icon};
+use super::timeline::{ChipState, chip_hint, chip_state, feature_glyph, feature_icon};
 use super::tokens::*;
 use crate::app::{Command, Field, Studio};
 use crate::cad::CadCommand;
@@ -740,7 +740,9 @@ pub(super) fn regeneration_timing(s: &Studio, id: u64) -> Option<(String, String
 }
 
 /// One feature row in the summary's history list. `number` is its place in
-/// the list, which a pending feature before it shifts by one.
+/// the list, which a pending feature before it shifts by one. While a tool
+/// runs the rows are a read-only map of where its feature lands: no hover
+/// fill or click competes with the pending row.
 fn history_row(
     t: Colors,
     s: &Studio,
@@ -753,14 +755,17 @@ fn history_row(
     let id = feature.id;
     let rolled_back = index >= timeline::marker(part);
     let state = chip_state(s, part, feature);
+    let live = s.cad_tool_active();
     row()
         .id(("part-history", id))
         .h(px(H_SM + 2.))
         .px(px(SP_1_5))
         .gap(px(SP_2))
         .rounded(px(R_SM))
-        .cursor_pointer()
-        .hover(move |d| d.bg(rgb(t.control_hover)))
+        .when(!live, |d| {
+            d.cursor_pointer()
+                .hover(move |d| d.bg(rgb(t.control_hover)))
+        })
         .when(rolled_back, |d| d.opacity(0.45))
         .child(
             div()
@@ -771,14 +776,15 @@ fn history_row(
                 .text_color(rgb(t.text_faint))
                 .child(number.to_string()),
         )
-        .child(icon(
-            feature_icon(feature),
+        .child(feature_glyph(
+            feature,
             ICON_SM,
             if matches!(state, ChipState::Error(_)) {
                 t.danger
             } else {
                 t.text_muted
             },
+            hex(t.surface),
         ))
         .child(
             div()
@@ -804,13 +810,25 @@ fn history_row(
             ChipState::Ok if feature.suppressed => d.child(icon(Icon::EyeOff, 13., t.text_faint)),
             ChipState::Ok => d,
         })
-        .on_click(cx.listener(move |s, event: &ClickEvent, w, cx| {
-            cx.stop_propagation();
-            s.execute(Command::Timeline(TimelineCommand::Select(id)), w, cx);
-            if event.click_count() >= 2 {
-                s.execute(Command::Timeline(TimelineCommand::Edit), w, cx);
-            }
-        }))
+        .when(!live, |d| {
+            d.on_click(cx.listener(move |s, event: &ClickEvent, w, cx| {
+                cx.stop_propagation();
+                s.execute(Command::Timeline(TimelineCommand::Select(id)), w, cx);
+                if event.click_count() >= 2 {
+                    s.execute(Command::Timeline(TimelineCommand::Edit), w, cx);
+                }
+            }))
+        })
+}
+
+/// The name a running tool's feature gets on Done, as the history shows it
+/// while previewing: numbered past the features it would repeat.
+fn pending_name(part: &PartData, name: &str, count: usize) -> String {
+    if count > 1 {
+        format!("{count} × {name}")
+    } else {
+        timeline::numbered_name(part, name)
+    }
 }
 
 /// The feature a running tool adds on Done, where it will land in the
@@ -865,7 +883,15 @@ fn part_summary(
     cx: &mut Context<Studio>,
 ) -> Div {
     let issues = part.issues();
-    let (status, ink) = if part.is_pending() {
+    let pending = s.pending_feature(object);
+    let (status, ink) = if pending.is_some() {
+        // The viewport shows the tool's result, not the part's: say so,
+        // and leave the committed solid's counts until Done.
+        (
+            "Previewing · Done adds it to the history".to_owned(),
+            t.accent,
+        )
+    } else if part.is_pending() {
         ("Regenerating…".to_owned(), t.accent)
     } else if part.regeneration_failed() {
         // Viewport, OBJ/STL and STEP/convert would otherwise disagree silently.
@@ -890,6 +916,7 @@ fn part_summary(
     let marker = timeline::marker(part);
     // One line of facts after a status dot; timings are on hover.
     let mut facts = vec![status];
+    let previewing = pending.is_some();
     if marker < part.features.len() {
         facts.push(format!(
             "rolled back to {marker} of {}",
@@ -899,14 +926,14 @@ fn part_summary(
     if suppressed > 0 {
         facts.push(format!("{suppressed} suppressed"));
     }
-    if let Some(faces) = faces {
+    if let Some(faces) = faces.filter(|_| !previewing) {
         facts.push(format!(
             "{} face{}",
             thousands(faces),
             if faces == 1 { "" } else { "s" }
         ));
     }
-    if let Some(triangles) = triangles {
+    if let Some(triangles) = triangles.filter(|_| !previewing) {
         facts.push(format!("{} triangles", thousands(triangles)));
     }
     let timing = regeneration_timing(s, part.id);
@@ -973,7 +1000,6 @@ fn part_summary(
         .children({
             // A running tool's feature lands at the rollback marker, where
             // Done inserts it; the rows after it renumber.
-            let pending = s.pending_feature(object);
             let shift = pending.as_ref().map_or(0, |_| 1);
             let mut rows: Vec<AnyElement> = part
                 .features
@@ -985,11 +1011,7 @@ fn part_summary(
                 })
                 .collect();
             if let Some(pending) = pending {
-                let name = if pending.count > 1 {
-                    format!("{} × {}", pending.count, pending.name)
-                } else {
-                    pending.name.to_owned()
-                };
+                let name = pending_name(part, pending.name, pending.count);
                 rows.insert(
                     marker.min(rows.len()),
                     pending_row(t, marker + 1, pending.icon, name, pending.hint).into_any_element(),
@@ -1186,16 +1208,14 @@ pub(super) fn part_section(
     match s.selected_feature() {
         // The feature's breadcrumb says where it sits in the history.
         Some(selected) => (feature_page(t, s, &selected, stacked, cx), None),
-        None => (
-            part_summary(t, s, object, part, cx),
-            Some(
-                format!(
-                    "{} feature{}",
-                    part.features.len(),
-                    if part.features.len() == 1 { "" } else { "s" }
-                )
-                .into(),
-            ),
-        ),
+        None => {
+            // A previewed feature counts: the history below lists it.
+            let count =
+                part.features.len() + s.pending_feature(object).map_or(0, |pending| pending.count);
+            (
+                part_summary(t, s, object, part, cx),
+                Some(format!("{count} feature{}", if count == 1 { "" } else { "s" }).into()),
+            )
+        }
     }
 }

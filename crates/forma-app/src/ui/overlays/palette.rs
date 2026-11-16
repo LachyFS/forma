@@ -24,12 +24,17 @@ const WIDTH: f32 = 600.;
 const ROW: f32 = 36.;
 const SEARCH: f32 = 52.;
 const FOOTER: f32 = 36.;
-/// Tallest the list grows before it scrolls: about nine rows and a heading.
-const LIST_MAX: f32 = 380.;
+/// Section headings in the unfiltered list, and the space above each one
+/// after the first.
+const HEADING: f32 = 28.;
+const HEADING_GAP: f32 = SP_1_5;
+/// Padding above the first row and below the last.
+const LIST_TOP: f32 = SP_1_5;
+const LIST_BOTTOM: f32 = SP_3;
+/// The whole card grows to this share of the window before its list scrolls.
+const CARD_SHARE: f32 = 0.6;
 /// Room for the highlighted command's description beside the footer keys.
 const DETAIL_WIDTH: f32 = 380.;
-/// Height of the fade that shows the list continues below.
-const FADE: f32 = 28.;
 
 /// Heading for commands that act on the current selection.
 const FOR_SELECTION: &str = "For selection";
@@ -44,6 +49,9 @@ pub(crate) struct PaletteEntry {
     pub command: Command,
     /// Heading of the section the row belongs to in the unfiltered list.
     pub section: &'static str,
+    /// What a row pinned under "For selection" acts on ("Part"). Every row
+    /// in that section carries the same tag.
+    pub scope: Option<&'static str>,
     /// Byte ranges of `label` that matched the query.
     pub matches: Vec<Range<usize>>,
 }
@@ -143,6 +151,7 @@ impl Studio {
                             shortcut,
                             command,
                             section: command_group(command),
+                            scope: None,
                             matches,
                         },
                     ))
@@ -157,6 +166,7 @@ impl Studio {
             shortcut,
             command,
             section,
+            scope: None,
             matches: Vec::new(),
         };
         if self.palette_exports_only {
@@ -164,6 +174,7 @@ impl Studio {
         }
         let mut entries = Vec::new();
         let (context, suggested) = self.palette_context();
+        let scope = (context == FOR_SELECTION).then(|| self.palette_scope());
         let pinned = suggested.iter().map(|command| (context, *command)).chain(
             self.panels
                 .recent_commands()
@@ -172,7 +183,11 @@ impl Studio {
         );
         for (section, command) in pinned {
             if let Some(position) = all.iter().position(|(_, _, c)| *c == command) {
-                entries.push(entry(all.remove(position), section));
+                let mut pinned = entry(all.remove(position), section);
+                if section == FOR_SELECTION {
+                    pinned.scope = scope;
+                }
+                entries.push(pinned);
             }
         }
         entries.extend(
@@ -180,6 +195,27 @@ impl Studio {
                 .map(|item| entry(item, command_group(item.2))),
         );
         entries
+    }
+
+    /// What the "For selection" commands act on, as one tag for the section.
+    fn palette_scope(&self) -> &'static str {
+        if self.is_drawing() {
+            return "Sketch";
+        }
+        if self.part_editing().is_some() {
+            return "Part";
+        }
+        if self.edit_mode.is_component() {
+            return "Mesh";
+        }
+        let ids = self.selected_ids();
+        let mut objects = ids.iter().filter_map(|id| self.scene.object(*id));
+        match (objects.next(), objects.next()) {
+            (Some(object), None) => super::super::outliner::kind_label(
+                super::super::outliner::object_kind(&self.scene, object),
+            ),
+            _ => "Objects",
+        }
     }
 
     /// Commands that act on what is selected or being edited; with nothing
@@ -381,19 +417,25 @@ fn command_row(
             None => div().w(px(ICON_MD)).flex_shrink_0().into_any_element(),
         })
         .child(label_text(t, entry, enabled))
-        // The category reads as the label's subtitle, right beside it. It
-        // is left out where the label already starts with it ("Export
-        // STEP…" under Export).
-        .when(
-            enabled && show_category && !entry.label.starts_with(command_group(command)),
-            |d| {
-                d.child(
-                    div()
-                        .flex_shrink_0()
-                        .text_size(px(TEXT_MD))
-                        .text_color(rgb(if active { t.text_muted } else { t.text_faint }))
-                        .child(command_group(command)),
-                )
+        // The tag reads as the label's subtitle, right beside it. Rows for
+        // the selection all name what they act on; elsewhere it is the
+        // command's category, left out where the label already starts with
+        // it ("Export STEP…" under Export).
+        .when_some(
+            entry.scope.or_else(|| {
+                let group = command_group(command);
+                (show_category && !entry.label.starts_with(group)).then_some(group)
+            }),
+            |d, tag| {
+                d.when(enabled, |d| {
+                    d.child(
+                        div()
+                            .flex_shrink_0()
+                            .text_size(px(TEXT_MD))
+                            .text_color(rgb(if active { t.text_muted } else { t.text_faint }))
+                            .child(tag),
+                    )
+                })
             },
         )
         .child(spacer())
@@ -429,13 +471,32 @@ pub(super) fn overlay(
     let selected = s.palette_index.min(entries.len().saturating_sub(1));
     let viewport = f32::from(window.viewport_size().height);
     let top = (viewport * 0.12f32).clamp(48., 140.);
-    let list_max = (viewport - top - SEARCH - FOOTER - SP_6 * 2.).clamp(ROW * 3., LIST_MAX);
     let exports = s.palette_exports_only;
     let query = s.palette_query.clone();
     let searching = !query.trim().is_empty();
     // Headings group the unfiltered list; search results are ranked across
     // groups instead, so each shows its group on the right.
     let grouped = !searching && !exports;
+    let first_of_section = |index: usize| {
+        grouped && (index == 0 || entries[index - 1].section != entries[index].section)
+    };
+    let budget = (viewport * CARD_SHARE)
+        .min(viewport - top - SP_6)
+        .max(SEARCH + FOOTER + ROW * 3.)
+        - SEARCH
+        - FOOTER;
+    let list_max = list_height(
+        (0..entries.len()).map(|index| {
+            ROW + if !first_of_section(index) {
+                0.
+            } else if index == 0 {
+                HEADING
+            } else {
+                HEADING + HEADING_GAP
+            }
+        }),
+        budget,
+    );
     let scroll = follow(selected, &query, exports, cx);
 
     let mut list = div()
@@ -446,12 +507,11 @@ pub(super) fn overlay(
         .overflow_y_scroll()
         .track_scroll(&scroll)
         .px(px(SP_1_5))
-        .pt(px(SP_1_5))
+        .pt(px(LIST_TOP))
         // Room under the last row, so it never meets the footer's rule.
-        .pb(px(SP_3));
+        .pb(px(LIST_BOTTOM));
     for (index, entry) in entries.iter().enumerate() {
-        let first_of_section =
-            grouped && (index == 0 || entries[index - 1].section != entry.section);
+        let first_of_section = first_of_section(index);
         let pinned = matches!(entry.section, FOR_SELECTION | SUGGESTED | RECENT);
         // Each child is one row plus its heading, so scrolling a row into
         // view also reveals the heading above it.
@@ -461,9 +521,9 @@ pub(super) fn overlay(
                 .when(first_of_section, |d| {
                     d.child(
                         heading(t, entry.section)
-                            .h(px(28.))
+                            .h(px(HEADING))
                             .px(px(SP_3))
-                            .when(index > 0, |d| d.mt(px(SP_1_5))),
+                            .when(index > 0, |d| d.mt(px(HEADING_GAP))),
                     )
                 })
                 .child(command_row(
@@ -549,27 +609,33 @@ pub(super) fn overlay(
             )
         });
 
-    // While rows continue below, a short fade into the card says so.
+    // While rows continue past an edge, a short shadow line under it says
+    // so without dimming the row beside it.
     let max_scroll = scroll.max_offset().height;
-    let clipped_below = max_scroll > px(0.5) && scroll.offset().y > -max_scroll + px(0.5);
-    let veil = hex(t.overlay);
-    let mut clear_veil = veil;
-    clear_veil.a = 0.;
-    let list = div().relative().child(list).when(clipped_below, |d| {
-        d.child(
-            div()
-                .absolute()
-                .left_0()
-                .right_0()
-                .bottom_0()
-                .h(px(FADE))
-                .bg(linear_gradient(
-                    0.,
-                    linear_color_stop(veil, 0.),
-                    linear_color_stop(clear_veil, 1.),
-                )),
-        )
-    });
+    let offset = scroll.offset().y;
+    let clipped_above = offset < px(-0.5);
+    let clipped_below = max_scroll > px(0.5) && offset > -max_scroll + px(0.5);
+    let list = div()
+        .relative()
+        .child(list)
+        .when(clipped_above, |d| {
+            d.child(
+                scroll_shadow(t, false)
+                    .absolute()
+                    .left_0()
+                    .right_0()
+                    .top_0(),
+            )
+        })
+        .when(clipped_below, |d| {
+            d.child(
+                scroll_shadow(t, true)
+                    .absolute()
+                    .left_0()
+                    .right_0()
+                    .bottom_0(),
+            )
+        });
 
     // The footer explains the highlighted command in plain words; the keys
     // that act on it stay on the right.
@@ -628,9 +694,28 @@ pub(super) fn overlay(
     .into_any_element()
 }
 
+/// The list's height: everything when it fits in `budget`, otherwise the
+/// tallest run of whole rows (each with its heading) that does, so the list
+/// never opens on a cut row.
+fn list_height(rows: impl IntoIterator<Item = f32>, budget: f32) -> f32 {
+    let mut end = LIST_TOP;
+    let mut whole = LIST_TOP;
+    for height in rows {
+        end += height;
+        if end <= budget {
+            whole = end;
+        }
+    }
+    if end + LIST_BOTTOM <= budget {
+        end + LIST_BOTTOM
+    } else {
+        whole.max(LIST_TOP + ROW)
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::match_command;
+    use super::{HEADING, LIST_BOTTOM, LIST_TOP, ROW, list_height, match_command};
     use crate::app::Command;
     use forma_render::RenderMode;
 
@@ -660,6 +745,22 @@ mod tests {
         let (_, ranges) = match_command("Wireframe viewport", wire, &words("shading")).unwrap();
         assert!(ranges.is_empty());
         assert!(match_command("Wireframe viewport", wire, &words("solid")).is_none());
+    }
+
+    #[test]
+    fn the_list_ends_on_a_whole_row() {
+        let rows = std::iter::once(HEADING + ROW).chain(std::iter::repeat_n(ROW, 30));
+        let height = list_height(rows, 480.);
+        assert!(height <= 480.);
+        let after_heading = height - LIST_TOP - HEADING;
+        assert_eq!(after_heading % ROW, 0., "{height} cuts a row");
+        assert!(
+            480. - height < ROW,
+            "{height} leaves a whole row's room unused"
+        );
+        // A short list keeps its bottom padding and never scrolls.
+        let short = list_height([HEADING + ROW, ROW], 480.);
+        assert_eq!(short, LIST_TOP + HEADING + ROW * 2. + LIST_BOTTOM);
     }
 
     #[test]

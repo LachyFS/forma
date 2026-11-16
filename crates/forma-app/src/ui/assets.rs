@@ -54,7 +54,7 @@ icons! {
     Cube => "box",
     Sphere => "forma-sphere",
     Cylinder => "cylinder",
-    Torus => "torus",
+    Torus => "forma-torus",
     Plane => "forma-plane",
     PlaneGround => "forma-plane-ground",
     PlaneFront => "forma-plane-front",
@@ -73,6 +73,9 @@ icons! {
     Intersect => "forma-intersect",
     PushPull => "forma-push-pull",
     ExtrudeCut => "forma-extrude-cut",
+    // Filled operation marks laid over a feature's shape glyph.
+    BadgeCut => "forma-badge-cut",
+    BadgeIntersect => "forma-badge-intersect",
     // Draw tools.
     DrawLine => "pen-line",
     DrawRectangle => "square",
@@ -125,6 +128,9 @@ icons! {
     Export => "share",
     ExportImage => "image-down",
     Import => "import",
+    ImportObj => "forma-file-obj",
+    ImportStl => "forma-file-stl",
+    ImportStep => "forma-file-step",
     Image => "image",
     Search => "search",
     Command => "command",

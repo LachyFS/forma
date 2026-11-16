@@ -1,0 +1,5 @@
+<!-- Forma icon, drawn on the Lucide 24-unit grid. Part of Forma (MIT OR Apache-2.0). -->
+<!-- Operation badge: a disc with a minus knocked out, drawn filled because it is shown at 8 to 10 px. -->
+<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="currentColor" stroke="none">
+  <path fill-rule="evenodd" d="M12 1a11 11 0 1 0 0 22a11 11 0 1 0 0-22ZM6 10.25h12v3.5H6Z"/>
+</svg>

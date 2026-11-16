@@ -280,6 +280,30 @@ pub(crate) fn neighbour(part: &PartData, id: u64, step: isize) -> Option<u64> {
     part.features.get(next as usize).map(|f| f.id)
 }
 
+/// A name for a new feature of kind `stem` that no feature in the history
+/// already has: the stem itself for the first one, then "Chamfer 2",
+/// "Chamfer 3", one past the highest number in use, so two features never
+/// read alike in the history and the timeline.
+pub(crate) fn numbered_name(part: &PartData, stem: &str) -> String {
+    let mut highest = 0;
+    for feature in &part.features {
+        let name = feature.name.as_str();
+        if name == stem {
+            highest = highest.max(1);
+        } else if let Some(number) = name
+            .strip_prefix(stem)
+            .and_then(|rest| rest.strip_prefix(' '))
+            .and_then(|digits| digits.parse::<usize>().ok())
+        {
+            highest = highest.max(number);
+        }
+    }
+    match highest {
+        0 => stem.to_owned(),
+        n => format!("{stem} {}", n + 1),
+    }
+}
+
 /// Rename a feature. Names do not affect geometry, so the part keeps its
 /// stamp and nothing regenerates.
 pub(crate) fn rename_feature(part: &mut PartData, id: u64, name: &str) -> Result<bool, String> {
@@ -1208,6 +1232,29 @@ mod tests {
             );
         }
         part
+    }
+
+    #[test]
+    fn new_features_are_numbered_past_the_highest_name_in_use() {
+        let mut part = part_with(0);
+        assert_eq!(numbered_name(&part, "Chamfer"), "Chamfer");
+        let kind = |size: f32| {
+            FeatureKind::Primitive(PrimitiveFeature {
+                shape: PrimitiveShape::Box {
+                    size: Vec3::splat(size),
+                },
+                placement: Placement::default(),
+                operation: FeatureOperation::Join,
+            })
+        };
+        part.push_feature("Chamfer", kind(1.));
+        assert_eq!(numbered_name(&part, "Chamfer"), "Chamfer 2");
+        part.push_feature("Chamfer 4", kind(2.));
+        // Other names that merely start with the stem do not count.
+        part.push_feature("Chamfer edges 9", kind(3.));
+        part.push_feature("Chamfers", kind(4.));
+        assert_eq!(numbered_name(&part, "Chamfer"), "Chamfer 5");
+        assert_eq!(numbered_name(&part, "Push/pull"), "Push/pull");
     }
 
     /// A minimal editor: the scene, undo history and timeline selection, with
