@@ -495,6 +495,11 @@ pub(crate) fn scenarios() -> Vec<Scenario> {
             leave: demo::restore,
         },
         Scenario {
+            name: "draw-paper",
+            enter: demo::line_inference_paper,
+            leave: demo::restore_theme,
+        },
+        Scenario {
             name: "draw-numeric",
             enter: demo::numeric_entry,
             leave: demo::restore,

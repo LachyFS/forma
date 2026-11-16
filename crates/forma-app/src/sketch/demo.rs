@@ -139,6 +139,18 @@ pub(crate) fn line_inference(s: &mut Studio, w: &mut Window, cx: &mut Context<St
     hover(s, Vec2::new(1.43, 0.97), cx);
 }
 
+/// The line inference state in the light Paper theme.
+pub(crate) fn line_inference_paper(s: &mut Studio, w: &mut Window, cx: &mut Context<Studio>) {
+    s.apply_theme(crate::theme::Theme::Paper, cx);
+    line_inference(s, w, cx);
+}
+
+/// Restores the workspace and the default theme.
+pub(crate) fn restore_theme(s: &mut Studio, w: &mut Window, cx: &mut Context<Studio>) {
+    restore(s, w, cx);
+    s.apply_theme(crate::theme::Theme::Forma, cx);
+}
+
 pub(crate) fn numeric_entry(s: &mut Studio, w: &mut Window, cx: &mut Context<Studio>) {
     save(s, cx);
     s.scene.camera.distance = 7.0;
