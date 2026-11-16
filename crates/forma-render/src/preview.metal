@@ -73,6 +73,15 @@ float preview_selection_coverage(float2 pixel, Hit hit, device const Triangle *t
     }
     return 0.0f;
 }
+float preview_smooth_selection(float coverage, float2 pixel, constant Uniforms &u,
+                               raytracing::primitive_acceleration_structure selected) {
+    if (coverage <= 0.0f) return coverage;
+    float share = 0.0f;
+    for (uint i = 0u; i < 4u; ++i) {
+        if (preview_selected_hit(camera_ray(pixel + SOLID_OFFSETS[i], u), selected)) share += 0.25f;
+    }
+    return coverage * share;
+}
 #endif
 
 // Solid's contact shading through the preview acceleration structure; the
@@ -120,12 +129,15 @@ kernel void solid_main(device const Triangle *triangles [[buffer(0)]],
         ink += max(feature_ink(r, h, triangles, u), outline_ink(hit, h, triangles, u)) * 0.25f;
     }
     accumulation[gid.y * u.image.x + gid.x] = float4(color, 1.0f);
-    float3 display = composite_edit(composite_features(display_transform(color, 0.0f), ink, u), ray, hit, pixel, triangles, u);
 #if FORMA_PREVIEW_SELECTION_ACCELERATED
     float coverage = preview_selection_coverage(pixel, hit, triangles, u, selected_acceleration);
+    coverage = preview_smooth_selection(coverage, pixel, u, selected_acceleration);
 #else
     float coverage = selection_coverage(pixel, hit, triangles, nodes, u);
+    coverage = smooth_selection(coverage, pixel, triangles, nodes, u);
 #endif
+    // The outline replaces the line work under it rather than mixing with it.
+    float3 display = composite_edit(composite_features(display_transform(color, 0.0f), ink * (1.0f - coverage), u), ray, hit, pixel, triangles, u);
     output.write(float4(composite_selection(display, coverage, u), 1.0f), gid);
 }
 
@@ -297,11 +309,14 @@ kernel void preview_main(device const Triangle *triangles [[buffer(0)]],
         color += add_grid(sample, ray, hit, p, u) * 0.25f;
     }
     accumulation[gid.y * u.image.x + gid.x] = float4(color, 1.0f);
-    float3 display = composite_edit(composite_features(display_transform(color, u.settings.x), ink, u), center_ray, center_hit, pixel, triangles, u);
 #if FORMA_PREVIEW_SELECTION_ACCELERATED
     float coverage = preview_selection_coverage(pixel, center_hit, triangles, u, selected_acceleration);
+    coverage = preview_smooth_selection(coverage, pixel, u, selected_acceleration);
 #else
     float coverage = selection_coverage(pixel, center_hit, triangles, nodes, u);
+    coverage = smooth_selection(coverage, pixel, triangles, nodes, u);
 #endif
+    // The outline replaces the line work under it rather than mixing with it.
+    float3 display = composite_edit(composite_features(display_transform(color, u.settings.x), ink * (1.0f - coverage), u), center_ray, center_hit, pixel, triangles, u);
     output.write(float4(composite_selection(display, coverage, u), 1.0f), gid);
 }

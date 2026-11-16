@@ -117,7 +117,8 @@ fn preview_main(@builtin(global_invocation_id) global_id: vec3<u32>) {
         color += add_grid(sample_color, ray, hit, p) * 0.25;
     }
     accumulation[gid.y * u.image.x + gid.x] = vec4(color, 1.0);
-    let display = composite_edit(composite_features(display_transform(color, u.settings.x), ink), center_ray, center_hit, pixel);
-    let coverage = selection_coverage(pixel, center_hit);
+    // The outline replaces the line work under it rather than mixing with it.
+    let coverage = smooth_selection(selection_coverage(pixel, center_hit), pixel);
+    let display = composite_edit(composite_features(display_transform(color, u.settings.x), ink * (1.0 - coverage)), center_ray, center_hit, pixel);
     textureStore(output, vec2<i32>(gid), vec4(composite_selection(display, coverage), 1.0));
 }

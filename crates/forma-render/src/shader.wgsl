@@ -625,6 +625,18 @@ fn selection_coverage(pixel: vec2<f32>, hit: Hit) -> f32 {
     }
     return selection_silhouette(pixel) * 0.92;
 }
+// Antialias the outline: a band pixel is covered by the share of its spatial
+// samples that land on the selected object. Selected-only rays ignore
+// occluders, so the outline never depends on what stands in front of it.
+fn smooth_selection(coverage: f32, pixel: vec2<f32>) -> f32 {
+    if coverage <= 0.0 { return coverage; }
+    let offsets = array<vec2<f32>, 4>(vec2(-0.125, -0.375), vec2(0.375, -0.125), vec2(-0.375, 0.125), vec2(0.125, 0.375));
+    var share = 0.0;
+    for (var i = 0u; i < 4u; i += 1u) {
+        if trace_scene(camera_ray(pixel + offsets[i]), FAR, true, true).triangle != NO_HIT { share += 0.25; }
+    }
+    return coverage * share;
+}
 fn solid_shading(s: Surface, ray: Ray) -> vec3<f32> {
     let key = normalize(-u.cam_forward.xyz * 0.6 - u.cam_right.xyz * 0.45 + u.cam_up.xyz * 0.85);
     let fill = normalize(u.cam_right.xyz * 0.8 + u.cam_up.xyz * 0.2 - u.cam_forward.xyz * 0.25);
@@ -808,11 +820,12 @@ fn render_main(@builtin(global_invocation_id) global_id: vec3<u32>) {
     if progressive && (u.settings.z > 0.0 || u.cam_origin.w > 0.0) {
         overlay_hit = trace(camera_ray(overlay_pixel), FAR, false);
     }
-    let coverage = selection_coverage(overlay_pixel, overlay_hit);
+    var coverage = selection_coverage(overlay_pixel, overlay_hit);
+    if u.image.w == 1u { coverage = smooth_selection(coverage, overlay_pixel); }
     // Denoising replaces every displayed pixel, so the overlay travels to it in
     // the guide weight both guides share.
     if progressive { denoise_guides[index].normal.w = coverage; }
-    let display = composite_edit(composite_features(display_transform(color, select(0.0, u.settings.x, progressive)), ink), camera_ray(overlay_pixel), overlay_hit, overlay_pixel);
+    let display = composite_edit(composite_features(display_transform(color, select(0.0, u.settings.x, progressive)), ink * (1.0 - coverage)), camera_ray(overlay_pixel), overlay_hit, overlay_pixel);
     textureStore(output, vec2<i32>(gid), vec4(composite_selection(display, coverage), 1.0));
 }
 

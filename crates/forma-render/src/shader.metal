@@ -648,6 +648,19 @@ float3 solid_sample(float2 p, Ray ray, Hit hit, float ao, device const Triangle 
 constant float2 SOLID_OFFSETS[4] = {
     float2(-0.125f, -0.375f), float2(0.375f, -0.125f), float2(-0.375f, 0.125f), float2(0.125f, 0.375f),
 };
+// Antialias the outline: a band pixel is covered by the share of its spatial
+// samples that land on the selected object. Selected-only rays ignore
+// occluders, so the outline never depends on what stands in front of it.
+float smooth_selection(float coverage, float2 pixel, device const Triangle *triangles,
+                       device const BvhNode *nodes, constant Uniforms &u) {
+    if (coverage <= 0.0f) return coverage;
+    float share = 0.0f;
+    for (uint i = 0u; i < 4u; ++i) {
+        Hit hit = trace_scene(camera_ray(pixel + SOLID_OFFSETS[i], u), INFINITY, triangles, nodes, u, true, true);
+        if (hit.triangle != NO_HIT) share += 0.25f;
+    }
+    return coverage * share;
+}
 float3 display_transform(float3 linear, float exposure) {
     float3 x = max(linear, 0.0f) * exp2(clamp(exposure, -20.0f, 20.0f));
     // Fitted filmic display curve (ACES approximation), followed by sRGB OETF.
@@ -774,9 +787,10 @@ kernel void render_main(device const Triangle *triangles [[buffer(0)]],
         overlay_hit = trace(camera_ray(overlay_pixel, u), INFINITY, triangles, nodes, u);
     }
     float coverage = selection_coverage(overlay_pixel, overlay_hit, triangles, nodes, u);
+    if (u.image.w == 1u) coverage = smooth_selection(coverage, overlay_pixel, triangles, nodes, u);
     // Denoising replaces every displayed pixel, so the overlay travels to it in
     // the guide weight both guides share.
     if (progressive) normal_accumulation[index].w = coverage;
-    float3 display = composite_edit(composite_features(display_transform(color, progressive ? u.settings.x : 0.0f), ink, u), camera_ray(overlay_pixel, u), overlay_hit, overlay_pixel, triangles, u);
+    float3 display = composite_edit(composite_features(display_transform(color, progressive ? u.settings.x : 0.0f), ink * (1.0f - coverage), u), camera_ray(overlay_pixel, u), overlay_hit, overlay_pixel, triangles, u);
     output.write(float4(composite_selection(display, coverage, u), 1.0f), gid);
 }
