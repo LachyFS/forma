@@ -3,12 +3,15 @@
 //! Add menu is open filters it.
 use super::super::assets::{Icon, icon};
 use super::super::commands::{
-    MESH_DETAIL, PART_DETAIL, SKETCH_DETAIL, command_icon, command_info, command_keywords,
+    MESH_DETAIL, PART_DETAIL, SKETCH_DETAIL, adds_part, command_icon, command_info,
+    command_keywords,
 };
 use super::super::components::*;
 use super::super::tokens::*;
 use super::super::{Anchor, MenuKind, hud::view_name};
-use super::{backdrop, contain, float_border, float_shadow, heading, pop_in, selected_fill};
+use super::{
+    backdrop, contain, float_border, float_shadow, heading, pop_in, selected_fill, selection_bar,
+};
 use crate::app::{Command, Studio};
 use crate::cad::{CadCommand, PartShape};
 use crate::sketch::DrawCommand;
@@ -463,22 +466,34 @@ pub(super) fn overlay(t: Colors, s: &Studio, cx: &mut Context<Studio>) -> AnyEle
                 list.child(
                     row()
                         .id(("menu-item", index))
+                        .relative()
                         .h(px(ITEM_H))
                         .flex_shrink_0()
                         .px(px(SP_2))
                         .gap(px(SP_2 + 2.))
                         .rounded(px(R_SM + 1.))
                         .cursor_pointer()
+                        // The same highlight as the palette: a soft fill
+                        // with the accent bar at the left edge.
                         .bg(if active { selected_fill(t) } else { clear() })
+                        .when(active, |d| d.child(selection_bar(t.accent, 6.)))
                         // Named views share one glyph; repeating it adds noise.
                         .child(
                             match command_icon(command)
                                 .filter(|_| kind != MenuKind::View || !is_named_view(command))
                             {
-                                Some(glyph) => {
-                                    icon(glyph, ICON_MD, if active { t.text } else { t.text_muted })
-                                        .into_any_element()
-                                }
+                                Some(glyph) => icon(
+                                    glyph,
+                                    ICON_MD,
+                                    if adds_part(command) {
+                                        t.accent_text
+                                    } else if active {
+                                        t.text
+                                    } else {
+                                        t.text_muted
+                                    },
+                                )
+                                .into_any_element(),
                                 None => div().w(px(ICON_MD)).flex_shrink_0().into_any_element(),
                             },
                         )

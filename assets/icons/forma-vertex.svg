@@ -1,4 +1,6 @@
 <!-- Forma icon, drawn on the Lucide 24-unit grid. Part of Forma (MIT OR Apache-2.0). -->
+<!-- Vertex mode: a quiet cube with one corner picked out as a solid dot. -->
 <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-  <g opacity=".42"><path d="M12 2.75 20.25 7.5v9L12 21.25 3.75 16.5v-9Z"/><path d="M3.75 7.5 12 12.25l8.25-4.75"/><path d="M12 12.25v9"/></g><circle cx="12" cy="12.25" r="2.75" fill="currentColor" stroke="none"/>
+  <g opacity=".4"><path d="M11 2.75 3.25 7.25v9L11 20.75l7.75-4.5v-9Z"/><path d="M3.25 7.25 11 11.75l7.75-4.5"/><path d="M11 11.75v9"/></g>
+  <circle cx="18.75" cy="7.25" r="3.75" fill="currentColor" stroke="none"/>
 </svg>

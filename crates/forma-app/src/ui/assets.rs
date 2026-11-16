@@ -43,7 +43,7 @@ icons! {
     Select => "mouse-pointer-2",
     Move => "move",
     Rotate => "rotate-3d",
-    Scale => "scaling",
+    Scale => "forma-scale",
     ObjectMode => "box",
     EditMode => "vector-square",
     DrawMode => "pencil-ruler",
@@ -163,6 +163,7 @@ icons! {
     Warning => "triangle-alert",
     Success => "circle-check",
     Logo => "forma-mark",
+    Lock => "forma-lock",
 }
 
 /// Draw `icon` at `size` pixels in `color`. SVGs are rasterized once per size

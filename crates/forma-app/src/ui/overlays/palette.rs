@@ -3,13 +3,13 @@
 //! matches across all groups and highlights the matched characters.
 use super::super::assets::{Icon, icon};
 use super::super::commands::{
-    command_group, command_icon, command_info, command_keywords, group_rank,
+    adds_part, command_group, command_icon, command_info, command_keywords, group_rank,
 };
 use super::super::components::*;
 use super::super::tokens::*;
 use super::{
-    animate_in, backdrop, contain, float_border, float_shadow, heading, hover_fill, selected_fill,
-    selection_bar,
+    animate_in, backdrop, contain, deep_scrim, float_border, float_shadow, heading, hover_fill,
+    selected_fill, selection_bar,
 };
 use crate::app::{Command, EditMode, Studio};
 use crate::cad::{CadCommand, PartShape};
@@ -31,6 +31,16 @@ const HEADING_GAP: f32 = SP_1_5;
 /// Padding above the first row and below the last.
 const LIST_TOP: f32 = SP_1_5;
 const LIST_BOTTOM: f32 = SP_3;
+/// While rows continue below, the list stops this far under its last whole
+/// row: the next row's top shows through the fade there, so the cut reads
+/// as "more below" and never as a row crushed against the footer.
+const PEEK: f32 = 6.;
+/// The fade laid over the list's lower edge while more rows sit below.
+const FADE: f32 = 12.;
+/// With an empty query, the Add group shows this many rows and then a
+/// "More…" row, so it never crowds out the commands for the selection.
+const ADD_PREVIEW: usize = 3;
+const ADD: &str = "Add";
 /// The whole card grows to this share of the window before its list scrolls.
 const CARD_SHARE: f32 = 0.6;
 /// Room for the highlighted command's description beside the footer keys.
@@ -54,6 +64,9 @@ pub(crate) struct PaletteEntry {
     pub scope: Option<&'static str>,
     /// Byte ranges of `label` that matched the query.
     pub matches: Vec<Range<usize>>,
+    /// A "More…" row standing in for this many hidden rows of its section.
+    /// Choosing it shows them in place; its `command` never runs.
+    pub more: Option<usize>,
 }
 
 fn is_export(command: Command) -> bool {
@@ -153,6 +166,7 @@ impl Studio {
                             section: command_group(command),
                             scope: None,
                             matches,
+                            more: None,
                         },
                     ))
                 })
@@ -168,6 +182,7 @@ impl Studio {
             section,
             scope: None,
             matches: Vec::new(),
+            more: None,
         };
         if self.palette_exports_only {
             return all.into_iter().map(|item| entry(item, "Export")).collect();
@@ -190,11 +205,50 @@ impl Studio {
                 entries.push(pinned);
             }
         }
-        entries.extend(
-            all.into_iter()
-                .map(|item| entry(item, command_group(item.2))),
-        );
+        let expanded = LIST.with(|list| list.borrow().expanded);
+        let adds = all
+            .iter()
+            .filter(|(_, _, command)| command_group(*command) == ADD)
+            .count();
+        let fold = !expanded && adds > ADD_PREVIEW + 1;
+        let mut shown = 0;
+        for item in all {
+            let section = command_group(item.2);
+            if fold && section == ADD {
+                shown += 1;
+                if shown > ADD_PREVIEW {
+                    if shown == ADD_PREVIEW + 1 {
+                        entries.push(PaletteEntry {
+                            label: "More…",
+                            shortcut: "",
+                            command: Command::TogglePalette,
+                            section,
+                            scope: None,
+                            matches: Vec::new(),
+                            more: Some(adds - ADD_PREVIEW),
+                        });
+                    }
+                    continue;
+                }
+            }
+            entries.push(entry(item, section));
+        }
         entries
+    }
+
+    /// Choose the palette's "More…" row at `index`, if that is what it is:
+    /// its hidden rows appear in its place, and the highlight stays on the
+    /// first of them. Returns whether it was one.
+    pub(crate) fn palette_expand_more(&mut self, index: usize) -> bool {
+        let is_more = self
+            .palette_entries()
+            .get(index)
+            .is_some_and(|entry| entry.more.is_some());
+        if is_more {
+            LIST.with(|list| list.borrow_mut().expanded = true);
+            self.palette_index = index;
+        }
+        is_more
     }
 
     /// What the "For selection" commands act on, as one tag for the section.
@@ -310,12 +364,16 @@ struct ListState {
     /// The selection (and query) the list last scrolled to, so the wheel can
     /// scroll freely until the keyboard moves the selection again.
     followed: Option<(usize, String, bool)>,
+    /// The Add group's "More…" row was chosen; it stays open until the
+    /// palette closes.
+    expanded: bool,
 }
 
 thread_local! {
     static LIST: RefCell<ListState> = RefCell::new(ListState {
         scroll: ScrollHandle::new(),
         followed: None,
+        expanded: false,
     });
 }
 
@@ -323,6 +381,7 @@ thread_local! {
 pub(super) fn rest() {
     LIST.with(|list| {
         let mut list = list.borrow_mut();
+        list.expanded = false;
         if list.followed.take().is_some() {
             list.scroll.set_offset(point(px(0.), px(0.)));
         }
@@ -381,13 +440,16 @@ fn command_row(
     cx: &mut Context<Studio>,
 ) -> Stateful<Div> {
     let command = entry.command;
+    if let Some(hidden) = entry.more {
+        return more_row(t, index, hidden, active, cx);
+    }
     // Unavailable commands stay listed, dimmed, with the reason in place of
     // their shortcut: a format never silently disappears.
     let unavailable = s.command_unavailable(command);
     let enabled = unavailable.is_none();
     let glyph_ink = if !enabled {
         t.text_faint
-    } else if active {
+    } else if active || adds_part(command) {
         t.accent_text
     } else {
         t.text_muted
@@ -459,6 +521,53 @@ fn command_row(
                 s.execute(command, w, cx);
             }))
         })
+}
+
+/// The row that stands in for the rest of a folded group.
+fn more_row(
+    t: Colors,
+    index: usize,
+    hidden: usize,
+    active: bool,
+    cx: &mut Context<Studio>,
+) -> Stateful<Div> {
+    row()
+        .id(("palette-command", index))
+        .relative()
+        .h(px(ROW))
+        .flex_shrink_0()
+        .pl(px(SP_3))
+        .pr(px(SP_2 + 2.))
+        .gap(px(SP_2 + 2.))
+        .rounded(px(R_MD))
+        .cursor_pointer()
+        .bg(if active { selected_fill(t) } else { clear() })
+        .when(!active, |d| d.hover(move |d| d.bg(hover_fill(t))))
+        .when(active, |d| d.child(selection_bar(t.accent, 9.)))
+        .child(icon(
+            Icon::More,
+            ICON_MD,
+            if active { t.accent_text } else { t.text_faint },
+        ))
+        .child(
+            div()
+                .text_size(px(TEXT_LG))
+                .text_color(rgb(if active { t.text } else { t.text_muted }))
+                .child("More…"),
+        )
+        .child(
+            div()
+                .flex_shrink_0()
+                .text_size(px(TEXT_MD))
+                .text_color(rgb(t.text_faint))
+                .child(format!("{hidden} more to add")),
+        )
+        .child(spacer())
+        .on_click(cx.listener(move |s, _, _, cx| {
+            cx.stop_propagation();
+            s.palette_expand_more(index);
+            cx.notify();
+        }))
 }
 
 pub(super) fn overlay(
@@ -628,7 +737,24 @@ pub(super) fn overlay(
             )
         })
         .when(clipped_below, |d| {
+            // A fade into the card's own fill over the peeking row, with
+            // the shadow line under it at the edge.
+            let mut clear = hex(t.overlay);
+            clear.a = 0.;
             d.child(
+                div()
+                    .absolute()
+                    .left_0()
+                    .right_0()
+                    .bottom_0()
+                    .h(px(FADE))
+                    .bg(linear_gradient(
+                        180.,
+                        linear_color_stop(clear, 0.),
+                        linear_color_stop(hex(t.overlay), 0.85),
+                    )),
+            )
+            .child(
                 scroll_shadow(t, true)
                     .absolute()
                     .left_0()
@@ -669,10 +795,11 @@ pub(super) fn overlay(
     backdrop(
         t,
         "command-palette-backdrop",
-        true,
+        false,
         |s, w, cx| s.execute(Command::TogglePalette, w, cx),
         cx,
     )
+    .bg(deep_scrim(t))
     .flex()
     .flex_col()
     .items_center()
@@ -702,20 +829,20 @@ fn list_height(rows: impl IntoIterator<Item = f32>, budget: f32) -> f32 {
     let mut whole = LIST_TOP;
     for height in rows {
         end += height;
-        if end <= budget {
+        if end + PEEK <= budget {
             whole = end;
         }
     }
     if end + LIST_BOTTOM <= budget {
         end + LIST_BOTTOM
     } else {
-        whole.max(LIST_TOP + ROW)
+        whole.max(LIST_TOP + ROW) + PEEK
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{HEADING, LIST_BOTTOM, LIST_TOP, ROW, list_height, match_command};
+    use super::{HEADING, LIST_BOTTOM, LIST_TOP, PEEK, ROW, list_height, match_command};
     use crate::app::Command;
     use forma_render::RenderMode;
 
@@ -752,7 +879,8 @@ mod tests {
         let rows = std::iter::once(HEADING + ROW).chain(std::iter::repeat_n(ROW, 30));
         let height = list_height(rows, 480.);
         assert!(height <= 480.);
-        let after_heading = height - LIST_TOP - HEADING;
+        // Whole rows, then a few pixels of the next one under the fade.
+        let after_heading = height - LIST_TOP - HEADING - PEEK;
         assert_eq!(after_heading % ROW, 0., "{height} cuts a row");
         assert!(
             480. - height < ROW,

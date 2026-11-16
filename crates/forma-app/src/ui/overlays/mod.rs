@@ -54,6 +54,15 @@ pub(super) fn backdrop(
         .on_scroll_wheel(|_, _, cx| cx.stop_propagation())
 }
 
+/// The command palette's backdrop: deeper than a dialog's, so the title bar
+/// and panels recede with the viewport instead of competing with the one
+/// card that holds the keyboard.
+pub(super) fn deep_scrim(t: Colors) -> Hsla {
+    let mut scrim = hex_alpha(t.scrim);
+    scrim.a = if t.dark { 0.58 } else { 0.34 };
+    scrim
+}
+
 /// Modal backdrop tint. Dark themes cap it at 40% so the scene stays
 /// readable behind a dialog; separation comes from the card's shadow and
 /// border instead.

@@ -777,6 +777,7 @@ fn history_row(
                 .child(number.to_string()),
         )
         .child(feature_glyph(
+            t,
             feature,
             ICON_SM,
             if matches!(state, ChipState::Error(_)) {

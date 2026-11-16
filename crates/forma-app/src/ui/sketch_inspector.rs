@@ -1,5 +1,7 @@
 //! The inspector while drawing: which sketch and plane, what it holds, what
-//! still keeps a region from closing, and what is selected. The drawing tools
+//! still keeps a region from closing, what is selected, and every curve.
+//! The mode is Draw and the object is a sketch; the panel uses those two
+//! words and no others. The drawing tools
 //! and the way out (Extrude, Finish) live in the Draw toolbar at the bottom of
 //! the viewport, so this panel describes the sketch instead of repeating them.
 //! Nothing is selected in the scene while drawing, so this replaces the
@@ -162,6 +164,118 @@ fn selection(t: Colors, entities: &[SketchEntity], selected: &[usize]) -> Option
     )
 }
 
+/// Every curve in the sketch, grouped by kind with its length. Clicking a
+/// row selects that curve, as clicking it in the viewport would; Shift adds
+/// it to the selection.
+fn curve_list(
+    t: Colors,
+    s: &Studio,
+    entities: &[SketchEntity],
+    selected: &[usize],
+    cx: &mut Context<Studio>,
+) -> Option<Div> {
+    if entities.is_empty() {
+        return None;
+    }
+    const KINDS: [(&str, &str, Icon); 3] = [
+        ("Lines", "Line", Icon::DrawLine),
+        ("Arcs", "Arc", Icon::DrawArc),
+        ("Circles", "Circle", Icon::DrawCircle),
+    ];
+    let kind = |curve: &SketchCurve| match curve {
+        SketchCurve::Line { .. } => 0,
+        SketchCurve::Arc { .. } => 1,
+        SketchCurve::Circle { .. } => 2,
+    };
+    let revision = s.scene_revision;
+    let mut list = col().gap(px(1.));
+    for (group, (heading, name, glyph)) in KINDS.into_iter().enumerate() {
+        let members: Vec<usize> = (0..entities.len())
+            .filter(|&i| kind(&entities[i].curve) == group)
+            .collect();
+        if members.is_empty() {
+            continue;
+        }
+        list = list.child(
+            row()
+                .h(px(24.))
+                .when(group > 0, |d| d.mt(px(SP_1)))
+                .gap(px(SP_1_5))
+                .child(
+                    div()
+                        .text_size(px(TEXT_SM))
+                        .font_weight(WEIGHT_MEDIUM)
+                        .text_color(rgb(t.text_muted))
+                        .child(heading),
+                )
+                .child(caption(t, members.len().to_string()).tabular()),
+        );
+        for (number, &index) in members.iter().enumerate() {
+            let entity = &entities[index];
+            let picked = selected.contains(&index);
+            let ink = if picked { t.accent_text } else { t.text };
+            list = list.child(
+                row()
+                    .id(("sketch-curve", index))
+                    .h(px(26.))
+                    .px(px(SP_2))
+                    .gap(px(SP_2))
+                    .rounded(px(R_SM))
+                    .cursor_pointer()
+                    .bg(if picked { hex(t.accent_soft) } else { clear() })
+                    .hover(move |d| {
+                        d.bg(rgb(if picked {
+                            t.accent_soft_hover
+                        } else {
+                            t.control_hover
+                        }))
+                    })
+                    .child(icon(
+                        if entity.construction {
+                            Icon::DrawConstruction
+                        } else {
+                            glyph
+                        },
+                        ICON_SM,
+                        if picked { t.accent_text } else { t.text_muted },
+                    ))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w(px(0.))
+                            .truncate()
+                            .text_color(rgb(ink))
+                            .child(format!("{name} {}", number + 1)),
+                    )
+                    .when(entity.construction, |d| d.child(caption(t, "Construction")))
+                    .child(
+                        caption(
+                            t,
+                            typeset_minus(&format!("{} m", measure(entity.curve.length()))),
+                        )
+                        .tabular()
+                        .when(picked, |d| d.text_color(rgb(t.accent_text))),
+                    )
+                    .on_click(cx.listener(move |s, event: &ClickEvent, _, cx| {
+                        cx.stop_propagation();
+                        let extend = event.modifiers().shift;
+                        if let Some(session) = s.sketch.session.as_mut() {
+                            session.selection_revision = revision;
+                            if !extend {
+                                session.selection.clear();
+                                session.selection.insert(index);
+                            } else if !session.selection.remove(&index) {
+                                session.selection.insert(index);
+                            }
+                        }
+                        cx.notify();
+                    })),
+            );
+        }
+    }
+    Some(list)
+}
+
 /// About three significant digits, as the inspector's rows show values.
 fn measure(value: f32) -> String {
     row_numbers(&[crate::transform::format_precision_value(value)], 6)
@@ -170,7 +284,7 @@ fn measure(value: f32) -> String {
 }
 
 /// The Draw mode inspector, or `None` when not drawing.
-pub(super) fn panel(t: Colors, s: &Studio, _cx: &mut Context<Studio>) -> Option<Div> {
+pub(super) fn panel(t: Colors, s: &Studio, cx: &mut Context<Studio>) -> Option<Div> {
     let session = s.sketch.session.as_ref()?;
     let object = s.session_object();
     let name = object
@@ -216,7 +330,7 @@ pub(super) fn panel(t: Colors, s: &Studio, _cx: &mut Context<Studio>) -> Option<
                 .font_weight(WEIGHT_MEDIUM)
                 .child(name),
         )
-        .child(badge(t, "Drawing", BadgeTone::Accent));
+        .child(badge(t, "Draw mode", BadgeTone::Accent));
     let open_tile = {
         let tile = stat_tile(t, "Open ends", counts.open_ends.to_string());
         if counts.open_ends > 0 {
@@ -227,12 +341,12 @@ pub(super) fn panel(t: Colors, s: &Studio, _cx: &mut Context<Studio>) -> Option<
     };
     let summary = col()
         .gap(px(SP_1))
-        .child(readonly_row(
+        .child(fact_row(
             t,
             "Plane",
-            "",
             session.plane_label.clone(),
             "The plane new curves are drawn on",
+            false,
         ))
         .child(
             stat_tiles([
@@ -248,12 +362,12 @@ pub(super) fn panel(t: Colors, s: &Studio, _cx: &mut Context<Studio>) -> Option<
             )),
         )
         .when(counts.construction > 0, |d| {
-            d.child(readonly_row(
+            d.child(fact_row(
                 t,
                 "Construction",
-                "",
                 counts.construction.to_string(),
                 "Construction curves guide drawing and never form profiles",
+                false,
             ))
         })
         .child(status(t, &counts).mt(px(SP_1)));
@@ -261,6 +375,9 @@ pub(super) fn panel(t: Colors, s: &Studio, _cx: &mut Context<Studio>) -> Option<
     let picked = analysis
         .as_ref()
         .and_then(|analysis| selection(t, &analysis.entities, &selected));
+    let curves = analysis
+        .as_ref()
+        .and_then(|analysis| curve_list(t, s, &analysis.entities, &selected, cx));
     Some(
         col().flex_1().min_h(px(0.)).child(header).child(
             col()
@@ -268,8 +385,9 @@ pub(super) fn panel(t: Colors, s: &Studio, _cx: &mut Context<Studio>) -> Option<
                 .flex_1()
                 .min_h(px(0.))
                 .overflow_y_scroll()
-                .child(block(t, "Sketch", summary))
-                .when_some(picked, |d, picked| d.child(block(t, "Selection", picked))),
+                .child(block(t, "Overview", summary))
+                .when_some(picked, |d, picked| d.child(block(t, "Selection", picked)))
+                .when_some(curves, |d, curves| d.child(block(t, "Curves", curves))),
         ),
     )
 }

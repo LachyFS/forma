@@ -159,12 +159,29 @@ fn dock_ground(t: Colors) -> Hsla {
     ground
 }
 
-/// A feature's glyph at `size` in `ink`: its kind, with a small operation
+/// The colour of an operation badge: cuts in the remove-material red,
+/// intersections in blue, so the two read apart at a glance even where the
+/// symbol inside is only a few pixels.
+fn badge_ink(t: Colors, badge: Icon) -> u32 {
+    if badge == Icon::BadgeCut {
+        t.danger
+    } else {
+        t.axis_text[2]
+    }
+}
+
+/// A feature's glyph at `size` in `ink`: its kind, with a coloured operation
 /// badge on the lower right for cuts and intersections. `ground` is the fill
 /// behind the glyph; the badge sits in a ring of it, so it stays separate
-/// from the strokes it overlaps.
-pub(crate) fn feature_glyph(feature: &Feature, size: f32, ink: u32, ground: Hsla) -> Div {
-    const BADGE: f32 = 9.;
+/// from the strokes it overlaps, and its symbol is knocked out to it.
+pub(crate) fn feature_glyph(
+    t: Colors,
+    feature: &Feature,
+    size: f32,
+    ink: u32,
+    ground: Hsla,
+) -> Div {
+    const BADGE: f32 = 10.;
     const RING: f32 = 1.5;
     div()
         .relative()
@@ -183,7 +200,7 @@ pub(crate) fn feature_glyph(feature: &Feature, size: f32, ink: u32, ground: Hsla
                     .justify_center()
                     .rounded_full()
                     .bg(ground)
-                    .child(icon(badge, BADGE, ink)),
+                    .child(icon(badge, BADGE, badge_ink(t, badge))),
             )
         })
 }
@@ -248,6 +265,7 @@ fn chip(
         .when(rolled_back && !selected, |d| d.opacity(0.42))
         .when(rolled_back && selected, |d| d.opacity(0.7))
         .child(feature_glyph(
+            t,
             feature,
             ICON_SM,
             glyph_ink,

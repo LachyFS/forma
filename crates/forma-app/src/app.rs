@@ -2754,7 +2754,9 @@ impl Studio {
                         (self.palette_index + 1).min(commands.len().saturating_sub(1))
                 }
                 "enter" => {
-                    if let Some((_, _, command)) = commands.get(self.palette_index) {
+                    if self.palette_expand_more(self.palette_index) {
+                        // A folded group opened in place; nothing ran.
+                    } else if let Some((_, _, command)) = commands.get(self.palette_index) {
                         if let Some(reason) = self.command_unavailable(*command) {
                             self.status = reason.into();
                             cx.notify();

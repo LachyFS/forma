@@ -1643,6 +1643,7 @@ fn render_page(t: Colors, s: &Studio, cx: &mut Context<Studio>) -> Div {
 }
 
 pub(super) fn inspector(t: Colors, s: &Studio, width: f32, cx: &mut Context<Studio>) -> Div {
+    s.settle_transform_peek();
     if let Some(panel) = super::sketch_inspector::panel(t, s, cx) {
         return panel;
     }
@@ -1650,13 +1651,15 @@ pub(super) fn inspector(t: Colors, s: &Studio, width: f32, cx: &mut Context<Stud
     // An empty scene has nothing to inspect: no header or tabs, just what
     // will appear here and the scene's fixed facts.
     if s.selected.is_none() && s.scene.objects.is_empty() {
-        return empty_scene(t, s);
+        return empty_scene(t, s, cx);
     }
     let object_tab = s.panels.tab == InspectorTab::Object;
     // A running tool leads, pinned above the page, and the page beneath it
     // dims: it describes the object, not the operation in progress.
+    // The floating tool bar holds the filled Done; the panel's copy is the
+    // quieter outline, so the screen never shows two primaries.
     let live = object_tab
-        .then(|| s.cad_tool_panel(t, stacked, cx))
+        .then(|| with_quiet_primary(|| s.cad_tool_panel(t, stacked, cx)))
         .flatten();
     let context = object_tab.then(|| context(t, s, cx)).flatten();
     let dimmed = live.is_some();
@@ -1715,14 +1718,47 @@ pub(super) fn inspector(t: Colors, s: &Studio, width: f32, cx: &mut Context<Stud
 /// content even when a section opens or closes, and they never take input.
 /// `editing` drops the bottom one so a field being edited at the edge stays
 /// clear.
+///
+/// While the page is taller than the panel, a thin thumb along the right
+/// edge shows how much more there is and where the view sits, so a row cut
+/// by the bottom edge reads as "scroll for more" and never as clipping. It is
+/// painted like the shadows and takes no input; the wheel still scrolls.
 pub(super) fn scroll_fades(t: Colors, scroll: &ScrollHandle, editing: bool) -> impl IntoElement {
+    const THUMB_W: f32 = 4.;
+    const THUMB_INSET: f32 = 2.;
+    const THUMB_MIN: f32 = 28.;
     let scroll = scroll.clone();
     let (ink, clear) = scroll_shadow_inks(t);
+    let thumb_ink = {
+        let mut ink = hex(t.text_faint);
+        ink.a = if t.dark { 0.42 } else { 0.5 };
+        ink
+    };
     canvas(
         |_, _, _| (),
         move |bounds, _, window, _| {
             let offset = -f32::from(scroll.offset().y);
             let maximum = f32::from(scroll.max_offset().height);
+            let height = f32::from(bounds.size.height);
+            if maximum > 0.5 && height > THUMB_MIN + THUMB_INSET * 2. {
+                let track = height - THUMB_INSET * 2.;
+                let content = height + maximum;
+                let thumb = (track * height / content).clamp(THUMB_MIN, track);
+                let travel = (offset / maximum).clamp(0., 1.) * (track - thumb);
+                window.paint_quad(
+                    fill(
+                        Bounds::new(
+                            point(
+                                bounds.right() - px(THUMB_W + THUMB_INSET),
+                                bounds.top() + px(THUMB_INSET + travel),
+                            ),
+                            size(px(THUMB_W), px(thumb)),
+                        ),
+                        thumb_ink,
+                    )
+                    .corner_radii(px(THUMB_W * 0.5)),
+                );
+            }
             let band = |top: Pixels| {
                 Bounds::new(
                     point(bounds.left(), top),
@@ -1752,83 +1788,78 @@ pub(super) fn scroll_fades(t: Colors, scroll: &ScrollHandle, editing: bool) -> i
     .size_full()
 }
 
-/// The inspector of an empty scene. The viewport's start card is where
-/// modelling begins, so this panel adds no second set of buttons: one quiet
-/// line about what appears here, then the facts every new object inherits.
-fn empty_scene(t: Colors, s: &Studio) -> Div {
-    let facts = [
-        (
-            "Units",
-            "Metres".to_owned(),
-            "Every length in Forma is in metres; STL and STEP convert on import and export",
-        ),
-        (
-            "Up axis",
-            "Y".to_owned(),
-            "The ground grid lies on the X–Z plane at height 0",
-        ),
-        (
-            "Ground grid",
-            if s.settings.show_grid {
-                "Shown"
-            } else {
-                "Hidden"
-            }
-            .to_owned(),
-            "Toggle it in the viewport toolbar or the Render tab",
-        ),
-    ];
-    col()
-        .flex_1()
-        .min_h(px(0.))
-        .child(
-            col()
-                .px(px(SP_5))
-                .pt(px(SP_6 + SP_4))
-                .pb(px(SP_5))
-                .items_center()
-                .gap(px(SP_2))
-                .child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .size(px(36.))
-                        .rounded(px(R_LG))
-                        .bg(rgb(t.control))
-                        .border_1()
-                        .border_color(rgb(t.hairline))
-                        .child(icon(Icon::Scene, ICON_LG, t.text_muted)),
-                )
-                .child(
-                    div()
-                        .mt(px(SP_1))
-                        .text_size(px(TEXT_LG))
-                        .font_weight(WEIGHT_MEDIUM)
-                        .text_color(rgb(t.text))
-                        .child("Empty scene"),
-                )
-                .child(
-                    div()
-                        .max_w(px(232.))
-                        .text_center()
-                        .line_height(px(17.))
-                        .text_color(rgb(t.text_muted))
-                        .child("Start from the card in the viewport."),
-                ),
-        )
-        .child(
-            col()
-                .mx(px(SP_3))
-                .pt(px(SP_2))
-                .border_t_1()
-                .border_color(rgb(t.hairline))
-                .children(
-                    facts
-                        .into_iter()
-                        .map(|(label, value, reason)| readonly_row(t, label, "", value, reason)),
-                ),
-        )
+/// The inspector of an empty scene. The outliner's "No objects yet" is the
+/// one empty state and the viewport's start card is where modelling begins,
+/// so this panel adds neither a second message nor a second set of buttons:
+/// just the scene's settings. Units and the up axis are fixed in Forma and
+/// say so with a padlock; the ground grid is a real switch.
+fn empty_scene(t: Colors, s: &Studio, cx: &mut Context<Studio>) -> Div {
+    col().flex_1().min_h(px(0.)).child(
+        col()
+            .flex_shrink_0()
+            .border_b_1()
+            .border_color(rgb(t.hairline))
+            .child(
+                row()
+                    .h(px(32.))
+                    .flex_shrink_0()
+                    .px(px(SP_3))
+                    .text_size(px(TEXT_MD))
+                    .font_weight(WEIGHT_SEMIBOLD)
+                    .text_color(rgb(t.text))
+                    .child("Scene settings"),
+            )
+            .child(
+                col()
+                    .px(px(SP_3))
+                    .pb(px(SP_3))
+                    .gap(px(SP_1))
+                    .child(fact_row(
+                        t,
+                        "Units",
+                        "Metres",
+                        "Every length in Forma is in metres; STL and STEP convert on import and export",
+                        true,
+                    ))
+                    .child(fact_row(
+                        t,
+                        "Up axis",
+                        "Y",
+                        "Y is up; the ground grid lies on the X and Z axes at height 0",
+                        true,
+                    ))
+                    .child(on_command(
+                        row()
+                            .id("empty-scene-grid")
+                            .min_h(px(ROW_H))
+                            .gap(px(SP_2))
+                            .cursor_pointer()
+                            .child(
+                                div()
+                                    .w(px(LABEL_W))
+                                    .flex_shrink_0()
+                                    .text_color(rgb(t.text_muted))
+                                    .child("Ground grid"),
+                            )
+                            .child(
+                                row()
+                                    .flex_1()
+                                    .gap(px(SP_2))
+                                    .child(switch(t, s.settings.show_grid))
+                                    .child(div().text_color(rgb(t.text)).child(
+                                        if s.settings.show_grid {
+                                            "Shown"
+                                        } else {
+                                            "Hidden"
+                                        },
+                                    )),
+                            )
+                            .tooltip(command_tip(t, Command::ToggleGrid)),
+                        Command::ToggleGrid,
+                        cx,
+                    )),
+            ),
+    )
 }
 
 #[cfg(test)]
