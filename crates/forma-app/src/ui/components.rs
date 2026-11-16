@@ -112,7 +112,7 @@ pub(crate) fn keycaps(t: Colors, shortcut: &str) -> Div {
         if keycap_token_is_text(token) {
             keys = keys.child(
                 div()
-                    .text_size(px(TEXT_XS))
+                    .text_size(px(TEXT_SM))
                     .text_color(rgb(t.text_faint))
                     .child(SharedString::from(token.to_owned())),
             );
@@ -517,7 +517,7 @@ pub(crate) fn badge(t: Colors, text: impl Into<SharedString>, tone: BadgeTone) -
         .flex_shrink_0()
         .rounded(px(R_XS + 1.))
         .bg(fill)
-        .text_size(px(TEXT_XS))
+        .text_size(px(TEXT_SM))
         .font_weight(WEIGHT_MEDIUM)
         .text_color(rgb(ink))
         .child(text.into())
@@ -682,8 +682,9 @@ pub(crate) enum FieldMark {
     Text(&'static str),
 }
 
-/// Characters an axis field shows before it rounds its display.
-const AXIS_FIELD_CHARS: usize = 6;
+/// Characters an axis field shows before it rounds its display: five keep
+/// the value clear of the axis tick at the default sidebar width.
+const AXIS_FIELD_CHARS: usize = 5;
 
 /// Round a numeric display string to at most `max` characters, keeping its
 /// integer digits. Non-numeric text and values that cannot shrink are kept.
@@ -761,7 +762,7 @@ pub(crate) fn numeric_field(
             if name {
                 "Click to rename"
             } else {
-                "Drag to adjust · Shift for fine steps · Click to type"
+                "Drag to adjust · Shift for fine steps · Click to type a value or an expression such as 25mm, 1/8in or (2+3)*10cm"
             },
             None,
         ));
@@ -769,7 +770,7 @@ pub(crate) fn numeric_field(
     field = match mark {
         FieldMark::None => field,
         // A tick on the field's leading edge names the axis by color.
-        FieldMark::Axis(axis) => field.child(
+        FieldMark::Axis(axis) => field.pl(px(SP_2 + 2.)).child(
             div()
                 .absolute()
                 .left(px(0.))
@@ -1011,7 +1012,7 @@ pub(crate) fn stat_tile(t: Colors, label: &'static str, value: impl Into<SharedS
         .gap(px(1.))
         .rounded(px(R_SM))
         .bg(rgb(t.raised))
-        .child(caption(t, label).text_size(px(TEXT_XS)).truncate())
+        .child(caption(t, label).truncate())
         .child(
             div()
                 .tabular()

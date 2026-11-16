@@ -57,9 +57,11 @@ pub(crate) struct Colors {
     pub border_strong: u32,
     // Ink.
     pub text: u32,
-    /// Labels and secondary values (at least 4.5:1 on surfaces).
+    /// Labels and secondary values (at least 7:1 on surfaces, 4.5:1 on
+    /// every fill they sit on).
     pub text_muted: u32,
-    /// Placeholders, disabled ink and decoration (at least 3:1).
+    /// Tertiary text: units, counts, hints and placeholders. Still body
+    /// text, so at least 4.5:1 on surfaces, wells and controls.
     pub text_faint: u32,
     // Accent.
     /// Fills: primary actions, toggles, progress.
@@ -146,8 +148,8 @@ impl Theme {
                 border: 0x303237,
                 border_strong: 0x404349,
                 text: 0xe8e9ec,
-                text_muted: 0x9fa2a9,
-                text_faint: 0x6e717a,
+                text_muted: 0xabadb4,
+                text_faint: 0x8b8e96,
                 accent: 0x6ccfb2,
                 accent_hover: 0x7fdac0,
                 on_accent: 0x0c201a,
@@ -182,8 +184,8 @@ impl Theme {
                 border: 0xd8d3c9,
                 border_strong: 0xbdb7ab,
                 text: 0x22252b,
-                text_muted: 0x5c606b,
-                text_faint: 0x868a93,
+                text_muted: 0x4f525c,
+                text_faint: 0x646870,
                 accent: 0x2f63d0,
                 accent_hover: 0x2856b8,
                 on_accent: 0xffffff,
@@ -218,8 +220,8 @@ impl Theme {
                 border: 0x253149,
                 border_strong: 0x36445f,
                 text: 0xe4ebf7,
-                text_muted: 0x95a5c0,
-                text_faint: 0x66758f,
+                text_muted: 0x9cabc4,
+                text_faint: 0x7d8ba3,
                 accent: 0x6fbcff,
                 accent_hover: 0x87c8ff,
                 on_accent: 0x041220,
@@ -255,7 +257,7 @@ impl Theme {
                 border_strong: 0x4b3768,
                 text: 0xf7ecff,
                 text_muted: 0xc0a9d6,
-                text_faint: 0x8a74a2,
+                text_faint: 0x9480aa,
                 accent: 0xff6fd2,
                 accent_hover: 0xff8adb,
                 on_accent: 0x2b0620,
@@ -290,8 +292,8 @@ impl Theme {
                 border: 0xcfd8c2,
                 border_strong: 0xb2bea3,
                 text: 0x232d1d,
-                text_muted: 0x55624b,
-                text_faint: 0x7f8a75,
+                text_muted: 0x495440,
+                text_faint: 0x636b5b,
                 accent: 0x3f7d33,
                 accent_hover: 0x356c2b,
                 on_accent: 0xffffff,
@@ -455,6 +457,11 @@ mod tests {
                 ("muted/field", t.text_muted, t.field),
                 ("muted/overlay", t.text_muted, t.overlay),
                 ("muted/control", t.text_muted, t.control),
+                ("muted/hover", t.text_muted, t.control_hover),
+                ("faint/surface", t.text_faint, t.surface),
+                ("faint/raised", t.text_faint, t.raised),
+                ("faint/field", t.text_faint, t.field),
+                ("faint/control", t.text_faint, t.control),
                 ("accent/surface", t.accent_text, t.surface),
                 ("accent/selection", t.accent_text, t.accent_soft),
                 ("accent/selection hover", t.accent_text, t.accent_soft_hover),
@@ -468,10 +475,20 @@ mod tests {
                     theme.name()
                 );
             }
-            // Placeholders, axis labels and status ink are large or redundant
-            // with shape, and need 3:1.
+            // Secondary labels keep a clear step above tertiary text.
+            let muted = contrast(t.text_muted, t.surface);
+            assert!(
+                muted >= 7.0,
+                "{} muted/surface contrast is {muted:.2}",
+                theme.name()
+            );
+            assert!(
+                contrast(t.text_muted, t.text_faint) >= 1.3,
+                "{} muted and faint text are too close",
+                theme.name()
+            );
+            // Axis labels and status ink are redundant with shape and need 3:1.
             for (role, ink) in [
-                ("faint", t.text_faint),
                 ("x", t.axis_text[0]),
                 ("y", t.axis_text[1]),
                 ("z", t.axis_text[2]),
