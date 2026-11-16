@@ -600,14 +600,13 @@ impl Studio {
     ) -> Option<Div> {
         let tool = self.cad_tool.tool.as_ref()?;
         let mut rows = col();
-        let (glyph, name, subject, error, can_apply);
+        let (glyph, name, subject, error);
         match tool {
             Tool::Chamfer(tool) => {
                 glyph = Icon::Bevel;
                 name = "Chamfer";
                 subject = "Equal distance on both faces".to_owned();
                 error = tool.error.clone();
-                can_apply = true;
                 let typing = !tool.numeric.is_empty();
                 let text = if typing {
                     tool.numeric.clone()
@@ -645,7 +644,6 @@ impl Studio {
                                 "their"
                             },
                         );
-                        can_apply = true;
                         let typing = !active.numeric.is_empty();
                         let text = if typing {
                             active.numeric.clone()
@@ -687,7 +685,6 @@ impl Studio {
                     }
                     None => {
                         subject = "Pick a face".to_owned();
-                        can_apply = false;
                         let hint = match &tool.hover {
                             Some(face) if !face.planar => "Curved faces can't be pushed".to_owned(),
                             Some(face) => format!("{} · drag to push or pull", face.name),
@@ -719,7 +716,6 @@ impl Studio {
                     .clone()
                     .or_else(|| tool.revolve_problem().map(str::to_owned))
                     .or_else(|| self.preview_issue());
-                can_apply = !tool.selected.is_empty();
                 let typing = !tool.numeric.is_empty();
                 let invalid = tool.typed().is_err();
                 let regions = tool.selected.len();
@@ -880,37 +876,8 @@ impl Studio {
                     ));
             }
         }
-        let footer = row()
-            .gap(px(SP_1))
-            .pt(px(SP_2))
-            .child(
-                command_button(
-                    t,
-                    "cad-panel-cancel",
-                    if can_apply { "Cancel" } else { "Close" },
-                    None,
-                    Command::CadTool(ToolCommand::Cancel),
-                    Tone::Secondary,
-                    cx,
-                )
-                .h(px(H_MD))
-                .flex_1(),
-            )
-            .when(can_apply, |d| {
-                d.child(
-                    command_button(
-                        t,
-                        "cad-panel-done",
-                        "Done",
-                        Some(Icon::Check),
-                        Command::CadTool(ToolCommand::Done),
-                        Tone::Primary,
-                        cx,
-                    )
-                    .h(px(H_MD))
-                    .flex_1(),
-                )
-            });
+        // The floating tool bar is the one place a tool commits (Done and
+        // Cancel, or Return and Esc); the panel carries only parameters.
         Some(
             col()
                 .flex_shrink_0()
@@ -938,8 +905,7 @@ impl Studio {
                                     .child(error),
                             ),
                     )
-                })
-                .child(footer),
+                }),
         )
     }
 
