@@ -103,7 +103,7 @@ fn preview_main(@builtin(global_invocation_id) global_id: vec3<u32>) {
     var color = vec3(0.0); var ink = 0.0;
     for (var i = 0u; i < 4u; i += 1u) {
         let p = pixel + offsets[i]; let ray = camera_ray(p); let hit = trace(ray, FAR, false);
-        ink += feature_ink(ray, hit) * 0.25;
+        ink += max(feature_ink(ray, hit), outline_ink(center_hit, hit)) * 0.25;
         var sample_color: vec3<f32>;
         if hit.triangle == NO_HIT {
             sample_color = viewport_background(ray);

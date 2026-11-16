@@ -230,8 +230,9 @@ pub(crate) fn studio_scene() -> Scene {
         object.transform.scale = Vec3::new(3.4, 0.15, 2.6);
     }
     if let Some(material) = scene.object_material_mut(plinth) {
-        material.base_color = Vec3::new(0.16, 0.18, 0.22);
-        material.roughness = 0.55;
+        // Neutral graphite: reads as a stage in dark and light themes alike.
+        material.base_color = Vec3::new(0.17, 0.173, 0.18);
+        material.roughness = 0.6;
     }
 
     let bracket = scene
@@ -243,9 +244,11 @@ pub(crate) fn studio_scene() -> Scene {
     }
     if let Some(material) = scene.object_material_mut(bracket) {
         *material = Material {
-            base_color: Vec3::new(0.80, 0.82, 0.85),
-            metallic: 0.9,
-            roughness: 0.3,
+            // Bead-blasted aluminium. A fully metallic finish mirrors the dark
+            // studio horizon and turns every vertical face near black.
+            base_color: Vec3::new(0.78, 0.8, 0.82),
+            metallic: 0.55,
+            roughness: 0.42,
             ..Material::default()
         };
     }
@@ -305,6 +308,9 @@ pub(crate) fn studio_scene() -> Scene {
         material.base_color = Vec3::ONE;
         material.emission = Vec3::new(12.0, 10.5, 9.0);
     }
+    // A neutral studio world, so renders keep the materials' own colors.
+    scene.world.color = Vec3::new(0.6, 0.61, 0.63);
+    scene.world.strength = 0.4;
     // A little closer than the default view, so the objects fill the frame
     // above the timeline.
     scene.camera.target = Vec3::new(0.0, 0.4, 0.2);

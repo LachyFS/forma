@@ -560,6 +560,18 @@ fn feature_ink(ray: Ray, hit: Hit) -> f32 {
     if u.cam_origin.w >= 0.5 || u.cam_right.w <= 0.0 || hit.triangle == NO_HIT { return 0.0; }
     return feature_coverage(ray, hit, triangles[hit.triangle], 1.0);
 }
+// Silhouettes: a spatial sample that lands on another object, on the
+// backdrop, or across a depth jump of the same object (the torus's inner rim)
+// is on an outline. Kernels average this with feature_ink.
+fn outline_ink(center: Hit, hit: Hit) -> f32 {
+    if u.cam_origin.w >= 0.5 || u.cam_right.w <= 0.0 { return 0.0; }
+    if center.triangle == NO_HIT && hit.triangle == NO_HIT { return 0.0; }
+    if center.triangle == NO_HIT || hit.triangle == NO_HIT { return 1.0; }
+    if triangles[hit.triangle].params.z != triangles[center.triangle].params.z { return 1.0; }
+    // Soft ramp: grazing views of one smooth surface stay unmarked, while real
+    // occlusion jumps (the far side of a torus) ink fully.
+    return clamp((abs(hit.distance - center.distance) / center.distance - 0.06) * 12.0, 0.0, 1.0);
+}
 fn composite_features(display: vec3<f32>, coverage: f32) -> vec3<f32> {
     let ink = select(vec3(0.03, 0.033, 0.04), vec3(0.17, 0.18, 0.2), light_viewport());
     return mix(display, ink, clamp(coverage, 0.0, 1.0) * u.cam_right.w);
@@ -568,8 +580,11 @@ fn composite_edit(color: vec3<f32>, ray: Ray, hit: Hit, pixel: vec2<f32>) -> vec
     if hit.triangle == NO_HIT { return color; }
     let tri = triangles[hit.triangle];
     if u.cam_origin.w < 0.5 { return color; }
-    var result = mix(color, vec3(0.10, 0.13, 0.16), edge_coverage(ray, hit, tri, 1.0) * 0.85);
-    if u.cam_origin.w > 1.5 {
+    // The mesh being edited carries the wire; other meshes keep a faint
+    // cage for context, and only the edited mesh shows vertex markers.
+    let editing = is_selected(hit);
+    var result = mix(color, vec3(0.10, 0.13, 0.16), edge_coverage(ray, hit, tri, 1.0) * select(0.2, 0.85, editing));
+    if u.cam_origin.w > 1.5 && editing {
         let marker_pixel = vec2(pixel.x - f32(u.image.x) * 0.5, f32(u.image.y) * 0.5 - pixel.y);
         let distance = min(length(marker_pixel - project_to_pixels(tri.v0.xyz)), min(length(marker_pixel - project_to_pixels(tri.v1.xyz)), length(marker_pixel - project_to_pixels(tri.v2.xyz))));
         result = mix(result, vec3(0.38, 0.46, 0.52), 1.0 - smoothstep(2.0, 3.0, distance));
@@ -690,7 +705,7 @@ fn solid_supersampled(pixel: vec2<f32>, center: Hit) -> vec4<f32> {
         let p = pixel + offsets[i]; let r = camera_ray(p); let h = trace(r, FAR, false);
         let same = center.triangle != NO_HIT && h.triangle != NO_HIT
             && triangles[h.triangle].params.z == triangles[center.triangle].params.z;
-        result += vec4(solid_sample(p, r, h, select(1.0, ao, same)), feature_ink(r, h)) * 0.25;
+        result += vec4(solid_sample(p, r, h, select(1.0, ao, same)), max(feature_ink(r, h), outline_ink(center, h))) * 0.25;
     }
     return result;
 }

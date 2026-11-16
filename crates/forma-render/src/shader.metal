@@ -490,16 +490,32 @@ float feature_ink(Ray ray, Hit hit, device const Triangle *triangles, constant U
     if (u.cam_origin.w >= 0.5f || u.cam_right.w <= 0.0f || hit.triangle == NO_HIT) return 0.0f;
     return feature_coverage(ray, hit, triangles[hit.triangle], u, 1.0f);
 }
+// Silhouettes: a spatial sample that lands on another object, on the
+// backdrop, or across a depth jump of the same object (the torus's inner rim)
+// is on an outline. Kernels average this with feature_ink.
+float outline_ink(Hit center, Hit hit, device const Triangle *triangles, constant Uniforms &u) {
+    if (u.cam_origin.w >= 0.5f || u.cam_right.w <= 0.0f) return 0.0f;
+    if (center.triangle == NO_HIT && hit.triangle == NO_HIT) return 0.0f;
+    if (center.triangle == NO_HIT || hit.triangle == NO_HIT) return 1.0f;
+    if (triangles[hit.triangle].params.z != triangles[center.triangle].params.z) return 1.0f;
+    // Soft ramp: grazing views of one smooth surface stay unmarked, while real
+    // occlusion jumps (the far side of a torus) ink fully.
+    return clamp((abs(hit.distance - center.distance) / center.distance - 0.06f) * 12.0f, 0.0f, 1.0f);
+}
 float3 composite_features(float3 display, float coverage, constant Uniforms &u) {
     float3 ink = light_viewport(u) ? float3(0.17f, 0.18f, 0.2f) : float3(0.03f, 0.033f, 0.04f);
     return mix(display, ink, clamp(coverage, 0.0f, 1.0f) * u.cam_right.w);
 }
+bool is_selected(Hit hit, device const Triangle *triangles, constant Uniforms &u);
 float3 composite_edit(float3 color, Ray ray, Hit hit, float2 pixel, device const Triangle *triangles, constant Uniforms &u) {
     if (hit.triangle == NO_HIT) return color;
     device const Triangle &tri = triangles[hit.triangle];
     if (u.cam_origin.w < 0.5f) return color;
-    float3 result = mix(color, float3(0.10f, 0.13f, 0.16f), edge_coverage(ray, hit, tri, u, 1.0f) * 0.85f);
-    if (u.cam_origin.w > 1.5f) {
+    // The mesh being edited carries the wire; other meshes keep a faint
+    // cage for context, and only the edited mesh shows vertex markers.
+    bool editing = is_selected(hit, triangles, u);
+    float3 result = mix(color, float3(0.10f, 0.13f, 0.16f), edge_coverage(ray, hit, tri, u, 1.0f) * (editing ? 0.85f : 0.2f));
+    if (u.cam_origin.w > 1.5f && editing) {
         float2 marker_pixel(pixel.x - float(u.image.x) * 0.5f, float(u.image.y) * 0.5f - pixel.y);
         float distance = min(length(marker_pixel - project_to_pixels(tri.v0.xyz, u)), min(length(marker_pixel - project_to_pixels(tri.v1.xyz, u)), length(marker_pixel - project_to_pixels(tri.v2.xyz, u))));
         result = mix(result, float3(0.38f, 0.46f, 0.52f), 1.0f - smoothstep(2.0f, 3.0f, distance));
@@ -735,7 +751,7 @@ kernel void render_main(device const Triangle *triangles [[buffer(0)]],
                 Ray r = camera_ray(p, u);
                 Hit h = trace(r, INFINITY, triangles, nodes, u);
                 color += solid_sample(p, r, h, same_object(primary, h, triangles) ? ao : 1.0f, triangles, u) * 0.25f;
-                ink += feature_ink(r, h, triangles, u) * 0.25f;
+                ink += max(feature_ink(r, h, triangles, u), outline_ink(primary, h, triangles, u)) * 0.25f;
             }
         } else if (primary.triangle != NO_HIT) {
             Surface s = surface_at(ray, primary, triangles);

@@ -117,7 +117,7 @@ kernel void solid_main(device const Triangle *triangles [[buffer(0)]],
         Ray r = camera_ray(p, u);
         Hit h = preview_trace(r, INFINITY, triangles, nodes, u PREVIEW_ACCEL_ARG);
         color += solid_sample(p, r, h, same_object(hit, h, triangles) ? ao : 1.0f, triangles, u) * 0.25f;
-        ink += feature_ink(r, h, triangles, u) * 0.25f;
+        ink += max(feature_ink(r, h, triangles, u), outline_ink(hit, h, triangles, u)) * 0.25f;
     }
     accumulation[gid.y * u.image.x + gid.x] = float4(color, 1.0f);
     float3 display = composite_edit(composite_features(display_transform(color, 0.0f), ink, u), ray, hit, pixel, triangles, u);
@@ -281,7 +281,7 @@ kernel void preview_main(device const Triangle *triangles [[buffer(0)]],
         float2 p = pixel + offsets[i];
         Ray ray = camera_ray(p, u);
         Hit hit = preview_trace(ray, INFINITY, triangles, nodes, u PREVIEW_ACCEL_ARG);
-        ink += feature_ink(ray, hit, triangles, u) * 0.25f;
+        ink += max(feature_ink(ray, hit, triangles, u), outline_ink(center_hit, hit, triangles, u)) * 0.25f;
         float3 sample;
         if (hit.triangle == NO_HIT) {
             sample = viewport_background(ray, u);

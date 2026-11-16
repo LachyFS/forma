@@ -941,19 +941,45 @@ impl Studio {
                         .border_color(crate::ui::tokens::hex(t.accent)),
                     );
                 }
-                for face in &highlights {
-                    let mut points: Vec<_> = face
-                        .iter()
-                        .filter_map(|v| project(*v, matrix, bounds))
-                        .collect();
-                    if points.len() == face.len() && !points.is_empty() {
-                        if edit_mode == EditMode::Face {
+                // Faces read as a translucent tint with a fine border, edges
+                // as solid strokes with small end caps, vertices as dots: the
+                // marker size follows the component, so a large face
+                // selection never turns into a field of beads.
+                let projected: Vec<Vec<_>> = highlights
+                    .iter()
+                    .filter_map(|element| {
+                        let points: Vec<_> = element
+                            .iter()
+                            .filter_map(|v| project(*v, matrix, bounds))
+                            .collect();
+                        (points.len() == element.len() && !points.is_empty()).then_some(points)
+                    })
+                    .collect();
+                if edit_mode == EditMode::Face {
+                    crate::sketch::overlay::fill_polygons(
+                        window,
+                        &projected,
+                        crate::sketch::overlay::ink(COMPONENT_HIGHLIGHT, 0.26),
+                    );
+                }
+                for mut points in projected {
+                    let (width, marker) = match edit_mode {
+                        EditMode::Face => {
                             points.push(points[0]);
+                            (1.25, 0.)
                         }
-                        line(window, &points, COMPONENT_HIGHLIGHT, 2.);
-                        for p in points.iter().filter(|_| edit_mode.is_component()) {
+                        EditMode::Edge => (2., 4.),
+                        _ if edit_mode.is_component() => (2., 6.),
+                        _ => (2., 0.),
+                    };
+                    line(window, &points, COMPONENT_HIGHLIGHT, width);
+                    if marker > 0. {
+                        for p in &points {
                             window.paint_quad(fill(
-                                Bounds::new(*p - point(px(3.), px(3.)), size(px(6.), px(6.))),
+                                Bounds::new(
+                                    *p - point(px(marker * 0.5), px(marker * 0.5)),
+                                    size(px(marker), px(marker)),
+                                ),
                                 rgb(COMPONENT_VERTEX),
                             ));
                         }
