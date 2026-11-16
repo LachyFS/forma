@@ -171,13 +171,16 @@ cargo run --locked --release -p forma
   while continuing to edit.
 - Personalize the editor with five color themes: Forma Dark, Paper, Midnight,
   Synthwave and Matcha. Open the palette button in the title bar, **View → Color theme…**,
-  or search **Preferences: Color theme** in the command panel. Type to filter,
+  or search **Color theme…** in the command panel. Type to filter,
   hover or use arrows to preview, then click or press Return to save your choice.
   Escape or clicking outside cancels. The theme is remembered across launches.
 - Search commands with `⌘K` or the search field in the title bar, type a name, then
-  use arrows and Return to execute. Commands are grouped by area, show their
-  shortcuts, and recently run commands appear first. Native menus and the command
-  panel expose the same editor operations.
+  use arrows and Return to execute. The panel opens on commands for the current
+  selection (Chamfer, Convert to mesh and Export STEP for a part, for example) and
+  recently run commands, then every group. Results rank word starts first,
+  highlight the matched letters and show their group and shortcut; the footer
+  explains the highlighted command. Native menus and the command panel expose the
+  same editor operations.
 - The viewport fills the window. Floating controls hold the tools and **Add** menu
   (left), the Vertex/Edge/Face filter while editing, and the views menu,
   projection, framing, grid, measurements and shading modes (top right). The title
@@ -217,9 +220,9 @@ image directly; at narrower window widths it shows only its icon.
 Draw mode sketches 2D curves on a plane. Closed regions become **profiles**,
 which CAD features extrude or revolve.
 
-**Start a sketch** with `D`, the **Draw** button in the title bar, or **Draw: New
-sketch** in the command panel (an empty scene's **Draw a sketch** always starts
-on the ground). The sketch goes on the planar face under the
+**Start a sketch** with `D`, the **Draw** button in the title bar, **Add → New
+sketch**, or **New sketch** in the command panel (an empty scene's **Draw on the
+ground** always starts on the ground). The sketch goes on the planar face under the
 pointer (aligned to that face's longest edge, with its origin on a face corner),
 else on the plane of the current orthographic view (Front, Top, …), else on the
 ground. The camera eases round to look straight at the plane (and zooms in on a
@@ -288,10 +291,10 @@ to OBJ/STL like any object.
 
 | Command | Where | Does |
 | --- | --- | --- |
-| **Box / Cylinder / Sphere part** | **Add** menu, command panel (“Part: …”), **Part** menu | A parametric primitive at the origin. |
-| **Extrude sketch** | command panel, **Part** menu | Extrudes the selected sketch's outer regions (with their holes) 1 m into a new part at once; `E` extrudes interactively. |
-| **Extrude / Revolve / Push/Pull / Chamfer** | `E` / `⇧R` / `P` / `⌘B`, command panel (“Part: …”); Push/Pull and Chamfer also on the tool rail | Interactive tools; see [direct modelling](#direct-modelling). |
-| **Join / Cut / Intersect** | command panel (“Combine: …”), **Part** menu | Select the tools, then the target last: the tools are combined into the target and removed. Meshes are converted on the way. The tools keep their own histories inside the new feature. |
+| **Box / Cylinder / Sphere part** | **Add** menu, command panel (“Add box part” …), **Part** menu | A parametric primitive at the origin. |
+| **Extrude sketch** | command panel (“Extrude sketch as a new part”), **Part** menu | Extrudes the selected sketch's outer regions (with their holes) 1 m into a new part at once; `E` extrudes interactively. |
+| **Extrude / Revolve / Push/Pull / Chamfer** | `E` / `⇧R` / `P` / `⌘B`, command panel; Push/Pull and Chamfer also on the tool rail | Interactive tools; see [direct modelling](#direct-modelling). |
+| **Join / Cut / Intersect** | command panel (“Boolean join” …, or search “combine”), **Part** menu | Select the tools, then the target last: the tools are combined into the target and removed. Meshes are converted on the way. The tools keep their own histories inside the new feature. |
 | **Convert to part** | command panel, **Part** menu | A closed, manifold mesh becomes a part; flat polygons become faces and coplanar neighbours merge. |
 | **Convert to mesh** | command panel, **Part** menu | Bakes a part into an editable mesh: flat faces become single polygons, curved faces triangles. |
 | **Import / Export STEP…** | **Add → Import**, the **Export** menu, **File** menu, command panel | STEP (ISO 10303-21) in millimetres; export uses the selected parts, or all visible parts. |
@@ -546,7 +549,7 @@ and **Alt** in place of **Option**. The viewport must have keyboard focus.
 The in-app command panel opens with
 `⌘K`, `Space` or `Shift+A`; `H` opens the shortcut reference.
 
-![The command panel: every editor command, grouped by area, with its shortcut](docs/images/commands.png)
+![The command panel: commands for the selection first, then every editor command by area, with its shortcut](docs/images/commands.png)
 
 | Action | Input |
 | --- | --- |
