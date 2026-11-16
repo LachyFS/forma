@@ -113,8 +113,27 @@ const COPLANAR_COS: f32 = 0.99995;
 /// boundaries (fillets, cylinder seams) keep their lines, since tessellated
 /// neighbours across them still differ by the chord angle.
 fn brep_feature_edges(mesh: &Mesh, edges: &HashSet<(u32, u32)>) -> HashSet<(u32, u32)> {
-    // edge -> (first side's normal, uses, bent)
-    let mut sides: std::collections::HashMap<(u32, u32), (Vec3, u32, bool)> =
+    // Part tessellations keep each B-rep face's vertices apart (so edges
+    // shade sharp), so count edge uses by position, not by index: a real
+    // B-rep edge is met by two faces at an angle, a seam between coplanar
+    // faces by two at the same angle, and a T-junction inside a face (a
+    // dotted crack) by only one.
+    let (min, max) = mesh.positions.iter().fold(
+        (Vec3::splat(f32::INFINITY), Vec3::splat(f32::NEG_INFINITY)),
+        |(lo, hi), p| (lo.min(*p), hi.max(*p)),
+    );
+    let step = ((max - min).length() * 1.0e-5).max(1.0e-9);
+    let cell = |index: u32| {
+        let p = mesh.positions[index as usize] / step;
+        (p.x.round() as i64, p.y.round() as i64, p.z.round() as i64)
+    };
+    let at = |(a, b): (u32, u32)| {
+        let (a, b) = (cell(a), cell(b));
+        if a <= b { (a, b) } else { (b, a) }
+    };
+    // position key -> (first side's normal, uses, bent)
+    type Cell = (i64, i64, i64);
+    let mut sides: std::collections::HashMap<(Cell, Cell), (Vec3, u32, bool)> =
         std::collections::HashMap::with_capacity(edges.len());
     for (index, face) in mesh.faces.iter().enumerate() {
         let mut normal = None;
@@ -129,7 +148,7 @@ fn brep_feature_edges(mesh: &Mesh, edges: &HashSet<(u32, u32)>) -> HashSet<(u32,
             }
             let n = *normal.get_or_insert_with(|| mesh.face_normal(index));
             sides
-                .entry(key)
+                .entry(at(key))
                 .and_modify(|(first, uses, bent)| {
                     *uses += 1;
                     *bent |= first.dot(n) < COPLANAR_COS;
@@ -137,13 +156,14 @@ fn brep_feature_edges(mesh: &Mesh, edges: &HashSet<(u32, u32)>) -> HashSet<(u32,
                 .or_insert((n, 1, false));
         }
     }
-    // Parts are closed solids, so a one-sided edge is a tessellation
-    // T-junction across a face, not a boundary: it would draw as a dotted
-    // crack. Shared edges stay unless flat.
-    sides
-        .into_iter()
-        .filter(|(_, (_, uses, bent))| *uses > 1 && *bent)
-        .map(|(key, _)| key)
+    edges
+        .iter()
+        .copied()
+        .filter(|key| {
+            sides
+                .get(&at(*key))
+                .is_some_and(|(_, uses, bent)| *uses > 1 && *bent)
+        })
         .collect()
 }
 
