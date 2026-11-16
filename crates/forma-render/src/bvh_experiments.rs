@@ -272,6 +272,9 @@ fn reference_geometry(scene: &Scene) -> Geometry {
             .map(|[a, b]| edge_key(a, b))
             .collect();
         let features = feature_edges(mesh, &edges);
+        // Corners on a feature line, so a triangle that touches a line only at
+        // a vertex still inks the join and curved lines do not bead.
+        let feature_vertices: HashSet<u32> = features.iter().flat_map(|&(a, b)| [a, b]).collect();
         // Classify creases and angle-weight in mesh space, then transform
         // normals with the inverse transpose. Nonuniform object scaling must
         // not change smoothing groups or create seams on a flattened sphere.
@@ -317,6 +320,9 @@ fn reference_geometry(scene: &Scene) -> Geometry {
                 }
                 if features.contains(&key) {
                     feature_bits |= 1 << corner;
+                }
+                if feature_vertices.contains(&face[corner]) {
+                    feature_bits |= 8 << corner;
                 }
             }
             triangles.push(Triangle {

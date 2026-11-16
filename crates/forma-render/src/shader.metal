@@ -449,6 +449,11 @@ float2 project_to_pixels(float3 point, constant Uniforms &u) {
     return float2(dot(delta, u.cam_right.xyz), dot(delta, u.cam_up.xyz))
         * float2(float(u.image.x) / u.camera.y, float(u.image.y)) / (2.0f * half_height);
 }
+// Pixel distance to a vertex, or infinity when it is behind a perspective camera.
+float projected_point_distance(float3 position, float3 vertex, constant Uniforms &u) {
+    if (u.camera.w < 0.5f && dot(vertex - u.cam_origin.xyz, u.cam_forward.xyz) < 1e-4f) return INFINITY;
+    return length(project_to_pixels(position, u) - project_to_pixels(vertex, u));
+}
 float projected_edge_distance(float3 position, float3 a, float3 b, constant Uniforms &u) {
     if (u.camera.w < 0.5f) {
         // Clip segments at the camera plane before perspective division. This
@@ -483,7 +488,15 @@ float feature_coverage(Ray ray, Hit hit, device const Triangle &tri, constant Un
     if ((mask & 1u) != 0u) distance = min(distance, projected_edge_distance(position, tri.v1.xyz, tri.v2.xyz, u));
     if ((mask & 2u) != 0u) distance = min(distance, projected_edge_distance(position, tri.v2.xyz, tri.v0.xyz, u));
     if ((mask & 4u) != 0u) distance = min(distance, projected_edge_distance(position, tri.v0.xyz, tri.v1.xyz, u));
-    return 1.0f - smoothstep(thickness * 0.3f, thickness * 1.1f, distance);
+    // Corners on a line: a round join, so triangles that meet a curved line
+    // at one vertex do not leave a gap there.
+    if ((mask & 8u) != 0u) distance = min(distance, projected_point_distance(position, tri.v0.xyz, u));
+    if ((mask & 16u) != 0u) distance = min(distance, projected_point_distance(position, tri.v1.xyz, u));
+    if ((mask & 32u) != 0u) distance = min(distance, projected_point_distance(position, tri.v2.xyz, u));
+    // A box-filtered line 1.6 px wide once composite_features applies its
+    // 1.6 gain: the linear one pixel ramp keeps the ink per pixel row the
+    // same wherever the line crosses the pixel grid, so curves do not bead.
+    return clamp(thickness * 0.8f + 0.5f - distance, 0.0f, 1.0f) * 0.625f;
 }
 bool is_selected(Hit hit, device const Triangle *triangles, constant Uniforms &u);
 // Object-mode CAD feature lines. Kernels average this over their spatial
@@ -591,14 +604,19 @@ float3 solid_shading(Surface s, Ray ray, constant Uniforms &u) {
     float3 key = normalize(-u.cam_forward.xyz * 0.6f - u.cam_right.xyz * 0.45f + u.cam_up.xyz * 0.85f);
     float3 fill = normalize(u.cam_right.xyz * 0.8f + u.cam_up.xyz * 0.2f - u.cam_forward.xyz * 0.25f);
     float3 rim = normalize(u.cam_forward.xyz * 0.8f + u.cam_up.xyz * 0.6f);
-    // Neutral clay: a sky/ground hemisphere, a soft key and fill, a broad
-    // highlight and a faint grazing rim, so curvature reads without color.
+    // Clay: a sky/ground hemisphere, a soft key and fill, a broad highlight
+    // and a faint grazing rim, so curvature reads without color. Each surface
+    // keeps its material's lightness and a trace of its hue, so a dark stand
+    // and a bright part stay apart.
     float ambient = mix(0.15f, 0.30f, s.normal.y * 0.5f + 0.5f);
     float shade = ambient + 0.62f * max(0.0f, dot(s.normal, key)) + 0.16f * max(0.0f, dot(s.normal, fill));
     float specular = pow(max(0.0f, dot(s.normal, normalize(key - ray.direction))), 40.0f) * 0.16f;
     float facing = 1.0f - max(0.0f, dot(s.normal, -ray.direction));
     float rim_light = pow(max(0.0f, dot(s.normal, rim)), 3.0f) * 0.05f + pow(facing, 4.0f) * 0.06f;
-    float3 base = light_viewport(u) ? float3(0.52f, 0.53f, 0.55f) : float3(0.43f, 0.445f, 0.465f);
+    float luminance = max(dot(s.color, float3(0.2126f, 0.7152f, 0.0722f)), 1e-3f);
+    float3 hue = mix(float3(1.0f), clamp(s.color / luminance, float3(0.0f), float3(2.0f)), 0.12f);
+    float value = mix(0.3f, 1.2f, pow(min(luminance, 1.0f), 0.75f));
+    float3 base = (light_viewport(u) ? float3(0.52f, 0.53f, 0.55f) : float3(0.43f, 0.445f, 0.465f)) * hue * value;
     return base * shade + float3(specular + rim_light);
 }
 float grid_line(float coordinate, float spacing, float width) {

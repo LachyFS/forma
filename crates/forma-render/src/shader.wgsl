@@ -535,6 +535,11 @@ fn projected_edge_distance(position: vec3<f32>, start: vec3<f32>, end: vec3<f32>
     let t = clamp(dot(point - pa, edge) / max(1e-12, dot(edge, edge)), 0.0, 1.0);
     return length(point - pa - t * edge);
 }
+// Pixel distance to a vertex, or FAR when it is behind a perspective camera.
+fn projected_point_distance(position: vec3<f32>, vertex: vec3<f32>) -> f32 {
+    if u.camera.w < 0.5 && dot(vertex - u.cam_origin.xyz, u.cam_forward.xyz) < 1e-4 { return FAR; }
+    return length(project_to_pixels(position) - project_to_pixels(vertex));
+}
 fn edge_coverage(ray: Ray, hit: Hit, tri: Triangle, thickness: f32) -> f32 {
     let position = ray.origin + hit.distance * ray.direction;
     let mask = u32(tri.params.w + 0.5);
@@ -553,7 +558,15 @@ fn feature_coverage(ray: Ray, hit: Hit, tri: Triangle, thickness: f32) -> f32 {
     if (mask & 1u) != 0u { distance = min(distance, projected_edge_distance(position, tri.v1.xyz, tri.v2.xyz)); }
     if (mask & 2u) != 0u { distance = min(distance, projected_edge_distance(position, tri.v2.xyz, tri.v0.xyz)); }
     if (mask & 4u) != 0u { distance = min(distance, projected_edge_distance(position, tri.v0.xyz, tri.v1.xyz)); }
-    return 1.0 - smoothstep(thickness * 0.3, thickness * 1.1, distance);
+    // Corners on a line: a round join, so triangles that meet a curved line
+    // at one vertex do not leave a gap there.
+    if (mask & 8u) != 0u { distance = min(distance, projected_point_distance(position, tri.v0.xyz)); }
+    if (mask & 16u) != 0u { distance = min(distance, projected_point_distance(position, tri.v1.xyz)); }
+    if (mask & 32u) != 0u { distance = min(distance, projected_point_distance(position, tri.v2.xyz)); }
+    // A box-filtered line 1.6 px wide once composite_features applies its
+    // 1.6 gain: the linear one pixel ramp keeps the ink per pixel row the
+    // same wherever the line crosses the pixel grid, so curves do not bead.
+    return clamp(thickness * 0.8 + 0.5 - distance, 0.0, 1.0) * 0.625;
 }
 // Object-mode CAD feature lines. Kernels average this over their spatial
 // samples so lines stay antialiased along silhouettes, then ink once in
@@ -665,14 +678,19 @@ fn solid_shading(s: Surface, ray: Ray) -> vec3<f32> {
     let key = normalize(-u.cam_forward.xyz * 0.6 - u.cam_right.xyz * 0.45 + u.cam_up.xyz * 0.85);
     let fill = normalize(u.cam_right.xyz * 0.8 + u.cam_up.xyz * 0.2 - u.cam_forward.xyz * 0.25);
     let rim = normalize(u.cam_forward.xyz * 0.8 + u.cam_up.xyz * 0.6);
-    // Neutral clay: a sky/ground hemisphere, a soft key and fill, a broad
-    // highlight and a faint grazing rim, so curvature reads without color.
+    // Clay: a sky/ground hemisphere, a soft key and fill, a broad highlight
+    // and a faint grazing rim, so curvature reads without color. Each surface
+    // keeps its material's lightness and a trace of its hue, so a dark stand
+    // and a bright part stay apart.
     let ambient = mix(0.15, 0.30, s.normal.y * 0.5 + 0.5);
     let shade = ambient + 0.62 * max(0.0, dot(s.normal, key)) + 0.16 * max(0.0, dot(s.normal, fill));
     let specular = pow(max(0.0, dot(s.normal, normalize(key - ray.direction))), 40.0) * 0.16;
     let facing = 1.0 - max(0.0, dot(s.normal, -ray.direction));
     let rim_light = pow(max(0.0, dot(s.normal, rim)), 3.0) * 0.05 + pow(facing, 4.0) * 0.06;
-    let base = select(vec3(0.43, 0.445, 0.465), vec3(0.52, 0.53, 0.55), light_viewport());
+    let luminance = max(dot(s.color, vec3(0.2126, 0.7152, 0.0722)), 1e-3);
+    let hue = mix(vec3(1.0), clamp(s.color / luminance, vec3(0.0), vec3(2.0)), 0.12);
+    let value = mix(0.3, 1.2, pow(min(luminance, 1.0), 0.75));
+    let base = select(vec3(0.43, 0.445, 0.465), vec3(0.52, 0.53, 0.55), light_viewport()) * hue * value;
     return base * shade + vec3(specular + rim_light);
 }
 fn grid_line(coordinate: f32, spacing: f32, width: f32) -> f32 {

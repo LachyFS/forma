@@ -243,6 +243,9 @@ impl MeshGeometry {
                 .collect()
         };
         let features = feature_edges(mesh, &edges);
+        // Corners on a feature line, so a triangle that touches a line only at
+        // a vertex still inks the join and curved lines do not bead.
+        let feature_vertices: HashSet<u32> = features.iter().flat_map(|&(a, b)| [a, b]).collect();
         // Classify creases and angle-weight in mesh space. Nonuniform object
         // scaling must not change smoothing groups or create sphere seams.
         // Incident corners are contiguous, in the original triangle order, so
@@ -300,6 +303,9 @@ impl MeshGeometry {
                 }
                 if features.contains(&key) {
                     feature_bits |= 1 << corner;
+                }
+                if feature_vertices.contains(&face[corner]) {
+                    feature_bits |= 8 << corner;
                 }
             }
             triangles.push(MeshTriangle {
