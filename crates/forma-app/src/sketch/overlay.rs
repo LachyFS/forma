@@ -137,8 +137,13 @@ thread_local! {
 /// - the curve being drawn (the tool's preview) is the accent;
 /// - a closed profile is marked by a light accent fill (`PROFILE_FILL`),
 ///   never by recolouring its curves;
-/// - an open end, which keeps a region from closing, carries an accent
-///   ring around its point;
+/// - an open end, which keeps a region from closing, carries an amber ring
+///   (the theme's `warning`) around its point, the colour of the panel's
+///   "Open ends" warning, so the canvas and the panel name the same
+///   problem. Amber means an open end in Draw and nothing else;
+/// - the plane's axes, and the horizontal and vertical inferences along
+///   them, take the colour of the world axis each one runs along (see
+///   [`plane_axis_colors`]), as the view gizmo labels them;
 /// - selection is the accent and hover a lighter accent: interaction
 ///   states, layered over the rule rather than part of it.
 #[derive(Clone, Copy)]
@@ -919,6 +924,7 @@ fn paint_grid(active: &ActiveOverlay, projector: &Projector, c: Colors, window: 
     }
     let frame = active.frame;
     let focus = active.focus;
+    let axes = plane_axis_colors(&frame, c);
     // Reach of the grid: as far as the viewport corners land on the plane.
     let corners = [
         projector.bounds.origin,
@@ -1012,9 +1018,11 @@ fn paint_grid(active: &ActiveOverlay, projector: &Projector, c: Colors, window: 
     let base = [
         (c.text, c.canvas, 0.14 * minor_fade, 1.0),
         (c.text, c.canvas, 0.22, 1.0),
-        // Index 0 lines are the sketch axes: x is horizontal, y vertical.
-        (c.axis[1], c.canvas, 0.6, 1.3),
-        (c.axis[0], c.canvas, 0.6, 1.3),
+        // Index 0 lines are the sketch axes, coloured by the world axis
+        // each runs along: the line x = 0 is the plane's y axis, the line
+        // y = 0 its x axis.
+        (axes[1], c.canvas, 0.6, 1.3),
+        (axes[0], c.canvas, 0.6, 1.3),
     ];
     for (style, (light, dark, alpha, width)) in base.into_iter().enumerate() {
         for level in 0..LEVELS {
@@ -1243,15 +1251,15 @@ fn paint_active(
     // One ink scheme for Draw: committed curves in the two-tone ink, the
     // curve being drawn in the accent, and every vertex, committed or just
     // placed, a 7 px light point with a thin dark ring. Open ends, which
-    // keep a region from closing, add an accent ring: the place to continue
-    // or close the outline.
+    // keep a region from closing, add an amber ring, as the panel's "Open
+    // ends" warning: the place to continue or close the outline.
     for (point, count) in &analysis.endpoints {
         if let Some(p) = screen(*point) {
             match count {
                 0 => point_marker(window, p, 4.0, ink(c.text_muted, 1.0), inks.halo),
                 1 => {
                     ring(window, p, OPEN_RING, 3.4, ink_alpha(inks.halo, 0.6));
-                    ring(window, p, OPEN_RING, 1.5, ink(c.accent, 1.0));
+                    ring(window, p, OPEN_RING, 1.6, ink(c.warning, 1.0));
                     point_marker(window, p, 7.0, inks.point, inks.point_ring);
                 }
                 _ => point_marker(window, p, 7.0, inks.point, inks.point_ring),
@@ -1272,7 +1280,13 @@ fn paint_active(
             let ends = [guide.from, guide.to + direction * extend];
             for run in plane_runs(frame, projector, &ends) {
                 stroke_dashed(window, &run, 3.0, ink_alpha(inks.halo, 0.45), [5.0, 4.0]);
-                stroke_dashed(window, &run, 1.2, guide_color(guide.kind, c), [5.0, 4.0]);
+                stroke_dashed(
+                    window,
+                    &run,
+                    1.2,
+                    guide_color(guide.kind, c, plane_axis_colors(frame, c)),
+                    [5.0, 4.0],
+                );
             }
         }
     }
@@ -1357,7 +1371,14 @@ fn paint_active(
                 let reach =
                     (side_normal.x * size.x).abs() * 0.5 + (side_normal.y * size.y).abs() * 0.5;
                 let center = (pa + pb) * 0.5 - side_normal * (gap + reach);
-                paint_constraint_chip(window, cx, kind, to_point(center), c);
+                paint_constraint_chip(
+                    window,
+                    cx,
+                    kind,
+                    to_point(center),
+                    c,
+                    plane_axis_colors(frame, c),
+                );
                 gap += reach * 2.0 + 4.0;
             }
         }
@@ -1417,7 +1438,7 @@ fn ink_alpha(color: Rgba, alpha: f32) -> Rgba {
     }
 }
 
-/// Radius of the accent ring around an open end.
+/// Radius of the amber ring around an open end.
 const OPEN_RING: f32 = 7.0;
 /// Accent fill of a closed profile, and of the one under the pointer.
 const PROFILE_FILL: f32 = 0.15;
@@ -1429,10 +1450,24 @@ fn point_marker(window: &mut Window, center: Point<Pixels>, diameter: f32, fill:
     dot(window, center, diameter, fill);
 }
 
-fn guide_color(kind: GuideKind, c: Colors) -> Rgba {
+/// The colours of the plane's x and y axes: the world axis each runs
+/// along, so a ground sketch's x is red (world X) and its y blue (world
+/// -Z), as the view gizmo shows them. An axis along no world axis (a
+/// sketch on a slanted face) is neutral.
+pub(crate) fn plane_axis_colors(frame: &Frame, c: Colors) -> [u32; 2] {
+    let origin = frame.to_world(Vec2::ZERO);
+    [Vec2::X, Vec2::Y].map(|direction| {
+        let along = (frame.to_world(direction) - origin).normalize_or_zero();
+        (0..3)
+            .find(|&axis| along[axis].abs() > 0.999)
+            .map_or(c.text_muted, |axis| c.axis[axis])
+    })
+}
+
+fn guide_color(kind: GuideKind, c: Colors, axes: [u32; 2]) -> Rgba {
     match kind {
-        GuideKind::Horizontal => ink(c.axis[0], 0.95),
-        GuideKind::Vertical => ink(c.axis[1], 0.95),
+        GuideKind::Horizontal => ink(axes[0], 0.95),
+        GuideKind::Vertical => ink(axes[1], 0.95),
         GuideKind::Parallel | GuideKind::Perpendicular => ink(c.accent, 0.95),
         GuideKind::Aligned => ink(c.text_muted, 0.9),
     }
@@ -1476,6 +1511,7 @@ fn paint_constraint_chip(
     kind: GuideKind,
     center: Point<Pixels>,
     c: Colors,
+    axes: [u32; 2],
 ) {
     let size_v = constraint_chip_size(window, kind);
     let origin = to_vec(center) - size_v * 0.5;
@@ -1486,7 +1522,7 @@ fn paint_constraint_chip(
             .border_widths(px(1.0))
             .border_color(Hsla::from(gpui::rgba(c.hud_border))),
     );
-    let color = guide_color(kind, c);
+    let color = guide_color(kind, c, axes);
     let g = origin + Vec2::new(6.0 + CHIP_GLYPH * 0.5, CHIP_HEIGHT * 0.5);
     let at = |x: f32, y: f32| to_point(g + Vec2::new(x, y));
     let h = CHIP_GLYPH * 0.5 - 1.0;

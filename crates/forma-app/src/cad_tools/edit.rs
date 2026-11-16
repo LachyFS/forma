@@ -1145,7 +1145,7 @@ impl Studio {
         let object = tool.object;
         let local = distance / tool.scale;
         let references: Vec<EdgeRef> = tool.edges.iter().map(|e| e.reference).collect();
-        let quads: Vec<[Vec3; 4]> = tool.edges.iter().map(|e| e.quad(distance)).collect();
+        let quads = chamfer_faces(&tool.edges, distance);
         let edges = tool.edges.clone();
         let scale = tool.scale;
         let before = self.scene.clone();
@@ -1327,6 +1327,72 @@ pub(crate) fn chamfer_edge(
     })
 }
 
+/// The chamfer faces of `edges` for `distance` (world), as polygons: each
+/// edge's mitred quad, clipped by the chamfer planes of nearby edges that
+/// share one of its faces. Two chamfers either side of a short unchamfered
+/// edge (the bracket's top front and right edges, with its corner chamfer
+/// between them) each run on to the corner's plane, past the other's
+/// plane, so their quads crossed and overlapped with a step. Clipped, the
+/// two bevels meet on one mitre line where their planes cross. Edges that
+/// already meet at a vertex are mitred exactly, and the clip leaves them be.
+pub(crate) fn chamfer_faces(edges: &[ChamferEdge], distance: f32) -> Vec<Vec<Vec3>> {
+    edges
+        .iter()
+        .enumerate()
+        .map(|(i, edge)| {
+            let mut polygon = edge.quad(distance).to_vec();
+            let size = edge.start.distance(edge.end).max(distance).max(1.0e-4);
+            for (j, other) in edges.iter().enumerate() {
+                if i == j || !chamfers_meet(edge, other, distance, size) {
+                    continue;
+                }
+                let origin = other.start + other.into_a * distance;
+                polygon = clip_polygon(&polygon, other.outward(), origin, size * 1.0e-5);
+            }
+            polygon
+        })
+        .collect()
+}
+
+/// Whether chamfers on `a` and `b` can cut into each other: the edges share
+/// a face (the same plane on one side) and come within a few chamfer
+/// distances of each other.
+fn chamfers_meet(a: &ChamferEdge, b: &ChamferEdge, distance: f32, size: f32) -> bool {
+    let shared = (0..2).any(|s| {
+        let normal = a.face_normal(s);
+        (0..2).any(|t| {
+            normal.dot(b.face_normal(t)) > 0.999
+                && (b.start - a.start).dot(normal).abs() < size * 1.0e-3
+        })
+    });
+    let gap = [a.start, a.end]
+        .iter()
+        .flat_map(|p| [p.distance(b.start), p.distance(b.end)])
+        .fold(f32::MAX, f32::min);
+    shared && gap <= distance * 4.0 + size * 1.0e-3
+}
+
+/// Keeps the part of a convex polygon behind the plane through `origin`
+/// with outward `normal` (Sutherland and Hodgman).
+fn clip_polygon(polygon: &[Vec3], normal: Vec3, origin: Vec3, epsilon: f32) -> Vec<Vec3> {
+    let side = |p: Vec3| (p - origin).dot(normal);
+    if polygon.iter().all(|p| side(*p) <= epsilon) {
+        return polygon.to_vec();
+    }
+    let mut out = Vec::with_capacity(polygon.len() + 2);
+    for k in 0..polygon.len() {
+        let (p, q) = (polygon[k], polygon[(k + 1) % polygon.len()]);
+        let (sp, sq) = (side(p), side(q));
+        if sp <= epsilon {
+            out.push(p);
+        }
+        if (sp <= epsilon) != (sq <= epsilon) && (sp - sq).abs() > f32::EPSILON {
+            out.push(p.lerp(q, sp / (sp - sq)));
+        }
+    }
+    out
+}
+
 /// Mitres the ends of chamfer faces: at each end of a chamfered edge, each
 /// side of its chamfer face runs along its face until it meets the next
 /// boundary of that face there. That boundary is the neighbouring edge's
@@ -1500,6 +1566,64 @@ mod tests {
         )
         .mesh
         .unwrap()
+    }
+
+    /// Regression (design review): the bracket's top front and right edges
+    /// chamfered either side of its corner chamfer ran past each other onto
+    /// the corner's plane and overlapped with a step. The two bevels must
+    /// meet on one mitre line, where their planes cross.
+    #[test]
+    fn chamfers_either_side_of_a_short_edge_meet_on_one_mitre() {
+        // Top y = 0, front z = 0, right x = 0; a corner face x + z = -c
+        // between the front edge's end (-c, 0, 0) and the right edge's start
+        // (0, 0, -c). Each chamfer's top corner slides onto that face.
+        let (c, d) = (0.14, 0.1);
+        let edge = |start: Vec3, end: Vec3, into_a: Vec3, mitre: [Vec3; 4]| ChamferEdge {
+            reference: EdgeRef { start, end },
+            start,
+            end,
+            into_a,
+            into_b: Vec3::NEG_Y,
+            mitre,
+        };
+        let front = edge(
+            Vec3::new(-1.0, 0.0, 0.0),
+            Vec3::new(-c, 0.0, 0.0),
+            Vec3::NEG_Z,
+            [
+                Vec3::NEG_Z,
+                Vec3::new(1.0, 0.0, -1.0),
+                Vec3::NEG_Y,
+                Vec3::NEG_Y,
+            ],
+        );
+        let right = edge(
+            Vec3::new(0.0, 0.0, -c),
+            Vec3::new(0.0, 0.0, -1.0),
+            Vec3::NEG_X,
+            [
+                Vec3::new(-1.0, 0.0, 1.0),
+                Vec3::NEG_X,
+                Vec3::NEG_Y,
+                Vec3::NEG_Y,
+            ],
+        );
+        let faces = chamfer_faces(&[front.clone(), right.clone()], d);
+        let tip = Vec3::new(-d, 0.0, -d);
+        let foot = Vec3::new(-c * 0.5, -d + c * 0.5, -c * 0.5);
+        for (face, other) in faces.iter().zip([&right, &front]) {
+            let has = |p: Vec3| face.iter().any(|q| q.distance(p) < 1.0e-5);
+            assert!(
+                has(tip) && has(foot),
+                "both bevels end on the mitre: {face:?}"
+            );
+            let origin = other.start + other.into_a * d;
+            assert!(
+                face.iter()
+                    .all(|p| (*p - origin).dot(other.outward()) < 1.0e-5),
+                "neither bevel runs past the other's plane"
+            );
+        }
     }
 
     /// Regression (design review): chamfer faces ended square to their

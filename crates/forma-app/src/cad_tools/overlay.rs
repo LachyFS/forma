@@ -34,6 +34,11 @@ pub(crate) struct PrismPaint {
     pub emphasis_end: bool,
     /// Fill strength: full while previewing, faint once the kernel result shows.
     pub fill: f32,
+    /// A tool body (the selected feature's ghost) rather than a preview:
+    /// `fill` is the alpha of one faint fill with no cap emphasis, and its
+    /// outline is drawn as lines by the caller, which knows what in the
+    /// scene hides them (see [`prism_edges`]).
+    pub tool_body: bool,
 }
 
 pub(crate) struct LathePaint {
@@ -190,20 +195,21 @@ impl Studio {
                     color: ghost.color,
                     emphasis_end: true,
                     fill: 0.7,
+                    tool_body: false,
                 });
             }
             // Chamfer faces keep the preview's look until the result lands.
             for quad in &ghost.quads {
-                let normal = (quad[1] - quad[0]).cross(quad[3] - quad[0]);
+                let normal = newell(quad);
                 let up = if normal.y < 0.0 { -normal } else { normal };
                 overlay.areas.push(AreaPaint {
-                    polygons: vec![quad.to_vec()],
+                    polygons: vec![quad.clone()],
                     color: surface_tone(up.normalize_or_zero()),
                     fill: 0.94,
                     outline: 0.0,
                 });
                 overlay.areas.push(AreaPaint {
-                    polygons: vec![quad.to_vec()],
+                    polygons: vec![quad.clone()],
                     color: ghost.color,
                     fill: CHAMFER_TINT,
                     outline: CHAMFER_OUTLINE,
@@ -254,7 +260,8 @@ impl Studio {
         let invalid = tool.typed().is_err();
         let camera = self.scene.camera;
         let query = self.visibility_query();
-        for edge in &tool.edges {
+        let faces = super::edit::chamfer_faces(&tool.edges, value);
+        for (edge, face) in tool.edges.iter().zip(faces) {
             if value <= 1.0e-6 || invalid {
                 // Nothing cut yet: the edges about to be chamfered.
                 overlay.lines.push(LinePaint {
@@ -276,14 +283,36 @@ impl Studio {
                     crate::viewport::visible_in_query(camera, query, p)
                 })
                 .count();
-            let quad = edge.quad(value).to_vec();
+            let quad = face;
             if seen >= 3 {
+                // An end cap of the removed wedge that faces away (its end
+                // lies on a corner face turned from the viewer) is part of
+                // the wedge's outline on screen that the new face does not
+                // cover: the old corner showed past the preview there as a
+                // light sliver. Painted in the same tone it reads as the
+                // removed material it is, without an outline of its own.
+                let caps: Vec<Vec<Vec3>> = edge.wedge(value)[2..]
+                    .iter()
+                    .filter(|(cap, out)| {
+                        let center = cap.iter().copied().sum::<Vec3>() / cap.len() as f32;
+                        !overlay.facing(*out, center)
+                    })
+                    .map(|(cap, _)| cap.clone())
+                    .collect();
                 overlay.areas.push(AreaPaint {
-                    polygons: vec![quad.clone()],
+                    polygons: std::iter::once(quad.clone()).chain(caps.clone()).collect(),
                     color: surface_tone(outward),
                     fill: 0.94,
                     outline: 0.0,
                 });
+                if !caps.is_empty() {
+                    overlay.areas.push(AreaPaint {
+                        polygons: caps,
+                        color: t.accent,
+                        fill: CHAMFER_TINT,
+                        outline: 0.0,
+                    });
+                }
             } else {
                 // The new face is hidden: the material it removes is the cue.
                 // A face in view says it alone; a ghost beside it would only
@@ -304,18 +333,23 @@ impl Studio {
         }
         if let Some((base, tip)) = tool.handle_screen(self) {
             let dragging = tool.handle_drag.is_some_and(|(d, _)| d.started);
+            let hot = tool.handle_hot || dragging;
             overlay.arrows.push(ArrowPaint {
                 base,
                 tip,
                 color: t.accent,
-                hot: tool.handle_hot || dragging,
+                hot,
             });
-            overlay.labels.push(LabelPaint {
-                at: tip,
-                leader: (tip - base).try_normalize(),
-                text: numeric_text(&tool.numeric, value, false),
-                style: label_style(&tool.numeric, invalid, false),
-            });
+            // The chip shows the live value; a handle at rest at zero (no
+            // pointer driving it, nothing typed) stays a bare arrow.
+            if hot || tool.modal || !tool.numeric.is_empty() || value > 1.0e-6 {
+                overlay.labels.push(LabelPaint {
+                    at: tip,
+                    leader: (tip - base).try_normalize(),
+                    text: numeric_text(&tool.numeric, value, false),
+                    style: label_style(&tool.numeric, invalid, false),
+                });
+            }
         }
     }
 
@@ -361,6 +395,7 @@ impl Studio {
                         color,
                         emphasis_end: tool.distance >= 0.0 || tool.symmetric,
                         fill,
+                        tool_body: false,
                     });
                 }
                 let arrow = tool.handle_screen(self);
@@ -380,6 +415,7 @@ impl Studio {
                     &tool.numeric,
                     tool.typed().is_err(),
                     tool.snapped_face,
+                    tool.handle_hot || dragging,
                     overlay,
                 );
             }
@@ -486,7 +522,9 @@ impl Studio {
 
     /// A dimension from the sketch plane (or face) to the moving face. The
     /// value hangs off the arrow's tip (`arrow` is its screen base and tip),
-    /// else off the middle of the dimension line.
+    /// else off the middle of the dimension line. A handle at rest (`live`
+    /// false: not hovered, dragged, driven by the pointer or typed into) at
+    /// zero shows no chip: "0 m" before anything moved only reads as noise.
     #[allow(clippy::too_many_arguments)]
     fn distance_label(
         &self,
@@ -497,6 +535,7 @@ impl Studio {
         numeric: &str,
         invalid: bool,
         snapped: bool,
+        live: bool,
         overlay: &mut ToolOverlay,
     ) {
         let t = overlay.colors;
@@ -509,6 +548,8 @@ impl Studio {
                 width: 1.0,
                 dashed: true,
             });
+        } else if !live && numeric.is_empty() {
+            return;
         }
         let (at, leader) = match arrow {
             Some((base, tip)) => (tip, (tip - base).try_normalize()),
@@ -569,16 +610,18 @@ impl Studio {
                     color,
                     emphasis_end: distance >= 0.0,
                     fill: 1.0,
+                    tool_body: false,
                 });
             }
         }
         let arrow = tool.handle_screen(self);
+        let hot = tool.handle_hot || active.drag.is_some_and(|d| d.started);
         if let Some((base, tip)) = arrow {
             overlay.arrows.push(ArrowPaint {
                 base,
                 tip,
                 color,
-                hot: tool.handle_hot || active.drag.is_some_and(|d| d.started),
+                hot,
             });
         }
         let first = &active.faces[0];
@@ -590,6 +633,7 @@ impl Studio {
             &active.numeric,
             active.typed().is_err(),
             active.snapped_face,
+            hot || active.modal,
             overlay,
         );
     }
@@ -637,7 +681,7 @@ impl Studio {
                 } else {
                     FACE_TINT
                 },
-                1.75,
+                FACE_OUTLINE,
                 1.0,
                 overlay,
             );
@@ -666,9 +710,9 @@ impl Studio {
         }
         match hover {
             Some(EditHover::Face(group)) if !selected_faces.iter().any(|(g, _)| *g == group) => {
-                // An outline with a breath of tint: plainly lighter than a
-                // selected face's fill.
-                paint_face(group, 0.07, 1.5, 0.8, overlay);
+                // A light tint and a thinner, softer outline: plainly a
+                // pre-highlight, not a selection.
+                paint_face(group, FACE_HOVER_TINT, FACE_HOVER_OUTLINE, 0.75, overlay);
             }
             Some(EditHover::Edge(index)) => {
                 if let Some(points) = edge_points(index) {
@@ -694,15 +738,19 @@ impl Studio {
                 color: t.accent,
                 hot: self.cad_tool.edit.arrow_hot,
             });
-            // The chip reads what dragging the arrow changes: the push/pull
-            // distance, zero until it moves (the running tool then counts
-            // from here). The face's area lives in the panel.
-            overlay.labels.push(LabelPaint {
-                at: arrow.tip,
-                leader: (arrow.tip - arrow.base).try_normalize(),
-                text: crate::sketch::overlay::format_length(0.0),
-                style: LabelStyle::Measured,
-            });
+            // At rest the arrow alone says the face can be pushed: a "0 m"
+            // chip before anything moved read as noise. Under the pointer
+            // the chip reads what dragging changes, the push/pull distance
+            // (the running tool then counts from here). The face's area
+            // lives in the panel.
+            if self.cad_tool.edit.arrow_hot {
+                overlay.labels.push(LabelPaint {
+                    at: arrow.tip,
+                    leader: (arrow.tip - arrow.base).try_normalize(),
+                    text: crate::sketch::overlay::format_length(0.0),
+                    style: LabelStyle::Measured,
+                });
+            }
         }
     }
 
@@ -827,12 +875,51 @@ impl Studio {
                     face.fill.push(vec![a, b, c]);
                 }
             }
-            for edge in super::geometry::group_boundary(mesh, &faces) {
-                let [a, b] = edge.map(|i| matrix.transform_point3(mesh.positions[i as usize]));
-                if visible((a + b) * 0.5) {
-                    face.visible.push(vec![a, b]);
-                } else {
-                    face.hidden.push(vec![a, b]);
+            // Only the outer loop carries the selection's outline: a flat
+            // face's holes and the feet of bosses standing on it are inner
+            // loops, and an accent ring there reads as a second selected
+            // face (the bracket's unselected boss looked picked). A curved
+            // face (a cylinder wall) keeps every loop: each one bounds it.
+            let boundary = super::geometry::group_boundary(mesh, &faces);
+            let loops = super::geometry::chain_loops(&boundary);
+            let world = |i: u32| matrix.transform_point3(mesh.positions[i as usize]);
+            let plane = super::geometry::group_plane(mesh, &faces);
+            let outer = plane.and_then(|(normal, _)| {
+                (0..loops.len()).max_by(|&x, &y| {
+                    loop_area(&loops[x], &world, normal)
+                        .total_cmp(&loop_area(&loops[y], &world, normal))
+                })
+            });
+            for (index, lp) in loops.iter().enumerate() {
+                if outer.is_some_and(|outer| outer != index) {
+                    continue;
+                }
+                // Consecutive visible segments join into one run, so the
+                // outline's corners meet cleanly instead of as butt ends.
+                let count = lp.len();
+                let flags: Vec<bool> = (0..count)
+                    .map(|k| visible((world(lp[k]) + world(lp[(k + 1) % count])) * 0.5))
+                    .collect();
+                let start = (0..count).find(|&k| !flags[k]).unwrap_or(0);
+                let mut run: Vec<Vec3> = Vec::new();
+                for step in 0..count {
+                    let k = (start + step) % count;
+                    let (a, b) = (world(lp[k]), world(lp[(k + 1) % count]));
+                    if flags[k] {
+                        if run.is_empty() {
+                            run.push(a);
+                        }
+                        run.push(b);
+                    } else {
+                        if run.len() > 1 {
+                            face.visible.push(std::mem::take(&mut run));
+                        }
+                        run.clear();
+                        face.hidden.push(vec![a, b]);
+                    }
+                }
+                if run.len() > 1 {
+                    face.visible.push(run);
                 }
             }
         }
@@ -846,11 +933,37 @@ impl Studio {
     }
 }
 
-/// Accent tint of a selected part face, and of one under the pointer: light
-/// enough that the face's shading and edges read through on white tops and
-/// dark walls alike; the outline carries the selection.
-const FACE_TINT: f32 = 0.13;
-const FACE_TINT_HOVERED: f32 = 0.19;
+/// Newell's normal of a polygon (its area vector, unnormalised).
+fn newell(polygon: &[Vec3]) -> Vec3 {
+    let mut normal = Vec3::ZERO;
+    for (k, a) in polygon.iter().enumerate() {
+        normal += a.cross(polygon[(k + 1) % polygon.len()]);
+    }
+    normal
+}
+
+/// The area of a closed loop of mesh vertices, projected on a plane with
+/// unit `normal` (sign ignored).
+fn loop_area(lp: &[u32], world: &impl Fn(u32) -> Vec3, normal: Vec3) -> f32 {
+    let mut area = Vec3::ZERO;
+    for k in 0..lp.len() {
+        area += world(lp[k]).cross(world(lp[(k + 1) % lp.len()]));
+    }
+    area.dot(normal).abs()
+}
+
+/// Accent tint of a selected part face: strong enough to tell a selected
+/// white top from an unselected one at a glance, light enough that the
+/// face's shading still reads through on dark walls. A selected face under
+/// the pointer goes a step stronger.
+const FACE_TINT: f32 = 0.24;
+const FACE_TINT_HOVERED: f32 = 0.3;
+/// The outline of a selected face's outer loop.
+const FACE_OUTLINE: f32 = 2.0;
+/// Pre-highlight of an unselected face under the pointer: plainly lighter
+/// than a selection, with a thinner, softer outline.
+const FACE_HOVER_TINT: f32 = 0.1;
+const FACE_HOVER_OUTLINE: f32 = 1.5;
 
 /// Accent tint over a previewed chamfer face's lit grey: enough to mark
 /// the new face, light enough that its shading still reads.
@@ -1126,6 +1239,62 @@ fn paint_wedge(
     fill_union(window, &front, ink(wedge.color, wedge.fill));
 }
 
+/// The outline of `prism` swept from `lo` to `hi`, as the viewer sees it:
+/// edges beside a face toward the viewer (cap rims, creases and the
+/// silhouette) and the hidden ones behind the body itself.
+pub(crate) fn prism_edges(
+    overlay: &ToolOverlay,
+    prism: &Prism,
+    lo: f32,
+    hi: f32,
+) -> (Vec<Vec<Vec3>>, Vec<Vec<Vec3>>) {
+    let n = prism.normal;
+    let at = |i: u32, h: f32| prism.points[i as usize] + n * h;
+    let centroid = prism.centroid();
+    let top_facing = overlay.facing(n, centroid + n * hi);
+    let bottom_facing = overlay.facing(-n, centroid + n * lo);
+    let mut edges: Vec<Vec<Vec3>> = Vec::new();
+    let mut hidden: Vec<Vec<Vec3>> = Vec::new();
+    for lp in &prism.loops {
+        let count = lp.len();
+        let visible: Vec<bool> = (0..count)
+            .map(|k| {
+                let (a, b) = (lp[k], lp[(k + 1) % count]);
+                let (pa, pb) = (prism.points[a as usize], prism.points[b as usize]);
+                let normal = (pb - pa).cross(n).normalize_or_zero();
+                overlay.facing(normal, (at(a, lo) + at(b, hi)) * 0.5)
+            })
+            .collect();
+        // Cap outlines, segment by segment.
+        for k in 0..count {
+            let (a, b) = (lp[k], lp[(k + 1) % count]);
+            for (height, cap) in [(hi, top_facing), (lo, bottom_facing)] {
+                let segment = vec![at(a, height), at(b, height)];
+                if cap || visible[k] {
+                    edges.push(segment);
+                } else {
+                    hidden.push(segment);
+                }
+            }
+        }
+        // Vertical edges at creases and silhouettes.
+        for k in 0..count {
+            let previous = visible[(k + count - 1) % count];
+            let segment = vec![at(lp[k], lo), at(lp[k], hi)];
+            if previous != visible[k] {
+                edges.push(segment);
+            } else if prism.sharp_corner(lp, k) {
+                if visible[k] {
+                    edges.push(segment);
+                } else {
+                    hidden.push(segment);
+                }
+            }
+        }
+    }
+    (edges, hidden)
+}
+
 fn paint_prism(
     overlay: &ToolOverlay,
     paint: &PrismPaint,
@@ -1163,57 +1332,27 @@ fn paint_prism(
             }
         }
     }
-    // Walls, with each corner's visibility for silhouette edges. Edges with
-    // no front face beside them are hidden lines: drawn faint and dashed.
-    let centroid = prism.centroid();
-    let top_facing = overlay.facing(n, centroid + n * hi);
-    let bottom_facing = overlay.facing(-n, centroid + n * lo);
-    let mut edges: Vec<Vec<Vec3>> = Vec::new();
-    let mut hidden: Vec<Vec<Vec3>> = Vec::new();
+    // Walls toward the viewer.
     for lp in &prism.loops {
         let count = lp.len();
-        let mut visible = Vec::with_capacity(count);
         for k in 0..count {
             let (a, b) = (lp[k], lp[(k + 1) % count]);
             let (pa, pb) = (prism.points[a as usize], prism.points[b as usize]);
             let normal = (pb - pa).cross(n).normalize_or_zero();
             let quad = [at(a, lo), at(b, lo), at(b, hi), at(a, hi)];
             let center = (quad[0] + quad[2]) * 0.5;
-            let facing = overlay.facing(normal, center);
-            visible.push(facing);
-            if facing
+            if overlay.facing(normal, center)
                 && let Some(projected) = quad.iter().map(|p| screen(*p)).collect::<Option<Vec<_>>>()
             {
                 front.push(projected);
             }
         }
-        // Cap outlines, segment by segment.
-        for k in 0..count {
-            let (a, b) = (lp[k], lp[(k + 1) % count]);
-            for (height, cap) in [(hi, top_facing), (lo, bottom_facing)] {
-                let segment = vec![at(a, height), at(b, height)];
-                if cap || visible[k] {
-                    edges.push(segment);
-                } else {
-                    hidden.push(segment);
-                }
-            }
-        }
-        // Vertical edges at creases and silhouettes.
-        for k in 0..count {
-            let previous = visible[(k + count - 1) % count];
-            let segment = vec![at(lp[k], lo), at(lp[k], hi)];
-            if previous != visible[k] {
-                edges.push(segment);
-            } else if prism.sharp_corner(lp, k) {
-                if visible[k] {
-                    edges.push(segment);
-                } else {
-                    hidden.push(segment);
-                }
-            }
-        }
     }
+    if paint.tool_body {
+        fill_union(window, &front, ink(paint.color, paint.fill));
+        return;
+    }
+    let (edges, hidden) = prism_edges(overlay, prism, lo, hi);
     let c = overlay.colors;
     if paint.fill > 0.0 {
         fill_union(window, &front, ink(paint.color, 0.2 * paint.fill));
@@ -1320,48 +1459,42 @@ fn paint_lathe(
     fill_polygons(window, &ends, ink(paint.color, 0.22 * paint.fill.max(0.4)));
 }
 
-/// A screen-space arrow handle: a 12 px cone on a shaft from a grip dot.
-/// Under the pointer (or while dragged) the cone, shaft and grip all grow a
-/// step, so the handle answers the hover before it is pressed.
+/// A screen-space arrow handle, one style for every tool: an origin ring
+/// where the handle meets the geometry, a 2 px shaft and a filled 14 px
+/// cone. Under the pointer (or while dragged) the cone and ring grow a step
+/// and the shaft thickens, so the handle answers the hover before it is
+/// pressed. A narrow dark halo keeps it crisp on light and dark faces.
 fn paint_arrow(arrow: &ArrowPaint, c: Colors, window: &mut Window) {
     let direction = (arrow.tip - arrow.base).normalize_or(Vec2::NEG_Y);
     let side = Vec2::new(-direction.y, direction.x);
-    let (head, half) = if arrow.hot { (15.0, 8.0) } else { (12.0, 6.5) };
+    let (head, half, radius, width) = if arrow.hot {
+        (16.0, 7.0, 5.5, 2.5)
+    } else {
+        (14.0, 6.0, 4.5, 2.0)
+    };
+    let color = ink(arrow.color, 1.0);
+    let halo = ink(c.canvas, 0.45);
     let neck = arrow.tip - direction * head;
-    let shaft = [to_point(arrow.base), to_point(neck)];
-    let width = if arrow.hot { 3.2 } else { 2.4 };
-    stroke_runs(window, &[shaft.to_vec()], width + 3.0, ink(c.canvas, 0.45));
-    stroke_runs(window, &[shaft.to_vec()], width, ink(arrow.color, 1.0));
-    let triangle = vec![
+    // The shaft starts at the ring's edge, so the ring stays open.
+    let shaft = vec![
+        to_point(arrow.base + direction * radius),
+        to_point(neck + direction * 0.5),
+    ];
+    let cone = vec![
         to_point(arrow.tip),
         to_point(neck + side * half),
         to_point(neck - side * half),
         to_point(arrow.tip),
     ];
-    stroke_runs(
-        window,
-        std::slice::from_ref(&triangle),
-        3.0,
-        ink(c.canvas, 0.45),
-    );
-    fill_polygons(
-        window,
-        std::slice::from_ref(&triangle),
-        ink(arrow.color, 1.0),
-    );
-    // The grip where the arrow meets the face.
     let grip = to_point(arrow.base);
-    dot(
-        window,
-        grip,
-        if arrow.hot { 13.0 } else { 11.0 },
-        ink(c.canvas, 0.45),
-    );
-    dot(
-        window,
-        grip,
-        if arrow.hot { 9.0 } else { 7.0 },
-        ink(arrow.color, 1.0),
-    );
-    dot(window, grip, 3.0, ink(c.overlay, 1.0));
+    // Halos first, so no part of the handle is drawn over by another's.
+    stroke_runs(window, std::slice::from_ref(&shaft), width + 2.0, halo);
+    stroke_runs(window, std::slice::from_ref(&cone), 2.0, halo);
+    ring(window, grip, radius, 1.5 + 2.0, halo);
+    stroke_runs(window, &[shaft], width, color);
+    fill_polygons(window, std::slice::from_ref(&cone), color);
+    // The ring's middle is filled with the overlay surface, so it reads
+    // as a hollow origin over any shading.
+    dot(window, grip, radius * 2.0 - 1.0, ink(c.overlay, 0.9));
+    ring(window, grip, radius, 1.5, color);
 }
