@@ -168,10 +168,12 @@ impl Studio {
         if tool != DrawTool::Select {
             session.selection.clear();
         }
-        self.status = format!("{} · {}", tool.label(), self.draw_hint());
+        self.status = self.draw_hint();
     }
 
-    /// One line of guidance for the current tool and step.
+    /// One line of guidance for the current tool and step, short enough
+    /// for the status bar: the toolbar already names the tool and the key
+    /// hints list the rest.
     pub(crate) fn draw_hint(&self) -> String {
         let Some(session) = self.sketch.session.as_ref() else {
             return String::new();
@@ -180,39 +182,38 @@ impl Studio {
         match (session.tool, session.step) {
             (DrawTool::Select, _) => {
                 if session.selection.is_empty() {
-                    "Click or drag a box to select · Drag points and curves to move them".into()
+                    "Click or drag a box to select · Drag to move".into()
                 } else {
                     format!(
-                        "{} selected · Drag to move · Delete removes · X construction",
+                        "{} selected · Drag to move · Delete removes",
                         session.selection.len()
                     )
                 }
             }
-            (DrawTool::Trim, _) => "Click the piece of a curve to remove it".into(),
+            (DrawTool::Trim, _) => "Click a piece of a curve to remove it".into(),
             (DrawTool::Line, Step::Line { arc: true, .. }) => {
-                "Tangent arc · Click its end · Type radius, Tab for sweep · L for lines".into()
+                "Click the arc's end · type a radius · L for lines".into()
             }
             (DrawTool::Line, Step::Line { .. }) => {
-                "Click the next point · Type a length, Tab for angle · A tangent arc · Return ends"
-                    .into()
+                "Click next point · type a length · Tab for angle".into()
             }
             (DrawTool::Line, _) => "Click to start a line".into(),
             (DrawTool::Rectangle, Step::Rectangle { .. }) => {
-                "Click the opposite corner · Type width, Tab for height".into()
+                "Click the opposite corner · type a width".into()
             }
-            (DrawTool::Rectangle, _) if center => "Click the centre · R for corner mode".into(),
-            (DrawTool::Rectangle, _) => "Click the first corner · R for centre mode".into(),
+            (DrawTool::Rectangle, _) if center => "Click the centre · R for corners".into(),
+            (DrawTool::Rectangle, _) => "Click the first corner · R for centre".into(),
             (DrawTool::Circle, Step::Circle { .. }) => {
-                "Click to set the radius · Type a radius".into()
+                "Click to set the radius · or type it".into()
             }
             (DrawTool::Circle, _) => "Click the centre".into(),
             (DrawTool::Arc, Step::Arc { end: None, .. }) => "Click the end point".into(),
-            (DrawTool::Arc, Step::Arc { .. }) => "Click a point on the arc · Type a radius".into(),
+            (DrawTool::Arc, Step::Arc { .. }) => "Click a point on the arc · type a radius".into(),
             (DrawTool::Arc, _) => "Click the start point".into(),
             (DrawTool::Polygon, Step::Polygon { .. }) => {
-                "Click a corner · Type a radius, Tab for angle · + / − sides".into()
+                "Click a corner · type a radius · + − sides".into()
             }
-            (DrawTool::Polygon, _) => "Click the centre · + / − sides".into(),
+            (DrawTool::Polygon, _) => "Click the centre · + − sides".into(),
         }
     }
 
@@ -568,7 +569,7 @@ impl Studio {
                         dimension.label()
                     )
                 }
-                _ => format!("{} · {hint}", session.tool.label()),
+                _ => hint,
             };
         }
     }
@@ -801,6 +802,7 @@ impl Studio {
         };
         let step = session.step;
         match step {
+            Step::Line { start, .. } => overlay.placed.push(start),
             Step::Rectangle { first } => overlay.placed.push(first),
             Step::Circle { center } | Step::Polygon { center } => overlay.placed.push(center),
             Step::Arc { start, end } => {
@@ -823,29 +825,32 @@ impl Studio {
         let preview = tools::preview(&step, cursor, locks, options);
         let values = tools::measure(&step, cursor, locks, options);
         let resolved = tools::resolve(&step, cursor, locks);
-        let label = |index: usize, at: Vec2, away: Vec2| -> Option<DimLabel> {
-            let dimension = *dimensions.get(index)?;
-            let typed = session.numeric.fields[index].trim().to_owned();
-            let parsed = session.numeric.value(index, dimension);
-            let text = if typed.is_empty() {
-                let value = values[index]?;
-                if dimension.is_angle() {
-                    format_angle(value)
+        let label =
+            |index: usize, at: Vec2, away: Vec2, span: Option<(Vec2, Vec2)>| -> Option<DimLabel> {
+                let dimension = *dimensions.get(index)?;
+                let typed = session.numeric.fields[index].trim().to_owned();
+                let parsed = session.numeric.value(index, dimension);
+                let text = if typed.is_empty() {
+                    let value = values[index]?;
+                    if dimension.is_angle() {
+                        format_angle(value)
+                    } else {
+                        format_length(value)
+                    }
                 } else {
-                    format_length(value)
-                }
-            } else {
-                typed.clone()
+                    typed.clone()
+                };
+                Some(DimLabel {
+                    at,
+                    away,
+                    span,
+                    radial: false,
+                    text,
+                    locked: !typed.is_empty(),
+                    active: session.numeric.active == index,
+                    invalid: parsed.is_err(),
+                })
             };
-            Some(DimLabel {
-                at,
-                away,
-                text,
-                locked: !typed.is_empty(),
-                active: session.numeric.active == index,
-                invalid: parsed.is_err(),
-            })
-        };
         match step {
             Step::Line {
                 start, arc: false, ..
@@ -864,9 +869,15 @@ impl Studio {
                     if away.y < 0.0 || (away.y == 0.0 && away.x > 0.0) {
                         away = -away;
                     }
-                    overlay
-                        .dims
-                        .extend(label(0, (start + resolved) * 0.5, away));
+                    overlay.dims.extend(label(
+                        0,
+                        (start + resolved) * 0.5,
+                        away,
+                        Some((start, resolved)),
+                    ));
+                    if matches!(step, Step::Line { .. }) {
+                        overlay.segment = Some((start, resolved, away));
+                    }
                     let angle = offset.y.atan2(offset.x);
                     let radius = 38.0 / scale;
                     let axis_aligned = (angle / std::f32::consts::FRAC_PI_2).fract().abs() < 1.0e-4;
@@ -880,11 +891,14 @@ impl Studio {
                         let middle = Vec2::from_angle(angle * 0.5);
                         overlay
                             .dims
-                            .extend(label(1, start + middle * radius * 1.6, middle));
+                            .extend(label(1, start + middle * radius * 1.6, middle, None));
                     } else if session.numeric.active == 1 {
-                        overlay
-                            .dims
-                            .extend(label(1, start - direction * 24.0 / scale, -direction));
+                        overlay.dims.extend(label(
+                            1,
+                            start - direction * 24.0 / scale,
+                            -direction,
+                            None,
+                        ));
                     }
                 }
             }
@@ -893,9 +907,9 @@ impl Studio {
                 if let Some(arc @ SketchCurve::Arc { center, .. }) = preview.first() {
                     let middle = arc.midpoint();
                     let away = (middle - *center).normalize_or(Vec2::Y);
-                    overlay.dims.extend(label(0, middle, away));
+                    overlay.dims.extend(label(0, middle, away, None));
                     if dimensions.len() > 1 {
-                        overlay.dims.extend(label(1, *center, -away));
+                        overlay.dims.extend(label(1, *center, -away, None));
                     }
                 }
             }
@@ -911,32 +925,41 @@ impl Studio {
                         0,
                         Vec2::new((min.x + max.x) * 0.5, min.y),
                         Vec2::NEG_Y,
+                        Some((min, Vec2::new(max.x, min.y))),
                     ));
-                    overlay
-                        .dims
-                        .extend(label(1, Vec2::new(max.x, (min.y + max.y) * 0.5), Vec2::X));
+                    overlay.dims.extend(label(
+                        1,
+                        Vec2::new(max.x, (min.y + max.y) * 0.5),
+                        Vec2::X,
+                        Some((Vec2::new(max.x, min.y), max)),
+                    ));
                 }
             }
             Step::Circle { center } | Step::Polygon { center } => {
                 overlay.preview = preview.clone();
                 if resolved.distance(center) * scale > 4.0 {
-                    overlay.preview_guides.push(SketchCurve::Line {
-                        start: center,
-                        end: resolved,
-                    });
                     let direction = (resolved - center).normalize();
                     let mut away = direction.perp();
                     if away.y < 0.0 {
                         away = -away;
                     }
-                    overlay
-                        .dims
-                        .extend(label(0, (center + resolved) * 0.5, away));
+                    // A radial dimension: the radius itself is the dimension
+                    // line, arrowed at the rim.
+                    overlay.dims.extend(
+                        label(0, (center + resolved) * 0.5, away, Some((center, resolved))).map(
+                            |dim| DimLabel {
+                                radial: true,
+                                ..dim
+                            },
+                        ),
+                    );
+                    overlay.segment = Some((center, resolved, away));
                     if matches!(step, Step::Polygon { .. }) && session.numeric.active == 1 {
                         overlay.dims.extend(label(
                             1,
                             center - direction * 24.0 / scale,
                             -direction,
+                            None,
                         ));
                     }
                 }

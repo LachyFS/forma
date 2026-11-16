@@ -136,15 +136,17 @@ pub(crate) fn measurement_value(value: f64) -> String {
     }
 }
 
+/// The view's name for the view controls. Named orthographic views say so,
+/// since Draw mode and the numpad views switch projection for the user.
 pub(crate) fn camera_view_label(camera: forma_core::Camera) -> &'static str {
     if !camera.orthographic {
         return "User perspective";
     }
     let facing = camera.view_matrix().inverse().z_axis.truncate();
     for (axis, positive, negative) in [
-        (Vec3::X, "Right orthographic", "Left orthographic"),
-        (Vec3::Y, "Top orthographic", "Bottom orthographic"),
-        (Vec3::Z, "Front orthographic", "Back orthographic"),
+        (Vec3::X, "Right · Ortho", "Left · Ortho"),
+        (Vec3::Y, "Top · Ortho", "Bottom · Ortho"),
+        (Vec3::Z, "Front · Ortho", "Back · Ortho"),
     ] {
         if facing.dot(axis) > 0.99999 {
             return positive;
@@ -160,6 +162,8 @@ pub(crate) fn camera_view_label(camera: forma_core::Camera) -> &'static str {
 const GIZMO_TOP: f32 = 56.;
 const GIZMO_RIGHT: f32 = 12.;
 const GIZMO_SIZE: f32 = 108.;
+/// Distance from the gizmo's centre to an axis handle facing sideways.
+const GIZMO_ARM: f32 = 36.;
 /// Overlay colors drawn over the 3D image. They are independent of the editor
 /// theme so they stay legible over any material or environment.
 const COMPONENT_HIGHLIGHT: u32 = 0xffa94d;
@@ -613,6 +617,18 @@ impl Studio {
         // Far-side handles paint first. Clicking the facing handle again reverses
         // it, so the opposite view remains reachable when two handles coincide.
         directions.sort_by(|a, b| a.0.z.total_cmp(&b.0.z));
+        // In a view down an axis, that axis's far handle sits right behind its
+        // near one and would only muddle its label: it is left out.
+        let covered: Vec<bool> = directions
+            .iter()
+            .map(|(vector, ..)| {
+                vector.z < -0.5
+                    && directions.iter().any(|(other, ..)| {
+                        other.z > 0.5
+                            && (other.truncate() - vector.truncate()).length() * GIZMO_ARM < 9.
+                    })
+            })
+            .collect();
         let mut gizmo = div()
             .absolute()
             .top(px(GIZMO_TOP))
@@ -620,17 +636,30 @@ impl Studio {
             .w(px(GIZMO_SIZE))
             .h(px(GIZMO_SIZE));
         let center = GIZMO_SIZE * 0.5;
-        for (vector, axis, positive, command, hint, active) in directions {
+        for ((vector, axis, positive, command, hint, active), covered) in
+            directions.into_iter().zip(covered)
+        {
+            if covered {
+                continue;
+            }
             // Positive axes are labelled solid discs; negative axes are quiet
-            // rings, so the dominant directions read at a glance.
-            let side = if positive { 20. } else { 15. };
+            // rings, so the dominant directions read at a glance. Handles
+            // shrink and fade as they turn away from the viewer.
+            let depth = vector.z.clamp(-1., 1.);
+            let side = if positive { 20. } else { 15. } * (0.86 + 0.14 * depth);
+            let fade = if depth < 0. {
+                0.62 + 0.38 * (1. + depth)
+            } else {
+                1.
+            };
             let color = colors.axis[axis];
             let mut handle = div()
                 .id(("view-axis", axis * 2 + usize::from(positive)))
                 .absolute()
-                .left(px(center - side * 0.5 + vector.x * 34.))
-                .top(px(center - side * 0.5 - vector.y * 34.))
+                .left(px(center - side * 0.5 + vector.x * GIZMO_ARM))
+                .top(px(center - side * 0.5 - vector.y * GIZMO_ARM))
                 .size(px(side))
+                .opacity(fade)
                 .rounded_full()
                 .flex()
                 .items_center()
@@ -1074,10 +1103,20 @@ impl Studio {
                     bounds.right() - px(GIZMO_RIGHT + GIZMO_SIZE * 0.5),
                     bounds.origin.y + px(GIZMO_TOP + GIZMO_SIZE * 0.5),
                 );
-                for (vector, color) in [Vec3::X, Vec3::Y, Vec3::Z].into_iter().zip(t.axis) {
-                    let screen = view.transform_vector3(vector);
-                    let end = origin + point(px(screen.x * 34.), px(-screen.y * 34.));
-                    line(window, &[origin, end], color, 2.);
+                let mut axes: Vec<_> = [Vec3::X, Vec3::Y, Vec3::Z]
+                    .into_iter()
+                    .map(|vector| view.transform_vector3(vector))
+                    .zip(t.axis)
+                    .collect();
+                axes.sort_by(|a, b| a.0.z.total_cmp(&b.0.z));
+                for (screen, color) in axes {
+                    let end = origin + point(px(screen.x * GIZMO_ARM), px(-screen.y * GIZMO_ARM));
+                    line(
+                        window,
+                        &[origin, end],
+                        color,
+                        if screen.z < 0. { 1.5 } else { 2. },
+                    );
                 }
             },
         )
@@ -1598,12 +1637,12 @@ mod tests {
     fn named_views_cover_both_sides_of_every_axis() {
         use std::f32::consts::{FRAC_PI_2, PI};
         for (yaw, pitch, label) in [
-            (0., 0., "Front orthographic"),
-            (PI, 0., "Back orthographic"),
-            (FRAC_PI_2, 0., "Right orthographic"),
-            (-FRAC_PI_2, 0., "Left orthographic"),
-            (0., FRAC_PI_2, "Top orthographic"),
-            (0., -FRAC_PI_2, "Bottom orthographic"),
+            (0., 0., "Front · Ortho"),
+            (PI, 0., "Back · Ortho"),
+            (FRAC_PI_2, 0., "Right · Ortho"),
+            (-FRAC_PI_2, 0., "Left · Ortho"),
+            (0., FRAC_PI_2, "Top · Ortho"),
+            (0., -FRAC_PI_2, "Bottom · Ortho"),
         ] {
             let camera = forma_core::Camera {
                 yaw,

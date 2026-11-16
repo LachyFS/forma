@@ -31,6 +31,12 @@ pub(crate) struct DimLabel {
     pub at: Vec2,
     /// Plane direction the label is pushed away from the geometry.
     pub away: Vec2,
+    /// The measured span for a linear dimension: drawn offset along `away`
+    /// with extension lines and arrowheads. `None` places the value alone.
+    pub span: Option<(Vec2, Vec2)>,
+    /// The span runs from a centre to a rim: drawn as the radius itself,
+    /// arrowed at the rim, with the value beside it.
+    pub radial: bool,
     pub text: String,
     /// Typed values lock the dimension.
     pub locked: bool,
@@ -66,6 +72,50 @@ pub(crate) struct ActiveOverlay {
     pub focus: Vec2,
     pub reference: Vec<SketchCurve>,
     pub marquee: Option<(Vec2, Vec2)>,
+    /// The straight segment being drawn and the side its dimension sits on:
+    /// direction inferences attach to it as constraint chips.
+    pub segment: Option<(Vec2, Vec2, Vec2)>,
+}
+
+/// Inks for Draw mode. Curves pair a core that contrasts with the theme's
+/// viewport backdrop with a halo that separates them from any shaded
+/// surface, so they read over dark space and light faces alike.
+#[derive(Clone, Copy)]
+pub(crate) struct SketchInk {
+    pub core: Rgba,
+    pub halo: Rgba,
+    /// Endpoint fill and its thin ring.
+    pub point: Rgba,
+    pub point_ring: Rgba,
+    /// Dimension and extension lines.
+    pub annotation: Rgba,
+    /// Laid over the rendered frame so the plane and sketch stand out while
+    /// the scene stays visible: about 40% of the viewport backdrop.
+    pub scrim: Rgba,
+}
+
+impl SketchInk {
+    pub(crate) fn new(c: Colors) -> Self {
+        if c.dark {
+            Self {
+                core: ink(c.text, 1.0),
+                halo: ink(0x07080a, 0.72),
+                point: ink(0xffffff, 1.0),
+                point_ring: ink(0x07080a, 0.9),
+                annotation: ink(c.text, 0.82),
+                scrim: ink(0x1c2027, 0.42),
+            }
+        } else {
+            Self {
+                core: ink(c.text, 1.0),
+                halo: ink(0xffffff, 0.82),
+                point: ink(0xffffff, 1.0),
+                point_ring: ink(c.text, 0.92),
+                annotation: ink(c.text, 0.78),
+                scrim: ink(0xe3e5e8, 0.42),
+            }
+        }
+    }
 }
 
 /// Per sketch, per curve, per point: whether geometry hides the point.
@@ -335,6 +385,7 @@ impl Studio {
                 focus,
                 reference: session.reference.clone(),
                 marquee: session.marquee,
+                segment: None,
             };
             self.describe_tool_preview(&mut overlay);
             Some(overlay)
@@ -594,6 +645,8 @@ pub(crate) fn paint(
     let c = overlay.colors;
     window.with_content_mask(Some(gpui::ContentMask { bounds }), |window| {
         if let Some(active) = &overlay.active {
+            // The scene recedes behind the plane being drawn on.
+            window.paint_quad(fill(bounds, SketchInk::new(c).scrim));
             paint_grid(active, &projector, c, window);
         }
         for (index, display) in overlay.others.iter().enumerate() {
@@ -631,20 +684,26 @@ pub(crate) fn paint(
                     }
                 }
             }
-            // Other sketches recede while one is being edited.
+            // Other sketches recede while one is being edited. Visible
+            // curves use Draw's two-tone ink, so they read on any surface.
             let alpha = if drawing { 0.45 } else { 1.0 };
+            let inks = SketchInk::new(c);
             stroke_runs(
                 window,
                 &hidden,
                 1.0,
                 ink(if selected { c.accent } else { c.text }, 0.28 * alpha),
             );
-            stroke_runs(window, &solid, 3.5, ink(c.surface, 0.55 * alpha));
+            stroke_runs(window, &solid, 3.8, ink_alpha(inks.halo, 0.8 * alpha));
             stroke_runs(
                 window,
                 &solid,
-                if selected { 2.0 } else { 1.4 },
-                ink(if selected { c.accent } else { c.text }, 0.9 * alpha),
+                if selected { 2.0 } else { 1.6 },
+                if selected {
+                    ink(c.accent, alpha)
+                } else {
+                    ink_alpha(inks.core, 0.92 * alpha)
+                },
             );
         }
         if let Some(active) = &overlay.active {
@@ -789,29 +848,38 @@ fn paint_active(
 ) {
     let frame = &active.frame;
     let analysis = &active.analysis;
+    let inks = SketchInk::new(c);
     let screen = |p: Vec2| projector.point(frame.to_world(p));
-    // Profile regions: what CAD features will extrude.
-    for (index, polygons) in analysis.profile_polygons.iter().enumerate() {
-        let projected: Vec<Vec<Point<Pixels>>> = polygons
-            .iter()
-            .filter_map(|polygon| polygon.iter().map(|p| screen(*p)).collect())
-            .collect();
-        let hovered = active.hover.profile == Some(index);
+    // Profile regions: what CAD features will extrude. A light tint, with
+    // the region's outline drawn crisp over the curves below.
+    let profiles: Vec<(bool, Vec<Vec<Point<Pixels>>>)> = analysis
+        .profile_polygons
+        .iter()
+        .enumerate()
+        .map(|(index, polygons)| {
+            let projected = polygons
+                .iter()
+                .filter_map(|polygon| polygon.iter().map(|p| screen(*p)).collect())
+                .collect();
+            (active.hover.profile == Some(index), projected)
+        })
+        .collect();
+    for (hovered, projected) in &profiles {
         fill_polygons(
             window,
-            &projected,
-            ink(c.accent, if hovered { 0.34 } else { 0.14 }),
+            projected,
+            ink(c.accent, if *hovered { 0.3 } else { 0.12 }),
         );
     }
     for curve in &active.reference {
         for run in curve_runs(frame, projector, curve) {
-            stroke_dashed(window, &run, 1.0, ink(c.text_muted, 0.55), [3.0, 3.0]);
+            stroke_dashed(window, &run, 1.2, ink(c.text_muted, 0.75), [3.0, 3.0]);
         }
     }
-    // Curves: a soft halo under every stroke keeps them legible on any surface.
     let mut normal = Vec::new();
     let mut selected = Vec::new();
     let mut hovered = Vec::new();
+    let mut construction = Vec::new();
     for (index, entity) in analysis.entities.iter().enumerate() {
         let Some(polyline) = analysis.polylines.get(index) else {
             continue;
@@ -823,20 +891,11 @@ fn paint_active(
             let color = if is_selected {
                 ink(c.accent, 1.0)
             } else if is_hovered {
-                ink(c.text, 0.9)
+                ink(c.text, 0.95)
             } else {
-                ink(c.text_muted, 0.85)
+                ink(c.text_muted, 0.9)
             };
-            for run in &runs {
-                stroke_dashed(window, run, 3.0, ink(c.surface, 0.35), [6.0, 4.0]);
-                stroke_dashed(
-                    window,
-                    run,
-                    if is_selected { 1.8 } else { 1.2 },
-                    color,
-                    [6.0, 4.0],
-                );
-            }
+            construction.push((runs, color, is_selected));
         } else if is_selected {
             selected.extend(runs);
         } else if is_hovered {
@@ -845,37 +904,83 @@ fn paint_active(
             normal.extend(runs);
         }
     }
+    // Construction guides sit under real curves: thin, dashed and quiet.
+    for (runs, color, is_selected) in &construction {
+        for run in runs {
+            stroke_dashed(window, run, 3.2, ink_alpha(inks.halo, 0.45), [7.0, 5.0]);
+            stroke_dashed(
+                window,
+                run,
+                if *is_selected { 1.8 } else { 1.3 },
+                *color,
+                [7.0, 5.0],
+            );
+        }
+    }
+    // Curves: a halo under every stroke keeps a 2 px core legible on any
+    // surface; selection and hover add a soft accent glow.
     let all: Vec<_> = normal
         .iter()
         .chain(&hovered)
         .chain(&selected)
         .cloned()
         .collect();
-    stroke_runs(window, &all, 3.6, ink(c.canvas, 0.5));
-    stroke_runs(window, &normal, 1.6, ink(c.text, 0.95));
-    stroke_runs(window, &hovered, 2.2, ink(c.accent, 0.75));
+    stroke_runs(window, &all, 4.6, inks.halo);
+    stroke_runs(window, &selected, 8.0, ink(c.accent, 0.3));
+    stroke_runs(window, &hovered, 7.0, ink(c.accent, 0.2));
+    stroke_runs(window, &normal, 2.0, inks.core);
+    stroke_runs(window, &hovered, 2.2, ink(c.accent, 0.85));
     stroke_runs(window, &selected, 2.4, ink(c.accent, 1.0));
-    // Endpoints: connected points are solid, open ends are rings.
+    // Closed regions: a solid accent outline marks what can be extruded.
+    for (hovered, projected) in &profiles {
+        let outlines: Vec<Vec<Point<Pixels>>> = projected
+            .iter()
+            .map(|polygon| {
+                let mut closed = polygon.clone();
+                closed.extend(polygon.first().copied());
+                closed
+            })
+            .collect();
+        stroke_runs(
+            window,
+            &outlines,
+            if *hovered { 2.2 } else { 1.5 },
+            ink(c.accent, 1.0),
+        );
+    }
+    // Endpoints: 7 px points with a thin dark ring. Open ends, which keep a
+    // region from closing, are tinted.
     for (point, count) in &analysis.endpoints {
         if let Some(p) = screen(*point) {
-            if *count > 1 {
-                dot(window, p, 4.0, ink(c.text, 0.9));
-            } else {
-                dot(window, p, 7.0, ink(c.surface, 0.8));
-                ring(window, p, 3.0, 1.3, ink(c.warning, 0.95));
+            match count {
+                0 => point_marker(window, p, 4.0, ink(c.text_muted, 1.0), inks.halo),
+                1 => point_marker(window, p, 7.0, ink(c.warning, 1.0), inks.point_ring),
+                _ => point_marker(window, p, 7.0, inks.point, inks.point_ring),
             }
         }
     }
     if let Some(trim) = &active.hover.trim {
         for run in curve_runs(frame, projector, &trim.removed) {
-            stroke_runs(window, std::slice::from_ref(&run), 5.0, ink(c.surface, 0.7));
+            stroke_runs(window, std::slice::from_ref(&run), 5.0, inks.halo);
             stroke_dashed(window, &run, 2.6, ink(c.danger, 1.0), [6.0, 3.0]);
+        }
+    }
+    // Inference guides run under the preview they shape.
+    if let Some(pointer) = &active.pointer {
+        for guide in &pointer.snap.guides {
+            let direction = (guide.to - guide.from).normalize_or_zero();
+            let extend = 36.0 / pointer.pixels_per_unit.max(1.0e-6);
+            let ends = [guide.from, guide.to + direction * extend];
+            for run in plane_runs(frame, projector, &ends) {
+                stroke_dashed(window, &run, 3.0, ink_alpha(inks.halo, 0.45), [5.0, 4.0]);
+                stroke_dashed(window, &run, 1.2, guide_color(guide.kind, c), [5.0, 4.0]);
+            }
         }
     }
     // Tool preview.
     for curve in &active.preview_guides {
         for run in curve_runs(frame, projector, curve) {
-            stroke_dashed(window, &run, 1.2, ink(c.accent, 0.8), [4.0, 4.0]);
+            stroke_dashed(window, &run, 1.2, ink(c.accent, 0.85), [4.0, 4.0]);
         }
     }
     let preview: Vec<_> = active
@@ -885,11 +990,12 @@ fn paint_active(
         .collect();
     if active.preview_construction {
         for run in &preview {
-            stroke_dashed(window, run, 2.0, ink(c.accent, 1.0), [6.0, 4.0]);
+            stroke_dashed(window, run, 3.4, ink_alpha(inks.halo, 0.5), [7.0, 5.0]);
+            stroke_dashed(window, run, 1.8, ink(c.accent, 1.0), [7.0, 5.0]);
         }
     } else {
-        stroke_runs(window, &preview, 4.5, ink(c.surface, 0.6));
-        stroke_runs(window, &preview, 2.0, ink(c.accent, 1.0));
+        stroke_runs(window, &preview, 4.8, inks.halo);
+        stroke_runs(window, &preview, 2.2, ink(c.accent, 1.0));
     }
     for arc in &active.arcs {
         let steps = 32;
@@ -900,55 +1006,77 @@ fn paint_active(
             })
             .collect();
         for run in plane_runs(frame, projector, &points) {
-            stroke_runs(
-                window,
-                std::slice::from_ref(&run),
-                1.0,
-                ink(c.text_muted, 0.9),
-            );
+            let run = std::slice::from_ref(&run);
+            stroke_runs(window, run, 3.0, ink_alpha(inks.halo, 0.6));
+            stroke_runs(window, run, 1.0, inks.annotation);
         }
         let reference = [arc.center, arc.center + Vec2::X * arc.radius * 1.35];
         for run in plane_runs(frame, projector, &reference) {
-            stroke_dashed(window, &run, 1.0, ink(c.text_muted, 0.7), [3.0, 3.0]);
+            stroke_dashed(window, &run, 1.0, inks.annotation, [3.0, 3.0]);
         }
     }
     for point in &active.placed {
         if let Some(p) = screen(*point) {
-            dot(window, p, 7.0, ink(c.surface, 0.9));
-            dot(window, p, 5.0, ink(c.accent, 1.0));
+            point_marker(window, p, 7.0, ink(c.accent, 1.0), inks.point_ring);
         }
     }
-    // Inference guides and the snap marker.
+    // The snap marker and what the snap means.
     if let Some(pointer) = &active.pointer {
         let snap = &pointer.snap;
-        for guide in &snap.guides {
-            let color = match guide.kind {
-                GuideKind::Horizontal => ink(c.axis[0], 0.95),
-                GuideKind::Vertical => ink(c.axis[1], 0.95),
-                GuideKind::Parallel | GuideKind::Perpendicular => ink(c.accent, 0.95),
-                GuideKind::Aligned => ink(c.text_muted, 0.9),
-            };
-            let direction = (guide.to - guide.from).normalize_or_zero();
-            let extend = 36.0 / pointer.pixels_per_unit.max(1.0e-6);
-            let ends = [guide.from, guide.to + direction * extend];
-            for run in plane_runs(frame, projector, &ends) {
-                stroke_dashed(window, &run, 1.2, color, [5.0, 4.0]);
+        // Direction inferences describe the segment being drawn, so they
+        // attach to it as constraint chips at its midpoint.
+        let mut chips: Vec<GuideKind> = Vec::new();
+        if active.segment.is_some() {
+            for kind in snap
+                .guides
+                .iter()
+                .map(|g| g.kind)
+                .chain(guide_kind(snap.kind))
+            {
+                if kind != GuideKind::Aligned && !chips.contains(&kind) {
+                    chips.push(kind);
+                }
+            }
+        }
+        if let Some((a, b, away)) = active.segment
+            && !chips.is_empty()
+            && let (Some(pa), Some(pb)) = (screen(a), screen(b))
+        {
+            let (pa, pb) = (to_vec(pa), to_vec(pb));
+            let along = (pb - pa).normalize_or_zero();
+            let side = screen((a + b) * 0.5 + away * 1.0e-3)
+                .map(|p| to_vec(p) - (pa + pb) * 0.5)
+                .unwrap_or(Vec2::ZERO);
+            let mut side_normal = (side - along * side.dot(along)).normalize_or_zero();
+            if side_normal == Vec2::ZERO {
+                side_normal = along.perp();
+            }
+            // Opposite the dimension, stacked outward from the segment.
+            let mut gap = 8.0;
+            for kind in chips {
+                let size = constraint_chip_size(window, kind);
+                let reach =
+                    (side_normal.x * size.x).abs() * 0.5 + (side_normal.y * size.y).abs() * 0.5;
+                let center = (pa + pb) * 0.5 - side_normal * (gap + reach);
+                paint_constraint_chip(window, cx, kind, to_point(center), c);
+                gap += reach * 2.0 + 4.0;
             }
         }
         if let Some(p) = screen(snap.point) {
             paint_snap_marker(window, p, snap.kind, active.drawing, c);
+            let attached = active.segment.is_some() && guide_kind(snap.kind).is_some();
             let text = snap.kind.label();
-            if !text.is_empty() {
-                let at = p + point(px(16.0), px(20.0));
-                let run_width = text.len() as f32 * 6.2 + 12.0;
-                let center = at + point(px(run_width * 0.5), px(0.0));
+            if !text.is_empty() && !attached {
+                // Point snaps name the point, tucked against its marker.
+                let width = shaped_width(window, text, 10.0) + 12.0;
+                let center = p + point(px(10.0 + width * 0.5), px(17.0));
                 label(
                     window,
                     cx,
                     text,
                     center,
                     ink(c.text_muted, 1.0),
-                    ink(c.overlay, 1.0),
+                    ink(c.overlay, 0.96),
                     Some(gpui::rgba(c.hud_border)),
                     10.0,
                 );
@@ -957,46 +1085,7 @@ fn paint_active(
     }
     // Live dimensions.
     for dim in &active.dims {
-        let Some(anchor) = screen(dim.at) else {
-            continue;
-        };
-        let away = screen(dim.at + dim.away * 1.0e-3)
-            .map(|p| (to_vec(p) - to_vec(anchor)).normalize_or_zero())
-            .unwrap_or(Vec2::NEG_Y);
-        let center = to_point(to_vec(anchor) + away * 20.0);
-        let text = if dim.active && dim.locked {
-            format!("{}▏", dim.text)
-        } else {
-            dim.text.clone()
-        };
-        let (text_color, background, border) = if dim.invalid {
-            (
-                ink(c.danger, 1.0),
-                ink(c.overlay, 0.95),
-                Some(ink(c.danger, 1.0)),
-            )
-        } else if dim.locked {
-            (
-                ink(c.accent_text, 1.0),
-                ink(c.accent_soft, 0.97),
-                Some(ink(c.accent_border, 1.0)),
-            )
-        } else if dim.active {
-            (
-                ink(c.text, 1.0),
-                ink(c.overlay, 1.0),
-                Some(ink(c.accent_border, 1.0)),
-            )
-        } else {
-            (
-                ink(c.text, 1.0),
-                ink(c.overlay, 1.0),
-                Some(gpui::rgba(c.hud_border)),
-            )
-        };
-        label(
-            window, cx, &text, center, text_color, background, border, 11.0,
-        );
+        paint_dimension(dim, frame, projector, &inks, c, window, cx);
     }
     if let Some((start, end)) = active.marquee {
         let (low, high) = (start.min(end), start.max(end));
@@ -1021,6 +1110,323 @@ fn paint_active(
         }
     }
 }
+
+fn ink_alpha(color: Rgba, alpha: f32) -> Rgba {
+    Rgba {
+        a: color.a * alpha,
+        ..color
+    }
+}
+
+/// A filled point with a thin ring around it.
+fn point_marker(window: &mut Window, center: Point<Pixels>, diameter: f32, fill: Rgba, ring: Rgba) {
+    dot(window, center, diameter + 2.0, ring);
+    dot(window, center, diameter, fill);
+}
+
+fn guide_color(kind: GuideKind, c: Colors) -> Rgba {
+    match kind {
+        GuideKind::Horizontal => ink(c.axis[0], 0.95),
+        GuideKind::Vertical => ink(c.axis[1], 0.95),
+        GuideKind::Parallel | GuideKind::Perpendicular => ink(c.accent, 0.95),
+        GuideKind::Aligned => ink(c.text_muted, 0.9),
+    }
+}
+
+/// The direction inference a snap kind stands for.
+fn guide_kind(kind: SnapKind) -> Option<GuideKind> {
+    match kind {
+        SnapKind::Horizontal => Some(GuideKind::Horizontal),
+        SnapKind::Vertical => Some(GuideKind::Vertical),
+        SnapKind::Parallel => Some(GuideKind::Parallel),
+        SnapKind::Perpendicular => Some(GuideKind::Perpendicular),
+        _ => None,
+    }
+}
+
+fn constraint_label(kind: GuideKind) -> &'static str {
+    match kind {
+        GuideKind::Horizontal => "Horizontal",
+        GuideKind::Vertical => "Vertical",
+        GuideKind::Parallel => "Parallel",
+        GuideKind::Perpendicular => "Perpendicular",
+        GuideKind::Aligned => "Aligned",
+    }
+}
+
+const CHIP_TEXT: f32 = 10.0;
+const CHIP_HEIGHT: f32 = 18.0;
+const CHIP_GLYPH: f32 = 12.0;
+
+fn constraint_chip_size(window: &mut Window, kind: GuideKind) -> Vec2 {
+    let text = shaped_width(window, constraint_label(kind), CHIP_TEXT);
+    Vec2::new(6.0 + CHIP_GLYPH + 4.0 + text + 7.0, CHIP_HEIGHT)
+}
+
+/// A small chip naming a constraint the segment being drawn will have,
+/// with its glyph in the inference line's colour.
+fn paint_constraint_chip(
+    window: &mut Window,
+    cx: &mut App,
+    kind: GuideKind,
+    center: Point<Pixels>,
+    c: Colors,
+) {
+    let size_v = constraint_chip_size(window, kind);
+    let origin = to_vec(center) - size_v * 0.5;
+    let bounds = Bounds::new(to_point(origin), size(px(size_v.x), px(size_v.y)));
+    window.paint_quad(
+        fill(bounds, ink(c.overlay, 0.97))
+            .corner_radii(px(5.0))
+            .border_widths(px(1.0))
+            .border_color(Hsla::from(gpui::rgba(c.hud_border))),
+    );
+    let color = guide_color(kind, c);
+    let g = origin + Vec2::new(6.0 + CHIP_GLYPH * 0.5, CHIP_HEIGHT * 0.5);
+    let at = |x: f32, y: f32| to_point(g + Vec2::new(x, y));
+    let h = CHIP_GLYPH * 0.5 - 1.0;
+    let strokes: Vec<Vec<Point<Pixels>>> = match kind {
+        GuideKind::Horizontal => vec![
+            vec![at(-h, 0.0), at(h, 0.0)],
+            vec![at(-h, -2.5), at(-h, 2.5)],
+            vec![at(h, -2.5), at(h, 2.5)],
+        ],
+        GuideKind::Vertical => vec![
+            vec![at(0.0, -h), at(0.0, h)],
+            vec![at(-2.5, -h), at(2.5, -h)],
+            vec![at(-2.5, h), at(2.5, h)],
+        ],
+        GuideKind::Parallel => vec![
+            vec![at(-h + 1.0, h), at(-1.0, -h)],
+            vec![at(1.0, h), at(h - 1.0, -h)],
+        ],
+        GuideKind::Perpendicular => vec![vec![at(-h, h), at(h, h)], vec![at(0.0, h), at(0.0, -h)]],
+        GuideKind::Aligned => vec![vec![at(-h, 0.0), at(h, 0.0)]],
+    };
+    stroke_runs(window, &strokes, 1.6, color);
+    let text = constraint_label(kind);
+    let shaped = shape(window, text, CHIP_TEXT, ink(c.text, 0.92), false);
+    let _ = shaped.paint(
+        to_point(
+            origin
+                + Vec2::new(
+                    6.0 + CHIP_GLYPH + 4.0,
+                    (CHIP_HEIGHT - CHIP_TEXT) * 0.5 - 1.5,
+                ),
+        ),
+        px(CHIP_TEXT + 3.0),
+        window,
+        cx,
+    );
+}
+
+fn shape(
+    window: &mut Window,
+    text: &str,
+    font_size: f32,
+    color: Rgba,
+    tabular: bool,
+) -> gpui::ShapedLine {
+    let mut font = window.text_style().font();
+    if tabular {
+        font.features = gpui::FontFeatures(std::sync::Arc::new(vec![("tnum".into(), 1)]));
+    }
+    let run = TextRun {
+        len: text.len(),
+        font,
+        color: Hsla::from(color),
+        background_color: None,
+        underline: None,
+        strikethrough: None,
+    };
+    window
+        .text_system()
+        .shape_line(text.to_owned().into(), px(font_size), &[run], None)
+}
+
+fn shaped_width(window: &mut Window, text: &str, font_size: f32) -> f32 {
+    f32::from(shape(window, text, font_size, ink(0, 1.0), false).width)
+}
+
+/// Offset of a linear dimension line from the measured geometry, and how
+/// far extension lines start from it and run past the dimension line.
+const DIM_OFFSET: f32 = 18.0;
+const DIM_GAP: f32 = 3.0;
+const DIM_OVERSHOOT: f32 = 4.0;
+const DIM_ARROW: f32 = 7.0;
+const FIELD_TEXT: f32 = 12.0;
+const FIELD_HEIGHT: f32 = 22.0;
+
+fn arrowhead(window: &mut Window, tip: Vec2, direction: Vec2, color: Rgba) {
+    let side = direction.perp();
+    let back = tip - direction * DIM_ARROW;
+    let triangle = [tip, back + side * 2.8, back - side * 2.8, tip].map(to_point);
+    fill_polygons(window, &[triangle.to_vec()], color);
+}
+
+/// A live dimension: for a span, extension lines and an arrowed dimension
+/// line offset from the geometry; the value sits in an input-style field,
+/// accented while it takes keystrokes.
+fn paint_dimension(
+    dim: &DimLabel,
+    frame: &Frame,
+    projector: &Projector,
+    inks: &SketchInk,
+    c: Colors,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    let screen = |p: Vec2| projector.point(frame.to_world(p)).map(to_vec);
+    let Some(anchor) = screen(dim.at) else {
+        return;
+    };
+    let away = screen(dim.at + dim.away * 1.0e-3)
+        .map(|p| (p - anchor).normalize_or_zero())
+        .filter(|v| *v != Vec2::ZERO)
+        .unwrap_or(Vec2::NEG_Y);
+    let typed = dim.locked;
+    let (text_color, background, border, border_width) = if dim.invalid {
+        (
+            ink(c.danger, 1.0),
+            ink(c.overlay, 0.98),
+            ink(c.danger, 1.0),
+            1.5,
+        )
+    } else if dim.active {
+        (
+            ink(c.text, 1.0),
+            ink(c.overlay, 0.98),
+            ink(c.accent, 1.0),
+            1.5,
+        )
+    } else if typed {
+        (
+            ink(c.accent_text, 1.0),
+            ink(c.accent_soft, 0.98),
+            ink(c.accent_border, 1.0),
+            1.0,
+        )
+    } else {
+        (
+            ink(c.text, 1.0),
+            ink(c.overlay, 0.98),
+            ink(c.border_strong, 1.0),
+            1.0,
+        )
+    };
+    let shaped = shape(window, &dim.text, FIELD_TEXT, text_color, true);
+    let text_width = f32::from(shaped.width);
+    let caret_width = if dim.active && typed { 3.0 } else { 0.0 };
+    let field = Vec2::new((text_width + caret_width + 18.0).max(44.0), FIELD_HEIGHT);
+    let reach = |normal: Vec2| (normal.x * field.x).abs() * 0.5 + (normal.y * field.y).abs() * 0.5;
+    let span = dim
+        .span
+        .and_then(|(a, b)| Some((screen(a)?, screen(b)?)))
+        .filter(|(a, b)| a.distance(*b) > 2.0);
+    let halo = ink_alpha(inks.halo, 0.55);
+    let center = match span {
+        Some((a, b)) if dim.radial => {
+            // The radius is the dimension line, arrowed where it meets the rim.
+            let along = (b - a).normalize();
+            let mut normal = (away - along * away.dot(along)).normalize_or_zero();
+            if normal == Vec2::ZERO {
+                normal = along.perp();
+            }
+            let line = [vec![to_point(a), to_point(b)]];
+            stroke_runs(window, &line, 3.0, halo);
+            stroke_runs(window, &line, 1.0, inks.annotation);
+            arrowhead(window, b + along * 0.5, along, halo);
+            arrowhead(window, b, along, inks.annotation);
+            (a + b) * 0.5 + normal * (reach(normal) + 6.0)
+        }
+        Some((a, b)) => {
+            let along = (b - a).normalize();
+            let mut normal = (away - along * away.dot(along)).normalize_or_zero();
+            if normal == Vec2::ZERO {
+                normal = along.perp();
+            }
+            // Far enough out that the value, centred on the dimension line,
+            // clears the geometry it measures.
+            let offset = DIM_OFFSET.max(reach(normal) + 7.0);
+            let (qa, qb) = (a + normal * offset, b + normal * offset);
+            let extensions = [
+                vec![a + normal * DIM_GAP, a + normal * (offset + DIM_OVERSHOOT)],
+                vec![b + normal * DIM_GAP, b + normal * (offset + DIM_OVERSHOOT)],
+            ]
+            .map(|run| run.into_iter().map(to_point).collect::<Vec<_>>());
+            // The value sits in a break of the dimension line when it fits
+            // between the arrows; otherwise the arrows point in from outside
+            // and the value moves clear of the line.
+            let length = qa.distance(qb);
+            let along_reach = (along.x * field.x).abs() * 0.5 + (along.y * field.y).abs() * 0.5;
+            let inside = length >= along_reach * 2.0 + DIM_ARROW * 2.0 + 8.0;
+            let line: Vec<Vec<Point<Pixels>>> = if inside {
+                let middle = (qa + qb) * 0.5;
+                vec![
+                    vec![to_point(qa), to_point(middle - along * (along_reach + 4.0))],
+                    vec![to_point(middle + along * (along_reach + 4.0)), to_point(qb)],
+                ]
+            } else {
+                vec![
+                    vec![to_point(qa - along * (DIM_ARROW + 6.0)), to_point(qa)],
+                    vec![to_point(qa), to_point(qb)],
+                    vec![to_point(qb), to_point(qb + along * (DIM_ARROW + 6.0))],
+                ]
+            };
+            stroke_runs(window, &extensions, 3.0, halo);
+            stroke_runs(window, &line, 3.0, halo);
+            stroke_runs(window, &extensions, 1.0, inks.annotation);
+            stroke_runs(window, &line, 1.0, inks.annotation);
+            let (da, db) = if inside {
+                (-along, along)
+            } else {
+                (along, -along)
+            };
+            for (tip, direction) in [(qa, da), (qb, db)] {
+                arrowhead(window, tip + direction * 0.5, direction, halo);
+                arrowhead(window, tip, direction, inks.annotation);
+            }
+            if inside {
+                (qa + qb) * 0.5
+            } else {
+                (qa + qb) * 0.5 + normal * (reach(normal) + 5.0)
+            }
+        }
+        None => anchor + away * (DIM_OFFSET + reach(away)),
+    };
+    let origin = center - field * 0.5;
+    let bounds = Bounds::new(to_point(origin), size(px(field.x), px(field.y)));
+    window.paint_quad(
+        fill(bounds, background)
+            .corner_radii(px(R_FIELD))
+            .border_widths(px(border_width))
+            .border_color(Hsla::from(border)),
+    );
+    let text_origin = origin
+        + Vec2::new(
+            (field.x - text_width - caret_width) * 0.5,
+            (FIELD_HEIGHT - FIELD_TEXT) * 0.5 - 2.0,
+        );
+    if dim.active && !typed && !dim.invalid {
+        // The live value reads as selected: typing replaces it.
+        let highlight = Bounds::new(
+            to_point(text_origin + Vec2::new(-2.0, 0.0)),
+            size(px(text_width + 4.0), px(FIELD_TEXT + 4.0)),
+        );
+        window.paint_quad(fill(highlight, ink(c.accent, 0.22)).corner_radii(px(2.0)));
+    }
+    let _ = shaped.paint(to_point(text_origin), px(FIELD_TEXT + 4.0), window, cx);
+    if dim.active && typed {
+        let x = text_origin.x + text_width + 1.5;
+        let caret = Bounds::new(
+            to_point(Vec2::new(x, origin.y + 4.0)),
+            size(px(1.0), px(FIELD_HEIGHT - 8.0)),
+        );
+        window.paint_quad(fill(caret, ink(c.accent, 1.0)));
+    }
+}
+
+const R_FIELD: f32 = 4.0;
 
 fn paint_snap_marker(
     window: &mut Window,

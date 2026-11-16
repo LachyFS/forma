@@ -15,6 +15,7 @@ mod inspector;
 pub(crate) mod modes;
 mod outliner;
 mod overlays;
+mod sketch_inspector;
 pub(crate) mod slots;
 mod statusbar;
 pub(crate) mod timeline;

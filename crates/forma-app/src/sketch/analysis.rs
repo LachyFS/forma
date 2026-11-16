@@ -159,17 +159,20 @@ pub(crate) fn snap_targets(
     }
 }
 
-/// Endpoints of open curves with how many curves meet at each.
+/// Endpoints of open curves with how many curves meet at each. Construction
+/// curves never form profiles, so they do not count: a point only they reach
+/// has a count of zero.
 fn endpoints(entities: &[SketchEntity]) -> Vec<(Vec2, usize)> {
     let mut ends: PointHash<usize> = PointHash::new();
     for entity in entities
         .iter()
         .filter(|e| e.curve.is_valid() && !e.curve.is_closed())
     {
+        let count = usize::from(!entity.construction);
         for point in [entity.curve.start(), entity.curve.end()] {
             match ends.find(point, |_| true) {
-                Some(index) => ends.items[index].1 += 1,
-                None => ends.push(point, 1),
+                Some(index) => ends.items[index].1 += count,
+                None => ends.push(point, count),
             }
         }
     }

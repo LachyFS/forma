@@ -151,7 +151,10 @@ pub(crate) struct DrawSession {
     pub object: Option<u64>,
     /// Plane for a sketch that does not exist yet, in world space.
     pub plane: SketchPlane,
+    /// What the toolbar names: the plane, or the sketch being edited.
     pub label: String,
+    /// The plane in words, for the inspector.
+    pub plane_label: String,
     pub reference: Vec<SketchCurve>,
     pub tool: DrawTool,
     pub options: Options,
@@ -323,7 +326,10 @@ impl Studio {
             }
             other => other,
         };
-        let (object, plane, label, reference, focus, world_plane) = match target {
+        // What the view frames on entry: an edited sketch or a picked face,
+        // as a world-space radius around the focus. A bare plane keeps the
+        // current zoom.
+        let (object, plane, label, reference, focus, world_plane, extent) = match target {
             DrawTarget::Object(id) => {
                 let Some(sketch) = self.scene.object_sketch(id) else {
                     self.status = "Select a sketch to edit".into();
@@ -336,25 +342,43 @@ impl Studio {
                     .object(id)
                     .map(|o| o.name.clone())
                     .unwrap_or_default();
-                let (min, max) = sketch_bounds(sketch).unwrap_or((Vec2::ZERO, Vec2::ZERO));
-                let focus = matrix.transform_point3(sketch.plane.to_world((min + max) * 0.5));
-                (Some(id), sketch.plane, name, Vec::new(), focus, world)
+                let bounds = sketch_bounds(sketch);
+                let (min, max) = bounds.unwrap_or((Vec2::ZERO, Vec2::ZERO));
+                let to_world = |p: Vec2| matrix.transform_point3(sketch.plane.to_world(p));
+                let focus = to_world((min + max) * 0.5);
+                let extent = bounds.map(|_| to_world(min).distance(to_world(max)) * 0.5);
+                (
+                    Some(id),
+                    sketch.plane,
+                    name,
+                    Vec::new(),
+                    focus,
+                    world,
+                    extent,
+                )
             }
             DrawTarget::Plane(plane, label) => {
                 let focus = plane.to_world(plane.to_local(camera.target));
-                (None, plane, label, Vec::new(), focus, plane)
+                (None, plane, label, Vec::new(), focus, plane, None)
             }
             DrawTarget::AtPointer => unreachable!("resolved to a plane choice above"),
             DrawTarget::Choice(choice) => {
                 // Centre a picked face rather than the exact point clicked.
-                let focus = choice
+                let bounds = choice
                     .reference
                     .iter()
                     .map(SketchCurve::bounds)
-                    .reduce(|(a, b), (c, d)| (a.min(c), b.max(d)))
-                    .map_or(choice.focus, |(min, max)| {
-                        choice.plane.to_world((min + max) * 0.5)
-                    });
+                    .reduce(|(a, b), (c, d)| (a.min(c), b.max(d)));
+                let focus = bounds.map_or(choice.focus, |(min, max)| {
+                    choice.plane.to_world((min + max) * 0.5)
+                });
+                let extent = bounds.map(|(min, max)| {
+                    choice
+                        .plane
+                        .to_world(min)
+                        .distance(choice.plane.to_world(max))
+                        * 0.5
+                });
                 (
                     None,
                     choice.plane,
@@ -362,6 +386,7 @@ impl Studio {
                     choice.reference,
                     focus,
                     choice.plane,
+                    extent,
                 )
             }
         };
@@ -373,25 +398,12 @@ impl Studio {
         self.box_select = None;
         let previous_tool = std::mem::replace(&mut self.tool, Tool::Select);
         let previous_grid = std::mem::replace(&mut self.settings.show_grid, false);
-        // Turn to face the plane unless the view is already close to it.
-        let mut target_camera = plane::look_at(camera, &world_plane, focus);
-        // Bring a small face up to a comfortable drawing size.
-        if let Some((min, max)) = reference
-            .iter()
-            .map(SketchCurve::bounds)
-            .reduce(|(a, b), (c, d)| (a.min(c), b.max(d)))
-        {
-            let size = self.bounds.get().size;
-            let aspect = f32::from(size.width) / f32::from(size.height).max(1.0);
-            let mut framed = target_camera;
-            framed.frame_in_viewport(focus, (max - min).length() * 0.5 * 1.5, aspect);
-            if framed.distance < target_camera.distance {
-                target_camera.distance = framed.distance;
-            }
-        }
-        let reorient = plane::view_angle(camera, &world_plane) > 10f32.to_radians()
-            || target_camera.distance < camera.distance * 0.9;
-        let camera_restore = if reorient {
+        // Look straight at the plane in orthographic, so lengths and angles
+        // read true across the whole view, framing what is drawn on.
+        let size = self.bounds.get().size;
+        let aspect = f32::from(size.width) / f32::from(size.height).max(1.0);
+        let target_camera = plane::drawing_camera(camera, &world_plane, focus, extent, aspect);
+        let camera_restore = if target_camera != camera {
             self.animate_camera(target_camera, cx);
             Some((camera, target_camera))
         } else {
@@ -402,6 +414,11 @@ impl Studio {
             object,
             plane,
             label: label.clone(),
+            plane_label: if editing {
+                plane::describe(&world_plane).into()
+            } else {
+                label.clone()
+            },
             reference,
             tool: if editing {
                 DrawTool::Select
@@ -426,9 +443,7 @@ impl Studio {
             camera_restore,
             analysis: RefCell::new(None),
         });
-        self.status = format!(
-            "Draw · {label} · L line · R rectangle · C circle · A arc · P polygon · Return to finish"
-        );
+        self.status = format!("Draw · {label} · Return to finish");
         // The ground grid change renders through the GPU frame.
         self.invalidate(false, cx);
     }

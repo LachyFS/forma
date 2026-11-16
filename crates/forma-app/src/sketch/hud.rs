@@ -221,20 +221,8 @@ impl Studio {
         };
         let construction = sketch.entities.iter().filter(|e| e.construction).count();
         let matrix = self.scene.world_transform(id).unwrap_or_default();
-        let normal = matrix
-            .transform_vector3(sketch.plane.normal())
-            .normalize_or_zero();
-        let orientation = if normal.y.abs() > 0.999 {
-            "Horizontal"
-        } else if normal.z.abs() > 0.999 {
-            "Front"
-        } else if normal.x.abs() > 0.999 {
-            "Side"
-        } else if normal.y.abs() < 1.0e-3 {
-            "Vertical"
-        } else {
-            "Tilted"
-        };
+        let orientation =
+            super::plane::describe(&sketch.plane.transformed(matrix).unwrap_or(sketch.plane));
         let drawing = self.session_object() == Some(id);
         // `section` pads its contents like every other inspector section.
         let contents = col()
@@ -257,7 +245,7 @@ impl Studio {
                 "Plane",
                 "",
                 orientation.into(),
-                "The sketch plane's orientation in the world",
+                "The plane the sketch lies on",
             ))
             .child(
                 command_button(

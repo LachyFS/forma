@@ -1098,6 +1098,9 @@ fn render_page(t: Colors, s: &Studio, cx: &mut Context<Studio>) -> Div {
 }
 
 pub(super) fn inspector(t: Colors, s: &Studio, width: f32, cx: &mut Context<Studio>) -> Div {
+    if let Some(panel) = super::sketch_inspector::panel(t, s, cx) {
+        return panel;
+    }
     let stacked = width < STACK_BELOW;
     let page = match s.panels.tab {
         InspectorTab::Object => object_page(t, s, stacked, cx),
