@@ -398,9 +398,10 @@ impl SketchTool {
         }
     }
 
-    /// The point the arrow handle stands on: the picked regions' centroid.
+    /// The point the arrow handle stands on: the picked regions' centroid,
+    /// or a point on them near it when it falls in a hole.
     pub(crate) fn anchor(&self) -> Vec3 {
-        self.prism.centroid()
+        self.prism.interior_point()
     }
 
     /// The revolve axis in world space: (origin, unit direction).

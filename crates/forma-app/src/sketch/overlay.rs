@@ -75,6 +75,56 @@ pub(crate) struct ActiveOverlay {
     /// The straight segment being drawn and the side its dimension sits on:
     /// direction inferences attach to it as constraint chips.
     pub segment: Option<(Vec2, Vec2, Vec2)>,
+    /// Where scene geometry stands in front of the plane, so the grid stops
+    /// at objects instead of running across them.
+    pub mask: Option<Rc<PlaneMask>>,
+}
+
+/// Where geometry hides the sketch plane, sampled on a coarse screen grid:
+/// the plane point under each sample is tested against the scene, and grid
+/// lines fade out where it is covered. Sampled at the corners of
+/// `MASK_CELL` pixel cells and read bilinearly, so the grid fades over a few
+/// pixels at an object's outline rather than stepping.
+pub(crate) struct PlaneMask {
+    origin: Vec2,
+    columns: usize,
+    rows: usize,
+    /// 1 where the plane point under the sample is hidden.
+    hidden: Vec<f32>,
+}
+
+const MASK_CELL: f32 = 14.0;
+
+impl PlaneMask {
+    /// How hidden the plane is at window position `p`, from 0 to 1.
+    fn hidden_at(&self, p: Vec2) -> f32 {
+        let g = (p - self.origin) / MASK_CELL;
+        let (x0, y0) = (g.x.floor(), g.y.floor());
+        let (fx, fy) = (g.x - x0, g.y - y0);
+        let at = |x: f32, y: f32| {
+            let x = (x.max(0.0) as usize).min(self.columns - 1);
+            let y = (y.max(0.0) as usize).min(self.rows - 1);
+            self.hidden[y * self.columns + x]
+        };
+        let top = at(x0, y0) * (1.0 - fx) + at(x0 + 1.0, y0) * fx;
+        let bottom = at(x0, y0 + 1.0) * (1.0 - fx) + at(x0 + 1.0, y0 + 1.0) * fx;
+        top * (1.0 - fy) + bottom * fy
+    }
+}
+
+/// The plane mask and what it was sampled for: scene revision, camera,
+/// viewport and plane.
+type MaskKey = (
+    u64,
+    forma_core::Camera,
+    Bounds<Pixels>,
+    Mat4,
+    forma_core::SketchPlane,
+);
+
+thread_local! {
+    static PLANE_MASK: std::cell::RefCell<Option<(MaskKey, Rc<PlaneMask>)>> =
+        const { std::cell::RefCell::new(None) };
 }
 
 /// Inks for Draw mode. Curves pair a core that contrasts with the theme's
@@ -386,6 +436,7 @@ impl Studio {
                 reference: session.reference.clone(),
                 marquee: session.marquee,
                 segment: None,
+                mask: self.plane_mask(&frame),
             };
             self.describe_tool_preview(&mut overlay);
             Some(overlay)
@@ -399,6 +450,68 @@ impl Studio {
             active_id: self.session_object(),
             active,
         })
+    }
+}
+
+impl Studio {
+    /// Where scene geometry hides the sketch plane, sampled once per camera
+    /// and scene revision. While the view moves the grid goes unmasked, as
+    /// resampling every frame would stall navigation.
+    fn plane_mask(&self, frame: &Frame) -> Option<Rc<PlaneMask>> {
+        if self.navigation.is_some() || self.sketch.animating() {
+            return None;
+        }
+        self.scene.mesh_instances().next()?;
+        let bounds = self.bounds.get();
+        let key: MaskKey = (
+            self.scene_revision,
+            self.scene.camera,
+            bounds,
+            frame.matrix,
+            frame.plane,
+        );
+        if let Some(mask) = PLANE_MASK.with(|cache| {
+            cache
+                .borrow()
+                .as_ref()
+                .filter(|(cached, _)| *cached == key)
+                .map(|(_, mask)| mask.clone())
+        }) {
+            return Some(mask);
+        }
+        let origin = crate::viewport::mouse_point(bounds.origin);
+        let size = Vec2::new(bounds.size.width.into(), bounds.size.height.into());
+        if size.x < 1.0 || size.y < 1.0 {
+            return None;
+        }
+        let columns = (size.x / MASK_CELL).ceil() as usize + 1;
+        let rows = (size.y / MASK_CELL).ceil() as usize + 1;
+        let camera = self.scene.camera;
+        let query = self.visibility_query();
+        let mut hidden = Vec::with_capacity(columns * rows);
+        for row in 0..rows {
+            for column in 0..columns {
+                // Edge samples sit just inside the viewport, where rays exist.
+                let at = origin
+                    + Vec2::new(column as f32 * MASK_CELL, row as f32 * MASK_CELL)
+                        .min(size - Vec2::splat(0.5));
+                let covered = self
+                    .pointer_ray(at)
+                    .and_then(|ray| frame.ray_point(ray))
+                    .is_some_and(|p| {
+                        !crate::viewport::visible_in_query(camera, query, frame.to_world(p))
+                    });
+                hidden.push(if covered { 1.0 } else { 0.0 });
+            }
+        }
+        let mask = Rc::new(PlaneMask {
+            origin,
+            columns,
+            rows,
+            hidden,
+        });
+        PLANE_MASK.with(|cache| *cache.borrow_mut() = Some((key, mask.clone())));
+        Some(mask)
     }
 }
 
@@ -755,6 +868,10 @@ fn paint_grid(active: &ActiveOverlay, projector: &Projector, c: Colors, window: 
         });
     }
     let reach = (reach * 1.08).min(minor * 260.0).max(minor * 4.0);
+    let view = (
+        to_vec(projector.bounds.origin),
+        to_vec(projector.bounds.bottom_right()),
+    );
     // Minor lines fade in as zooming spreads them apart.
     let minor_pixels = projector
         .point(frame.to_world(focus))
@@ -762,7 +879,7 @@ fn paint_grid(active: &ActiveOverlay, projector: &Projector, c: Colors, window: 
         .map(|(a, b)| to_vec(a).distance(to_vec(b)))
         .unwrap_or(20.0);
     let minor_fade = 0.55 + 0.45 * smoothstep(14.0, 30.0, minor_pixels);
-    const LEVELS: usize = 6;
+    const LEVELS: usize = GRID_LEVELS;
     // Buckets of runs by (style, fade level).
     let mut buckets: Vec<Vec<Vec<Point<Pixels>>>> = vec![Vec::new(); 4 * LEVELS];
     let fade = |p: Vec2| 1.0 - smoothstep(reach * 0.45, reach, p.distance(focus));
@@ -794,13 +911,16 @@ fn paint_grid(active: &ActiveOverlay, projector: &Projector, c: Colors, window: 
                 p1[axis] = value;
                 p0[other] = a;
                 p1[other] = b;
-                let level = (fade((p0 + p1) * 0.5) * LEVELS as f32).round() as usize;
-                if level == 0 {
+                let strength = fade((p0 + p1) * 0.5);
+                if (strength * LEVELS as f32).round() < 1.0 {
                     continue;
                 }
                 let world = [frame.to_world(p0), frame.to_world(p1)];
                 for run in projector.polyline(&world) {
-                    buckets[style * LEVELS + level.min(LEVELS) - 1].push(run);
+                    for (level, piece) in masked_runs(&run, strength, active.mask.as_deref(), view)
+                    {
+                        buckets[style * LEVELS + level - 1].push(piece);
+                    }
                 }
             }
         }
@@ -824,6 +944,92 @@ fn paint_grid(active: &ActiveOverlay, projector: &Projector, c: Colors, window: 
             }
         }
     }
+}
+
+/// Fade levels of the grid (see `paint_grid`).
+const GRID_LEVELS: usize = 6;
+
+/// A grid run cut into pieces by fade level: `strength` from the distance
+/// fade, lowered where `mask` says geometry covers the plane. Pieces with
+/// no strength left are dropped. Without a mask the run stays whole; with
+/// one it is first clipped to `view` (its window corners), as only the part
+/// on screen needs sampling.
+fn masked_runs(
+    run: &[Point<Pixels>],
+    strength: f32,
+    mask: Option<&PlaneMask>,
+    view: (Vec2, Vec2),
+) -> Vec<(usize, Vec<Point<Pixels>>)> {
+    let level_of = |s: f32| ((s * GRID_LEVELS as f32).round() as usize).min(GRID_LEVELS);
+    let Some(mask) = mask else {
+        let level = level_of(strength);
+        return if level == 0 {
+            Vec::new()
+        } else {
+            vec![(level, run.to_vec())]
+        };
+    };
+    let mut pieces = Vec::new();
+    for pair in run.windows(2) {
+        let Some((a, b)) = clip_segment(to_vec(pair[0]), to_vec(pair[1]), view) else {
+            continue;
+        };
+        let steps = ((b - a).length() / 5.0).ceil().max(1.0) as usize;
+        let level_at = |t: f32| level_of(strength * (1.0 - mask.hidden_at(a.lerp(b, t))));
+        // Pieces change level halfway between the samples that differ.
+        let mut start = 0.0;
+        let mut level = level_at(0.0);
+        for step in 1..=steps {
+            let t = step as f32 / steps as f32;
+            let next = level_at(t);
+            let end = if next != level {
+                t - 0.5 / steps as f32
+            } else if step == steps {
+                1.0
+            } else {
+                continue;
+            };
+            if level > 0 && end > start {
+                pieces.push((
+                    level,
+                    vec![to_point(a.lerp(b, start)), to_point(a.lerp(b, end))],
+                ));
+            }
+            start = end;
+            level = next;
+            if step == steps && end < 1.0 && level > 0 {
+                pieces.push((level, vec![to_point(a.lerp(b, end)), to_point(b)]));
+            }
+        }
+    }
+    pieces
+}
+
+/// The part of segment `a`–`b` inside the rectangle `low`–`high`.
+fn clip_segment(a: Vec2, b: Vec2, (low, high): (Vec2, Vec2)) -> Option<(Vec2, Vec2)> {
+    let d = b - a;
+    let (mut t0, mut t1) = (0.0_f32, 1.0_f32);
+    for axis in 0..2 {
+        if d[axis].abs() < 1.0e-9 {
+            if a[axis] < low[axis] || a[axis] > high[axis] {
+                return None;
+            }
+            continue;
+        }
+        let (mut near, mut far) = (
+            (low[axis] - a[axis]) / d[axis],
+            (high[axis] - a[axis]) / d[axis],
+        );
+        if near > far {
+            std::mem::swap(&mut near, &mut far);
+        }
+        t0 = t0.max(near);
+        t1 = t1.min(far);
+        if t0 > t1 {
+            return None;
+        }
+    }
+    Some((a + d * t0, a + d * t1))
 }
 
 fn plane_runs(frame: &Frame, projector: &Projector, points: &[Vec2]) -> Vec<Vec<Point<Pixels>>> {
@@ -948,13 +1154,20 @@ fn paint_active(
             ink(c.accent, 1.0),
         );
     }
-    // Endpoints: 7 px points with a thin dark ring. Open ends, which keep a
-    // region from closing, are tinted.
+    // One ink scheme for Draw: committed curves in the two-tone ink, the
+    // curve being drawn in the accent, and every vertex, committed or just
+    // placed, a 7 px light point with a thin dark ring. Open ends, which
+    // keep a region from closing, add an accent ring: the place to continue
+    // or close the outline.
     for (point, count) in &analysis.endpoints {
         if let Some(p) = screen(*point) {
             match count {
                 0 => point_marker(window, p, 4.0, ink(c.text_muted, 1.0), inks.halo),
-                1 => point_marker(window, p, 7.0, ink(c.warning, 1.0), inks.point_ring),
+                1 => {
+                    ring(window, p, OPEN_RING, 3.4, ink_alpha(inks.halo, 0.6));
+                    ring(window, p, OPEN_RING, 1.5, ink(c.accent, 1.0));
+                    point_marker(window, p, 7.0, inks.point, inks.point_ring);
+                }
                 _ => point_marker(window, p, 7.0, inks.point, inks.point_ring),
             }
         }
@@ -1017,7 +1230,7 @@ fn paint_active(
     }
     for point in &active.placed {
         if let Some(p) = screen(*point) {
-            point_marker(window, p, 7.0, ink(c.accent, 1.0), inks.point_ring);
+            point_marker(window, p, 7.0, inks.point, inks.point_ring);
         }
     }
     // The snap marker and what the snap means.
@@ -1117,6 +1330,9 @@ fn ink_alpha(color: Rgba, alpha: f32) -> Rgba {
         ..color
     }
 }
+
+/// Radius of the accent ring around an open end.
+const OPEN_RING: f32 = 7.0;
 
 /// A filled point with a thin ring around it.
 fn point_marker(window: &mut Window, center: Point<Pixels>, diameter: f32, fill: Rgba, ring: Rgba) {
@@ -1244,7 +1460,7 @@ fn shape(
         .shape_line(text.to_owned().into(), px(font_size), &[run], None)
 }
 
-fn shaped_width(window: &mut Window, text: &str, font_size: f32) -> f32 {
+pub(crate) fn shaped_width(window: &mut Window, text: &str, font_size: f32) -> f32 {
     f32::from(shape(window, text, font_size, ink(0, 1.0), false).width)
 }
 
@@ -1512,5 +1728,57 @@ fn paint_snap_marker(
                 stroke_runs(window, &cross, 1.2, color);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn grid_runs_clip_to_the_view() {
+        let view = (Vec2::ZERO, Vec2::new(100.0, 50.0));
+        let (a, b) = clip_segment(Vec2::new(-50.0, 25.0), Vec2::new(150.0, 25.0), view).unwrap();
+        assert!(a.distance(Vec2::new(0.0, 25.0)) < 1.0e-4);
+        assert!(b.distance(Vec2::new(100.0, 25.0)) < 1.0e-4);
+        assert!(clip_segment(Vec2::new(-5.0, 60.0), Vec2::new(200.0, 70.0), view).is_none());
+        let inside = clip_segment(Vec2::new(10.0, 10.0), Vec2::new(20.0, 30.0), view).unwrap();
+        assert_eq!(inside, (Vec2::new(10.0, 10.0), Vec2::new(20.0, 30.0)));
+    }
+
+    /// Grid lines stop where geometry covers the plane and keep their
+    /// strength elsewhere.
+    #[test]
+    fn grid_runs_fade_out_under_geometry() {
+        // A 7 by 3 sample mask (98 by 28 pixels) covered in its middle columns.
+        let columns = 8;
+        let hidden = (0..3)
+            .flat_map(|_| (0..columns).map(|c| if (3..=4).contains(&c) { 1.0 } else { 0.0 }))
+            .collect();
+        let mask = PlaneMask {
+            origin: Vec2::ZERO,
+            columns,
+            rows: 3,
+            hidden,
+        };
+        let run = vec![
+            to_point(Vec2::new(0.0, 14.0)),
+            to_point(Vec2::new(98.0, 14.0)),
+        ];
+        let view = (Vec2::ZERO, Vec2::new(98.0, 28.0));
+        let pieces = masked_runs(&run, 1.0, Some(&mask), view);
+        let full: Vec<_> = pieces
+            .iter()
+            .filter(|(level, _)| *level == GRID_LEVELS)
+            .collect();
+        assert_eq!(full.len(), 2, "{} full-strength pieces", full.len());
+        // Nothing is drawn over the covered columns (42 to 56 pixels).
+        for (_, piece) in &pieces {
+            let (a, b) = (to_vec(piece[0]).x, to_vec(piece[1]).x);
+            assert!(b <= 42.0 + 1.0e-3 || a >= 56.0 - 1.0e-3, "{a}..{b}");
+        }
+        // Unmasked runs stay whole.
+        assert_eq!(masked_runs(&run, 1.0, None, view).len(), 1);
+        assert!(masked_runs(&run, 0.01, None, view).is_empty());
     }
 }

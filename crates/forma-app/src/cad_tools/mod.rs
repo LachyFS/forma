@@ -679,7 +679,7 @@ impl Studio {
             Some(Tool::Sketch(_)) => self.sketch_tool_press(position, event, cx),
             Some(Tool::PushPull(_)) => self.push_pull_press(position, event, cx),
             Some(Tool::Chamfer(_)) => {
-                self.commit_chamfer(cx);
+                self.chamfer_press(position, cx);
                 true
             }
             None => {
@@ -723,7 +723,7 @@ impl Studio {
             Some(Tool::Sketch(_)) => self.sketch_tool_move(position, held, free, cx),
             Some(Tool::PushPull(_)) => self.push_pull_move(position, held, free, cx),
             Some(Tool::Chamfer(_)) => {
-                self.chamfer_move(position, free, cx);
+                self.chamfer_move(position, held, free, cx);
                 true
             }
             None => {
@@ -758,7 +758,8 @@ impl Studio {
         match self.cad_tool.tool.as_ref() {
             Some(Tool::Sketch(_)) => self.sketch_tool_release(position, cx),
             Some(Tool::PushPull(_)) => self.push_pull_release(position, cx),
-            _ => {}
+            Some(Tool::Chamfer(_)) => self.chamfer_release(cx),
+            None => {}
         }
     }
 
@@ -771,7 +772,8 @@ impl Studio {
                 changed |= std::mem::take(&mut tool.handle_hot);
             }
             Some(Tool::PushPull(tool)) => changed |= tool.hover.take().is_some(),
-            _ => {}
+            Some(Tool::Chamfer(tool)) => changed |= std::mem::take(&mut tool.handle_hot),
+            None => {}
         }
         if changed {
             cx.notify();

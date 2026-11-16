@@ -50,6 +50,18 @@ impl FacePick {
         matches!(self.kind, FaceKind::Part { .. })
     }
 
+    /// Where the face's arrow stands: its centroid when that lies on the
+    /// face, else the point it was picked at (a plate's centroid can fall
+    /// inside a hole or under a boss).
+    pub(crate) fn anchor(&self) -> Vec3 {
+        let centroid = self.prism.centroid();
+        if self.prism.cap_contains(centroid) {
+            centroid
+        } else {
+            self.point
+        }
+    }
+
     fn same_face(&self, other: &FacePick) -> bool {
         self.object == other.object
             && match (&self.kind, &other.kind) {
@@ -87,9 +99,9 @@ impl ActiveFaces {
         crate::transform::distance_value(text).map(Some).ok_or(())
     }
 
-    /// The first face's centroid, where the arrow stands.
+    /// The first face's anchor, where the arrow stands.
     pub(crate) fn anchor(&self) -> Vec3 {
-        self.faces[0].prism.centroid()
+        self.faces[0].anchor()
     }
 }
 
@@ -98,6 +110,9 @@ pub(crate) struct PushPullTool {
     pub hover: Option<FacePick>,
     pub active: Option<ActiveFaces>,
     pub handle_hot: bool,
+    /// Started from a selected face's arrow in part edit mode: applying or
+    /// cancelling returns to the selection rather than hovering for more.
+    pub from_selection: bool,
 }
 
 impl PushPullTool {
@@ -230,13 +245,7 @@ impl Studio {
             self.cancel_cad_tool(cx);
         }
         let face = &faces[0];
-        let mut drag = AxisDrag::new(
-            self,
-            face.prism.centroid(),
-            face.normal,
-            0.0,
-            self.last_mouse,
-        );
+        let mut drag = AxisDrag::new(self, face.anchor(), face.normal, 0.0, self.last_mouse);
         drag.started = true;
         let heights = self.parallel_heights_for(face);
         let count = faces.len();
@@ -254,10 +263,63 @@ impl Studio {
                 error: None,
             }),
             handle_hot: false,
+            from_selection: true,
         };
         self.cad_tool.tool = Some(Tool::PushPull(Box::new(tool)));
         self.status = format!(
             "Push/Pull {count} face{} · Move the pointer or type a distance · Click or Return to apply · Esc cancel",
+            if count == 1 { "" } else { "s" }
+        );
+        cx.notify();
+    }
+
+    /// Pushes the faces selected in part edit mode from a press on the
+    /// active face's arrow (see `face_arrow`): a drag moves them and
+    /// the release applies; a click leaves the arrow up for a typed
+    /// distance and Return.
+    pub(crate) fn push_pull_from_arrow(&mut self, position: Vec2, cx: &mut Context<Self>) {
+        let Some(id) = self.part_editing() else {
+            return;
+        };
+        let mut faces: Vec<FacePick> = self
+            .selected_edit_faces(id)
+            .into_iter()
+            .filter_map(|(group, reference)| self.face_pick_for_group(id, group, reference))
+            .collect();
+        if faces.iter().any(|f| !f.planar) {
+            self.status = "Push/pull works on flat faces · Deselect curved faces".into();
+            cx.notify();
+            return;
+        }
+        // The active (last selected) face carries the arrow that was pressed.
+        faces.rotate_right(1);
+        let Some(face) = faces.first() else {
+            return;
+        };
+        let drag = AxisDrag::new(self, face.anchor(), face.normal, 0.0, position);
+        let heights = self.parallel_heights_for(face);
+        let count = faces.len();
+        if self.cad_tool.active() {
+            self.cancel_cad_tool(cx);
+        }
+        self.cad_tool.tool = Some(Tool::PushPull(Box::new(PushPullTool {
+            hover: None,
+            active: Some(ActiveFaces {
+                faces,
+                distance: 0.0,
+                numeric: String::new(),
+                side: 1.0,
+                drag: Some(drag),
+                modal: false,
+                heights,
+                snapped_face: false,
+                error: None,
+            }),
+            handle_hot: true,
+            from_selection: true,
+        })));
+        self.status = format!(
+            "Push/Pull {count} face{} · Drag the arrow · Type a distance and press Return · Esc cancel",
             if count == 1 { "" } else { "s" }
         );
         cx.notify();
@@ -340,7 +402,7 @@ impl Studio {
                 if let Some(active) = tool.active.as_mut() {
                     if !active.numeric.is_empty() && !active.modal {
                         active.numeric.clear();
-                    } else if active.modal {
+                    } else if active.modal || tool.from_selection {
                         self.cancel_cad_tool(cx);
                     } else {
                         tool.active = None;
@@ -417,6 +479,11 @@ impl Studio {
                 active.drag = Some(drag);
                 active.numeric.clear();
             }
+            return true;
+        }
+        if tool.from_selection {
+            // Away from the arrow, a press returns to the selection.
+            self.cancel_cad_tool(cx);
             return true;
         }
         let pick = self.pick_face(position, tool.hover.as_ref());
@@ -724,9 +791,13 @@ impl Studio {
                 ""
             }
         );
-        // Keyboard-started pushes end with their apply; hover pushes keep
-        // the tool for the next face.
-        if modal {
+        // Keyboard- and arrow-started pushes end with their apply; hover
+        // pushes keep the tool for the next face.
+        let from_selection = matches!(
+            self.cad_tool.tool.as_ref(),
+            Some(Tool::PushPull(tool)) if tool.from_selection
+        );
+        if modal || from_selection {
             self.cad_tool.tool = None;
         } else if let Some(Tool::PushPull(tool)) = self.cad_tool.tool.as_mut() {
             tool.active = None;
