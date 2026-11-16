@@ -44,6 +44,8 @@ fn tool_palette(t: Colors, s: &Studio, cx: &mut Context<Studio>) -> Div {
         ]
         .into_iter()
         .map(|(tool, glyph)| {
+            // Transform tools have nothing to act on in an empty scene.
+            let idle = tool != Tool::Select && s.scene.objects.is_empty();
             command_icon(
                 t,
                 SharedString::from(format!("tool-{tool:?}")),
@@ -53,6 +55,7 @@ fn tool_palette(t: Colors, s: &Studio, cx: &mut Context<Studio>) -> Div {
                 TOOL,
                 cx,
             )
+            .when(idle, |icon| icon.opacity(0.4))
         }),
     );
     palette = palette.child(separator());
