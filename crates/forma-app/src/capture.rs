@@ -461,6 +461,18 @@ pub(crate) fn scenarios() -> Vec<Scenario> {
             leave: |s, _, _| s.panels.close_menu(),
         },
         Scenario {
+            // The footer for a part: two lines, at the footer's fixed height.
+            name: "add-menu-part",
+            enter: |s, _, cx| {
+                s.open_menu(MenuKind::Add, Anchor::ToolRail, cx);
+                if let Some(menu) = s.panels.menu.as_mut() {
+                    // Mesh heading, five meshes, Part heading, then Box.
+                    menu.index = 7;
+                }
+            },
+            leave: |s, _, _| s.panels.close_menu(),
+        },
+        Scenario {
             name: "add-menu-outliner",
             enter: |s, _, cx| s.open_menu(MenuKind::Add, Anchor::Outliner, cx),
             leave: |s, _, _| s.panels.close_menu(),

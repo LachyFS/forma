@@ -3,8 +3,7 @@
 //! Add menu is open filters it.
 use super::super::assets::{Icon, icon};
 use super::super::commands::{
-    MESH_DETAIL, PART_DETAIL, SKETCH_DETAIL, adds_part, command_icon, command_info,
-    command_keywords,
+    MESH_DETAIL, PART_DETAIL, SKETCH_DETAIL, command_icon, command_info, command_keywords,
 };
 use super::super::components::*;
 use super::super::tokens::*;
@@ -245,6 +244,24 @@ fn section_note(items: &[MenuItem], index: usize) -> Option<&'static str> {
         .flatten()
 }
 
+/// What the highlighted item makes, for the footer: its name and what it
+/// becomes, so the footer says more than the section heading above it.
+fn item_note(items: &[MenuItem], index: usize) -> Option<SharedString> {
+    let MenuItem::Action { command, label, .. } = items.get(index)? else {
+        return None;
+    };
+    let made = match command {
+        Command::Add(_) => "editable polygon mesh",
+        Command::Cad(CadCommand::AddPart(_)) => "parametric solid, editable in the timeline",
+        Command::Draw(_) => "profiles on a plane, to extrude into a part",
+        Command::ImportObj | Command::ImportStl => "opens as an editable polygon mesh",
+        Command::Cad(CadCommand::ImportStep) => "opens as a solid part",
+        _ => return section_note(items, index).map(SharedString::from),
+    };
+    let name = label.trim_end_matches('\u{2026}');
+    Some(format!("{name} \u{b7} {made}").into())
+}
+
 fn first_action(items: &[MenuItem]) -> usize {
     items
         .iter()
@@ -362,11 +379,12 @@ fn filter_field(t: Colors, query: &str) -> Div {
 
 /// What the highlighted item's section makes, and the key that adds it: the
 /// palette's footer pattern, so section headings stay one word.
-fn footer(t: Colors, note: Option<&'static str>, cx: &App) -> Div {
-    const KEYS: f32 = 76.;
+fn footer(t: Colors, note: Option<SharedString>) -> Div {
+    // Two lines tall for every item, so arrowing through the list never
+    // makes the footer jump between one and two lines.
     row()
         .flex_shrink_0()
-        .h(px(H_MD))
+        .h(px(42.))
         .px(px(SP_3))
         .gap(px(SP_3))
         .border_t_1()
@@ -376,18 +394,12 @@ fn footer(t: Colors, note: Option<&'static str>, cx: &App) -> Div {
             div()
                 .flex_1()
                 .min_w(px(0.))
+                .max_h(px(30.))
                 .overflow_hidden()
-                .whitespace_nowrap()
                 .text_size(px(TEXT_SM))
+                .line_height(px(15.))
                 .text_color(rgb(t.text_muted))
-                .when_some(note, |d, note| {
-                    d.child(fit_text(
-                        cx,
-                        note.into(),
-                        TEXT_SM,
-                        ADD_WIDTH - SP_3 * 3. - KEYS,
-                    ))
-                }),
+                .when_some(note, |d, note| d.child(note)),
         )
         .child(hint(t, "Return", "Add"))
 }
@@ -402,7 +414,7 @@ pub(super) fn overlay(t: Colors, s: &Studio, cx: &mut Context<Studio>) -> AnyEle
     let words = query_words(&query);
     let items = visible_items(kind, s.scene.camera, &query);
     let note = (!items.is_empty())
-        .then(|| section_note(&items, selected))
+        .then(|| item_note(&items, selected))
         .flatten();
     // Rail menus open beside the rail, level with their button; others drop
     // below their trigger. `RAIL_EDGE` is the rail's padding and border
@@ -441,7 +453,7 @@ pub(super) fn overlay(t: Colors, s: &Studio, cx: &mut Context<Studio>) -> AnyEle
                 heading(t, label)
                     .h(px(HEADING_H))
                     .text_color(rgb(t.text))
-                    .when(index > 0, |d| d.mt(px(SP_1))),
+                    .when(index > 0, |d| d.mt(px(SP_2))),
             ),
             MenuItem::Separator => list.child(
                 div()
@@ -485,13 +497,9 @@ pub(super) fn overlay(t: Colors, s: &Studio, cx: &mut Context<Studio>) -> AnyEle
                                 Some(glyph) => icon(
                                     glyph,
                                     ICON_MD,
-                                    if adds_part(command) {
-                                        t.accent_text
-                                    } else if active {
-                                        t.text
-                                    } else {
-                                        t.text_muted
-                                    },
+                                    // Teal means selected; parts keep their own
+                                    // glyph shapes instead of an accent tint.
+                                    if active { t.text } else { t.text_muted },
                                 )
                                 .into_any_element(),
                                 None => div().w(px(ICON_MD)).flex_shrink_0().into_any_element(),
@@ -555,7 +563,7 @@ pub(super) fn overlay(t: Colors, s: &Studio, cx: &mut Context<Studio>) -> AnyEle
         .shadow(float_shadow(t))
         .when(add, |d| d.child(filter_field(t, &query)))
         .child(list)
-        .when(add, |d| d.child(footer(t, note, cx)));
+        .when(add, |d| d.child(footer(t, note)));
     backdrop(
         t,
         "menu-backdrop",
@@ -634,15 +642,22 @@ mod tests {
         assert_eq!(shown.len(), 4);
         // An import row's note is searchable ("wavefront" finds OBJ).
         assert_eq!(commands("wavefront"), [Command::ImportObj]);
-        // The footer describes the highlighted item's section.
+        // The footer describes the highlighted item, not its section.
         let all = items(MenuKind::Add, camera);
-        let step_row = all
-            .iter()
-            .position(|item| item.command() == Some(Command::Cad(CadCommand::ImportStep)))
-            .unwrap();
+        let row_of = |command| {
+            all.iter()
+                .position(|item| item.command() == Some(command))
+                .unwrap()
+        };
         assert_eq!(
-            super::section_note(&all, step_row),
-            Some("Meshes or parts from a file")
+            super::item_note(&all, row_of(Command::Cad(CadCommand::ImportStep)))
+                .map(|note| note.to_string()),
+            Some("STEP \u{b7} opens as a solid part".to_owned())
+        );
+        assert_eq!(
+            super::item_note(&all, row_of(Command::Add(Primitive::Cube)))
+                .map(|note| note.to_string()),
+            Some("Cube \u{b7} editable polygon mesh".to_owned())
         );
         // Matched words highlight separately; touching ones join.
         let ranges = label_matches("Cylinder", &["der".into(), "cy".into()]);

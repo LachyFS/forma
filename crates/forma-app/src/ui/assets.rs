@@ -85,6 +85,14 @@ icons! {
     DrawPolygon => "hexagon",
     DrawTrim => "scissors",
     DrawConstruction => "square-dashed",
+    // Sketch curves as the Draw panel lists them: shapes, not tools.
+    CurveLine => "forma-curve-line",
+    CurveArc => "forma-curve-arc",
+    CurveCircle => "forma-curve-circle",
+    // Extrude extents, for the feature panel's narrow segmented control.
+    ExtentOneSide => "forma-extent-one-side",
+    ExtentSymmetric => "forma-extent-symmetric",
+    ExtentTwoSides => "forma-extent-two-sides",
     Minus => "minus",
     Light => "lightbulb",
     Camera => "camera",

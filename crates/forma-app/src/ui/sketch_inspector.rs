@@ -178,9 +178,9 @@ fn curve_list(
         return None;
     }
     const KINDS: [(&str, &str, Icon); 3] = [
-        ("Lines", "Line", Icon::DrawLine),
-        ("Arcs", "Arc", Icon::DrawArc),
-        ("Circles", "Circle", Icon::DrawCircle),
+        ("Lines", "Line", Icon::CurveLine),
+        ("Arcs", "Arc", Icon::CurveArc),
+        ("Circles", "Circle", Icon::CurveCircle),
     ];
     let kind = |curve: &SketchCurve| match curve {
         SketchCurve::Line { .. } => 0,
@@ -331,14 +331,30 @@ pub(super) fn panel(t: Colors, s: &Studio, cx: &mut Context<Studio>) -> Option<D
                 .child(name),
         )
         .child(badge(t, "Draw mode", BadgeTone::Accent));
-    let open_tile = {
-        let tile = stat_tile(t, "Open ends", counts.open_ends.to_string());
-        if counts.open_ends > 0 {
-            tile.text_color(rgb(t.warning))
-        } else {
-            tile
-        }
-    };
+    // One quiet line of counts; open ends keep the warning ink.
+    let stats = row()
+        .id("draw-panel-stats")
+        .h(px(20.))
+        .gap(px(SP_1_5))
+        .text_size(px(TEXT_SM))
+        .text_color(rgb(t.text_muted))
+        .tabular()
+        .child(plural(counts.curves, "curve", "curves"))
+        .child(div().text_color(rgb(t.text_faint)).child("\u{b7}"))
+        .child(plural(counts.profiles, "profile", "profiles"))
+        .child(div().text_color(rgb(t.text_faint)).child("\u{b7}"))
+        .child(
+            div()
+                .when(counts.open_ends > 0, |d| {
+                    d.text_color(rgb(t.warning)).font_weight(WEIGHT_MEDIUM)
+                })
+                .child(plural(counts.open_ends, "open end", "open ends")),
+        )
+        .tooltip(tip(
+            t,
+            "Profiles are closed regions Extrude and Revolve can use · Open ends are curve ends no other curve meets",
+            None,
+        ));
     let summary = col()
         .gap(px(SP_1))
         .child(fact_row(
@@ -348,19 +364,7 @@ pub(super) fn panel(t: Colors, s: &Studio, cx: &mut Context<Studio>) -> Option<D
             "The plane new curves are drawn on",
             false,
         ))
-        .child(
-            stat_tiles([
-                stat_tile(t, "Curves", counts.curves.to_string()),
-                stat_tile(t, "Profiles", counts.profiles.to_string()),
-                open_tile,
-            ])
-            .id("draw-panel-stats")
-            .tooltip(tip(
-                t,
-                "Profiles are closed regions Extrude and Revolve can use · Open ends are curve ends no other curve meets",
-                None,
-            )),
-        )
+        .child(stats)
         .when(counts.construction > 0, |d| {
             d.child(fact_row(
                 t,

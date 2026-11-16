@@ -50,15 +50,105 @@ fn notice(t: Colors, glyph: Icon, ink: u32, title: String, detail: Option<String
         )
 }
 
-/// A label above a full-width segmented control (operation, extent): the
-/// choices need the whole row to stay legible in a narrow sidebar.
-fn choice_row(t: Colors, label: &'static str, control: impl IntoElement) -> Div {
-    col()
-        .gap(px(SP_1))
-        .pt(px(SP_1))
-        .pb(px(SP_1))
-        .child(div().text_color(rgb(t.text_muted)).child(label))
-        .child(control)
+/// One option of a segmented choice row.
+struct Choice {
+    id: SharedString,
+    label: &'static str,
+    glyph: Icon,
+    active: bool,
+    command: Command,
+}
+
+/// How a segmented choice (operation, extent) sits in the panel.
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum ChoiceLayout {
+    /// In the value column beside the label, every option named.
+    Labelled,
+    /// In the value column: the current option named, the others by glyph
+    /// (and tooltip), so the row keeps the panel's one label column.
+    Current,
+    /// Under its label at full width, for sidebars too narrow for either.
+    Stacked { named: bool },
+}
+
+/// The widest layout the laid-out sidebar fits, measured from the labels.
+fn choice_layout(cx: &App, s: &Studio, choices: &[Choice]) -> ChoiceLayout {
+    let fits = |label: &'static str, width: f32| {
+        width > 0. && fit_text(cx, label.into(), TEXT_MD, width).as_ref() == label
+    };
+    let count = choices.len() as f32;
+    // Track padding and border plus the 2 px gaps between segments.
+    let inner = |room: f32| room - 6. - 2. * (count - 1.);
+    let all_named = |room: f32| {
+        let share = inner(room) / count - 2. * SP_2 - 1.;
+        choices.iter().all(|choice| fits(choice.label, share))
+    };
+    let sidebar = s.panels.laid_out_sidebar();
+    // Section insets and a little slack for the scroll thumb.
+    let full = sidebar - 2. * SP_3 - 4.;
+    let value = full - LABEL_W - SP_2;
+    if all_named(value) {
+        return ChoiceLayout::Labelled;
+    }
+    let glyph_only = ICON_SM + 2. * SP_1_5;
+    let current = choices.iter().find(|choice| choice.active);
+    let room = inner(value) - glyph_only * (count - 1.) - 2. * SP_2 - ICON_SM - (SP_1 + 1.) - 1.;
+    if current.is_some_and(|choice| fits(choice.label, room)) {
+        return ChoiceLayout::Current;
+    }
+    ChoiceLayout::Stacked {
+        named: all_named(full),
+    }
+}
+
+/// A labelled segmented choice. It keeps the panel's label column whenever
+/// the sidebar allows, naming every option or just the current one; only a
+/// very narrow sidebar stacks the label above the control.
+fn choice_row(
+    t: Colors,
+    s: &Studio,
+    label: &'static str,
+    choices: Vec<Choice>,
+    cx: &mut Context<Studio>,
+) -> Div {
+    let layout = choice_layout(cx, s, &choices);
+    let control = segmented(t)
+        .w_full()
+        .children(choices.into_iter().map(|choice| {
+            let ink = if choice.active {
+                t.accent_text
+            } else {
+                t.text_muted
+            };
+            let glyph = icon(choice.glyph, ICON_SM, ink);
+            let segment = segment(t, choice.id, choice.active, 22.)
+                .min_w(px(0.))
+                .tooltip(command_tip(t, choice.command));
+            let segment = match layout {
+                ChoiceLayout::Labelled | ChoiceLayout::Stacked { named: true } => {
+                    segment.flex_1().child(choice.label)
+                }
+                ChoiceLayout::Current if choice.active => {
+                    segment.flex_1().child(glyph).child(choice.label)
+                }
+                ChoiceLayout::Current => segment
+                    .flex_shrink_0()
+                    .w(px(ICON_SM + 2. * SP_1_5))
+                    .px(px(0.))
+                    .child(glyph),
+                ChoiceLayout::Stacked { named: false } => segment.flex_1().child(glyph),
+            };
+            on_command(segment, choice.command, cx)
+        }));
+    match layout {
+        ChoiceLayout::Stacked { .. } => col()
+            .gap(px(SP_1))
+            .pt(px(SP_1))
+            .pb(px(SP_1))
+            .child(div().text_color(rgb(t.text_muted)).child(label))
+            .child(control),
+        _ => property_row(t, label, control),
+    }
 }
 
 fn thousands(value: usize) -> String {
@@ -88,45 +178,25 @@ fn operations(feature: &Feature) -> Option<(FeatureOperation, &'static [FeatureO
 
 fn operation_control(
     t: Colors,
+    s: &Studio,
     feature: &Feature,
-    icons_only: bool,
     cx: &mut Context<Studio>,
 ) -> Option<Div> {
     let (current, choices) = operations(feature)?;
-    let control = segmented(t)
-        .w_full()
-        .children(choices.iter().map(|&operation| {
-            let active = operation == current;
-            let command = Command::Timeline(TimelineCommand::SetOperation(operation));
-            let label = match operation {
+    let choices = choices
+        .iter()
+        .map(|&operation| Choice {
+            id: SharedString::from(format!("feature-operation-{operation:?}")),
+            label: match operation {
                 FeatureOperation::NewBody => "New",
                 other => other.label(),
-            };
-            on_command(
-                segment(
-                    t,
-                    SharedString::from(format!("feature-operation-{operation:?}")),
-                    active,
-                    22.,
-                )
-                .flex_1()
-                .min_w(px(0.))
-                // Four labelled segments only fit as text; a narrow sidebar
-                // keeps the icons, named by their tooltips.
-                .when(icons_only, |d| {
-                    d.child(icon(
-                        operation_icon(operation),
-                        ICON_SM,
-                        if active { t.text } else { t.text_muted },
-                    ))
-                })
-                .when(!icons_only, |d| d.child(label))
-                .tooltip(command_tip(t, command)),
-                command,
-                cx,
-            )
-        }));
-    Some(choice_row(t, "Operation", control))
+            },
+            glyph: operation_icon(operation),
+            active: operation == current,
+            command: Command::Timeline(TimelineCommand::SetOperation(operation)),
+        })
+        .collect();
+    Some(choice_row(t, s, "Operation", choices, cx))
 }
 
 /// Rows for the selected feature's values.
@@ -268,26 +338,21 @@ fn parameters(
                 cx,
             ));
             let mode = ExtentMode::of(extrude.extent);
-            let extent = segmented(t)
-                .w_full()
-                .children(ExtentMode::ALL.into_iter().map(|choice| {
-                    let command = Command::Timeline(TimelineCommand::SetExtent(choice));
-                    on_command(
-                        segment(
-                            t,
-                            SharedString::from(format!("feature-extent-{choice:?}")),
-                            choice == mode,
-                            22.,
-                        )
-                        .flex_1()
-                        .min_w(px(0.))
-                        .child(choice.label())
-                        .tooltip(command_tip(t, command)),
-                        command,
-                        cx,
-                    )
-                }));
-            rows = rows.child(choice_row(t, "Extent", extent));
+            let choices = ExtentMode::ALL
+                .into_iter()
+                .map(|choice| Choice {
+                    id: SharedString::from(format!("feature-extent-{choice:?}")),
+                    label: choice.label(),
+                    glyph: match choice {
+                        ExtentMode::OneSide => Icon::ExtentOneSide,
+                        ExtentMode::Symmetric => Icon::ExtentSymmetric,
+                        ExtentMode::TwoSides => Icon::ExtentTwoSides,
+                    },
+                    active: choice == mode,
+                    command: Command::Timeline(TimelineCommand::SetExtent(choice)),
+                })
+                .collect();
+            rows = rows.child(choice_row(t, s, "Extent", choices, cx));
             if mode == ExtentMode::TwoSides {
                 rows = rows.child(numeric_row(
                     t,
@@ -412,7 +477,7 @@ fn parameters(
             rows = rows.child(readonly_row(t, label, "", value, reason));
         }
     }
-    if let Some(control) = operation_control(t, feature, stacked, cx) {
+    if let Some(control) = operation_control(t, s, feature, cx) {
         rows = rows.child(control);
     }
     rows
@@ -742,7 +807,10 @@ pub(super) fn regeneration_timing(s: &Studio, id: u64) -> Option<(String, String
 /// One feature row in the summary's history list. `number` is its place in
 /// the list, which a pending feature before it shifts by one. While a tool
 /// runs the rows are a read-only map of where its feature lands: no hover
-/// fill or click competes with the pending row.
+/// fill or click competes with the pending row. `current` marks the last
+/// feature the part is built to with a short accent rail: what the bottom
+/// timeline shows as its marker, here beside the names.
+#[allow(clippy::too_many_arguments)]
 fn history_row(
     t: Colors,
     s: &Studio,
@@ -750,6 +818,7 @@ fn history_row(
     index: usize,
     number: usize,
     feature: &Feature,
+    current: bool,
     cx: &mut Context<Studio>,
 ) -> Stateful<Div> {
     let id = feature.id;
@@ -758,6 +827,19 @@ fn history_row(
     let live = s.cad_tool_active();
     row()
         .id(("part-history", id))
+        .relative()
+        .when(current, |d| {
+            d.child(
+                div()
+                    .absolute()
+                    .left_0()
+                    .top(px(5.))
+                    .bottom(px(5.))
+                    .w(px(2.))
+                    .rounded_full()
+                    .bg(rgb(t.accent)),
+            )
+        })
         .h(px(H_SM + 2.))
         .px(px(SP_1_5))
         .gap(px(SP_2))
@@ -820,6 +902,31 @@ fn history_row(
                 }
             }))
         })
+}
+
+/// Where the history is rolled back to: the features below it are not
+/// built until the marker moves past them.
+fn rollback_divider(t: Colors, marker: usize, total: usize) -> Stateful<Div> {
+    row()
+        .id("part-history-rollback")
+        .h(px(20.))
+        .px(px(SP_1_5))
+        .gap(px(SP_2))
+        .child(
+            div()
+                .flex_shrink_0()
+                .text_size(px(TEXT_SM))
+                .font_weight(WEIGHT_MEDIUM)
+                .text_color(rgb(t.accent_text))
+                .child("Rolled back"),
+        )
+        .child(div().flex_1().h(px(2.)).rounded_full().bg(rgb(t.accent)))
+        .tooltip(tip_detail(
+            t,
+            format!("Built to step {marker} of {total}"),
+            "Features below the marker are skipped. Drag the marker in the timeline to restore them.",
+            None,
+        ))
 }
 
 /// The name a running tool's feature gets on Done, as the history shows it
@@ -1002,20 +1109,33 @@ fn part_summary(
             // A running tool's feature lands at the rollback marker, where
             // Done inserts it; the rows after it renumber.
             let shift = pending.as_ref().map_or(0, |_| 1);
+            let total = part.features.len();
+            // The rail marks the last built feature; a pending feature takes
+            // that place itself, so then nothing else carries it.
+            let current = (pending.is_none() && marker > 0).then(|| marker - 1);
             let mut rows: Vec<AnyElement> = part
                 .features
                 .iter()
                 .enumerate()
                 .map(|(index, feature)| {
                     let number = index + 1 + if index >= marker { shift } else { 0 };
-                    history_row(t, s, part, index, number, feature, cx).into_any_element()
+                    let current = current == Some(index);
+                    history_row(t, s, part, index, number, feature, current, cx).into_any_element()
                 })
                 .collect();
+            let mut after_marker = marker.min(rows.len());
             if let Some(pending) = pending {
                 let name = pending_name(part, pending.name, pending.count);
                 rows.insert(
-                    marker.min(rows.len()),
+                    after_marker,
                     pending_row(t, marker + 1, pending.icon, name, pending.hint).into_any_element(),
+                );
+                after_marker += 1;
+            }
+            if marker < total {
+                rows.insert(
+                    after_marker,
+                    rollback_divider(t, marker, total).into_any_element(),
                 );
             }
             rows
