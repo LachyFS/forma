@@ -271,6 +271,7 @@ fn reference_geometry(scene: &Scene) -> Geometry {
             .into_iter()
             .map(|[a, b]| edge_key(a, b))
             .collect();
+        let features = feature_edges(mesh, &edges);
         // Classify creases and angle-weight in mesh space, then transform
         // normals with the inverse transpose. Nonuniform object scaling must
         // not change smoothing groups or create seams on a flattened sphere.
@@ -308,16 +309,23 @@ fn reference_geometry(scene: &Scene) -> Geometry {
                     .normalize_or_zero()
             });
             let mut edge_bits = 0u32;
+            let mut feature_bits = 0u32;
             for corner in 0..3 {
-                if edges.contains(&edge_key(face[(corner + 1) % 3], face[(corner + 2) % 3])) {
+                let key = edge_key(face[(corner + 1) % 3], face[(corner + 2) % 3]);
+                if edges.contains(&key) {
                     edge_bits |= 1 << corner;
+                }
+                if features.contains(&key) {
+                    feature_bits |= 1 << corner;
                 }
             }
             triangles.push(Triangle {
                 generated0: generated[face[0] as usize]
                     .extend(material_index as f32)
                     .to_array(),
-                generated1: vec4(generated[face[1] as usize]),
+                generated1: generated[face[1] as usize]
+                    .extend(feature_bits as f32)
+                    .to_array(),
                 generated2: vec4(generated[face[2] as usize]),
                 v0: vec4(positions[face[0] as usize]),
                 v1: vec4(positions[face[1] as usize]),

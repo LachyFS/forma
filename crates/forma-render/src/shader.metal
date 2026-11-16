@@ -435,8 +435,10 @@ Ray camera_ray(float2 pixel, constant Uniforms &u) {
     float3 direction = u.cam_forward.xyz + u.cam_right.xyz * (ndc.x * u.camera.y * u.camera.x) + u.cam_up.xyz * (ndc.y * u.camera.x);
     return { u.cam_origin.xyz, normalize(direction) };
 }
-float3 viewport_background(Ray ray) {
+bool light_viewport(constant Uniforms &u) { return u.cam_up.w > 0.5f; }
+float3 viewport_background(Ray ray, constant Uniforms &u) {
     float t = smoothstep(-0.5f, 0.7f, ray.direction.y);
+    if (light_viewport(u)) return mix(float3(0.60f, 0.62f, 0.65f), float3(0.84f, 0.855f, 0.875f), t);
     return mix(float3(0.029f, 0.034f, 0.043f), float3(0.018f, 0.023f, 0.032f), t);
 }
 float2 project_to_pixels(float3 point, constant Uniforms &u) {
@@ -470,9 +472,32 @@ float edge_coverage(Ray ray, Hit hit, device const Triangle &tri, constant Unifo
     if ((mask & 4u) != 0u) distance = min(distance, projected_edge_distance(position, tri.v0.xyz, tri.v1.xyz, u));
     return 1.0f - smoothstep(thickness * 0.45f, thickness * 1.45f, distance);
 }
+// B-rep edges of parts and creases of meshes, from the mask in generated1.w.
+float feature_coverage(Ray ray, Hit hit, device const Triangle &tri, constant Uniforms &u, float thickness) {
+    uint mask = uint(tri.generated1.w + 0.5f);
+    if (mask == 0u) return 0.0f;
+    float3 position = ray.origin + hit.distance * ray.direction;
+    float distance = INFINITY;
+    if ((mask & 1u) != 0u) distance = min(distance, projected_edge_distance(position, tri.v1.xyz, tri.v2.xyz, u));
+    if ((mask & 2u) != 0u) distance = min(distance, projected_edge_distance(position, tri.v2.xyz, tri.v0.xyz, u));
+    if ((mask & 4u) != 0u) distance = min(distance, projected_edge_distance(position, tri.v0.xyz, tri.v1.xyz, u));
+    return 1.0f - smoothstep(thickness * 0.3f, thickness * 1.1f, distance);
+}
+// Object-mode CAD feature lines. Kernels average this over their spatial
+// samples so lines stay antialiased along silhouettes, then ink once in
+// display space at the opacity in cam_right.w (0 = off).
+float feature_ink(Ray ray, Hit hit, device const Triangle *triangles, constant Uniforms &u) {
+    if (u.cam_origin.w >= 0.5f || u.cam_right.w <= 0.0f || hit.triangle == NO_HIT) return 0.0f;
+    return feature_coverage(ray, hit, triangles[hit.triangle], u, 1.0f);
+}
+float3 composite_features(float3 display, float coverage, constant Uniforms &u) {
+    float3 ink = light_viewport(u) ? float3(0.17f, 0.18f, 0.2f) : float3(0.03f, 0.033f, 0.04f);
+    return mix(display, ink, clamp(coverage, 0.0f, 1.0f) * u.cam_right.w);
+}
 float3 composite_edit(float3 color, Ray ray, Hit hit, float2 pixel, device const Triangle *triangles, constant Uniforms &u) {
-    if (u.cam_origin.w < 0.5f || hit.triangle == NO_HIT) return color;
+    if (hit.triangle == NO_HIT) return color;
     device const Triangle &tri = triangles[hit.triangle];
+    if (u.cam_origin.w < 0.5f) return color;
     float3 result = mix(color, float3(0.10f, 0.13f, 0.16f), edge_coverage(ray, hit, tri, u, 1.0f) * 0.85f);
     if (u.cam_origin.w > 1.5f) {
         float2 marker_pixel(pixel.x - float(u.image.x) * 0.5f, float(u.image.y) * 0.5f - pixel.y);
@@ -515,11 +540,15 @@ float3 solid_shading(Surface s, Ray ray, constant Uniforms &u) {
     float3 key = normalize(-u.cam_forward.xyz * 0.6f - u.cam_right.xyz * 0.45f + u.cam_up.xyz * 0.85f);
     float3 fill = normalize(u.cam_right.xyz * 0.8f + u.cam_up.xyz * 0.2f - u.cam_forward.xyz * 0.25f);
     float3 rim = normalize(u.cam_forward.xyz * 0.8f + u.cam_up.xyz * 0.6f);
-    float ambient = mix(0.15f, 0.26f, s.normal.y * 0.5f + 0.5f);
-    float shade = ambient + 0.65f * max(0.0f, dot(s.normal, key)) + 0.17f * max(0.0f, dot(s.normal, fill));
-    float specular = pow(max(0.0f, dot(s.normal, normalize(key - ray.direction))), 48.0f) * 0.12f;
-    float rim_light = pow(max(0.0f, dot(s.normal, rim)), 3.0f) * 0.07f;
-    return float3(0.39f, 0.43f, 0.49f) * shade + float3(specular + rim_light);
+    // Neutral clay: a sky/ground hemisphere, a soft key and fill, a broad
+    // highlight and a faint grazing rim, so curvature reads without color.
+    float ambient = mix(0.15f, 0.30f, s.normal.y * 0.5f + 0.5f);
+    float shade = ambient + 0.62f * max(0.0f, dot(s.normal, key)) + 0.16f * max(0.0f, dot(s.normal, fill));
+    float specular = pow(max(0.0f, dot(s.normal, normalize(key - ray.direction))), 40.0f) * 0.16f;
+    float facing = 1.0f - max(0.0f, dot(s.normal, -ray.direction));
+    float rim_light = pow(max(0.0f, dot(s.normal, rim)), 3.0f) * 0.05f + pow(facing, 4.0f) * 0.06f;
+    float3 base = light_viewport(u) ? float3(0.52f, 0.53f, 0.55f) : float3(0.43f, 0.445f, 0.465f);
+    return base * shade + float3(specular + rim_light);
 }
 float grid_line(float coordinate, float spacing, float width) {
     float nearest = abs(coordinate - round(coordinate / spacing) * spacing);
@@ -558,12 +587,22 @@ float3 add_grid(float3 color, Ray ray, Hit hit, float2 pixel, constant Uniforms 
     // At blend=1 the major/coarse pair exactly matches the next level's
     // minor/major pair, including their contrast at shared grid intersections.
     float opacity = mix(0.11f * minor + 0.13f * major, 0.11f * major + 0.13f * coarse, blend) * fade;
-    color = mix(color, float3(0.13f, 0.15f, 0.18f), opacity);
+    bool light = light_viewport(u);
+    color = mix(color, light ? float3(0.22f, 0.235f, 0.26f) : float3(0.13f, 0.15f, 0.18f), opacity * (light ? 1.6f : 1.0f));
     float x_axis = 1.0f - smoothstep(wz * 0.5f, wz * 1.6f, abs(p.z));
     float z_axis = 1.0f - smoothstep(wx * 0.5f, wx * 1.6f, abs(p.x));
-    color = mix(color, float3(0.23f, 0.055f, 0.06f), x_axis * fade * 0.55f);
-    return mix(color, float3(0.055f, 0.12f, 0.29f), z_axis * fade * 0.55f);
+    color = mix(color, light ? float3(0.62f, 0.09f, 0.1f) : float3(0.23f, 0.055f, 0.06f), x_axis * fade * 0.55f);
+    return mix(color, light ? float3(0.08f, 0.2f, 0.62f) : float3(0.055f, 0.12f, 0.29f), z_axis * fade * 0.55f);
 }
+float3 solid_sample(float2 p, Ray ray, Hit hit, device const Triangle *triangles, constant Uniforms &u) {
+    float3 color = hit.triangle == NO_HIT ? viewport_background(ray, u)
+        : solid_shading(surface_at(ray, hit, triangles), ray, u);
+    return add_grid(color, ray, hit, p, u);
+}
+// Four rotated-grid samples: smooth silhouettes and edges at Solid's low cost.
+constant float2 SOLID_OFFSETS[4] = {
+    float2(-0.125f, -0.375f), float2(0.375f, -0.125f), float2(-0.375f, 0.125f), float2(0.125f, 0.375f),
+};
 float3 display_transform(float3 linear, float exposure) {
     float3 x = max(linear, 0.0f) * exp2(clamp(exposure, -20.0f, 20.0f));
     // Fitted filmic display curve (ACES approximation), followed by sRGB OETF.
@@ -581,7 +620,7 @@ float3 wireframe_shading(Ray ray, float2 pixel, Hit primary, device const Triang
     // Blender-style X-ray wireframe: faces are transparent, so every polygon
     // edge along the ray stays visible. Front edges are opaque and bright;
     // occluded edges behind them are dimmed rather than removed.
-    float3 color = viewport_background(ray) * 1.10f;
+    float3 color = viewport_background(ray, u) * 1.10f;
     Hit far_hit = { INFINITY, float2(0), NO_HIT };
     color = add_grid(color, ray, far_hit, pixel, u);
     Ray march = ray;
@@ -634,6 +673,7 @@ kernel void render_main(device const Triangle *triangles [[buffer(0)]],
     Ray ray = camera_ray(pixel, u);
     Hit primary = trace(ray, INFINITY, triangles, nodes, u);
     float3 color;
+    float ink = 0.0f;
     if (refresh) {
         float4 total = accumulation[index];
         color = total.xyz / max(1.0f, total.w);
@@ -658,11 +698,19 @@ kernel void render_main(device const Triangle *triangles [[buffer(0)]],
     } else {
         if (u.image.w == 0u) {
             color = wireframe_shading(ray, pixel, primary, triangles, nodes, u);
+        } else if (u.image.w == 1u) {
+            color = float3(0.0f);
+            for (uint i = 0u; i < 4u; ++i) {
+                float2 p = pixel + SOLID_OFFSETS[i];
+                Ray r = camera_ray(p, u);
+                Hit h = trace(r, INFINITY, triangles, nodes, u);
+                color += solid_sample(p, r, h, triangles, u) * 0.25f;
+                ink += feature_ink(r, h, triangles, u) * 0.25f;
+            }
         } else if (primary.triangle != NO_HIT) {
             Surface s = surface_at(ray, primary, triangles);
             color = solid_shading(s, ray, u);
-        } else color = viewport_background(ray);
-        if (u.image.w == 1u) color = add_grid(color, ray, primary, pixel, u);
+        } else color = viewport_background(ray, u);
         accumulation[index] = float4(color, 1.0f);
     }
     // Pixel-center rays keep the outline stable as path tracing samples jitter.
@@ -675,6 +723,6 @@ kernel void render_main(device const Triangle *triangles [[buffer(0)]],
     // Denoising replaces every displayed pixel, so the overlay travels to it in
     // the guide weight both guides share.
     if (progressive) normal_accumulation[index].w = coverage;
-    float3 display = composite_edit(display_transform(color, progressive ? u.settings.x : 0.0f), camera_ray(overlay_pixel, u), overlay_hit, overlay_pixel, triangles, u);
+    float3 display = composite_edit(composite_features(display_transform(color, progressive ? u.settings.x : 0.0f), ink, u), camera_ray(overlay_pixel, u), overlay_hit, overlay_pixel, triangles, u);
     output.write(float4(composite_selection(display, coverage), 1.0f), gid);
 }

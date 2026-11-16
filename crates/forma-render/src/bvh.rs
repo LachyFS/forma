@@ -96,6 +96,49 @@ struct MeshTriangle {
     vertices: [u32; 3],
     normals: [Vec3; 3],
     edge_bits: u32,
+    /// Edges drawn as lines in shaded object mode: B-rep edges of parts, and
+    /// creases and open boundaries of meshes. Same corner convention as
+    /// `edge_bits`.
+    feature_bits: u32,
+}
+
+/// Dihedral angle above which a mesh edge reads as a crease, as in CAD views.
+const FEATURE_CREASE_COS: f32 = 0.82; // about 35 degrees
+
+/// Edges a shaded CAD view outlines. Parts (grouped meshes) outline every
+/// B-rep edge, including tangent fillet boundaries. Meshes outline creases and
+/// open boundaries, so a smooth sphere shows no wire while a cube shows its 12
+/// edges.
+fn feature_edges(mesh: &Mesh, edges: &HashSet<(u32, u32)>) -> HashSet<(u32, u32)> {
+    if mesh.has_groups() {
+        return edges.clone();
+    }
+    let mut normals: std::collections::HashMap<(u32, u32), (Vec3, u32, bool)> =
+        std::collections::HashMap::with_capacity(edges.len());
+    for (index, face) in mesh.faces.iter().enumerate() {
+        let normal = mesh.face_normal(index);
+        for (&a, &b) in face
+            .iter()
+            .zip(face.iter().cycle().skip(1))
+            .take(face.len())
+        {
+            if a == b {
+                continue;
+            }
+            normals
+                .entry(edge_key(a, b))
+                .and_modify(|(first, uses, crease)| {
+                    *uses += 1;
+                    *crease |= first.dot(normal) < FEATURE_CREASE_COS;
+                })
+                .or_insert((normal, 1, false));
+        }
+    }
+    normals
+        .into_iter()
+        .filter(|(_, (_, uses, crease))| *uses == 1 || *crease)
+        .map(|(key, _)| key)
+        .collect()
 }
 
 struct MeshGeometry {
@@ -137,6 +180,7 @@ impl MeshGeometry {
                 })
                 .collect()
         };
+        let features = feature_edges(mesh, &edges);
         // Classify creases and angle-weight in mesh space. Nonuniform object
         // scaling must not change smoothing groups or create sphere seams.
         // Incident corners are contiguous, in the original triangle order, so
@@ -186,15 +230,21 @@ impl MeshGeometry {
                     .normalize_or_zero()
             });
             let mut edge_bits = 0u32;
+            let mut feature_bits = 0u32;
             for corner in 0..3 {
-                if edges.contains(&edge_key(face[(corner + 1) % 3], face[(corner + 2) % 3])) {
+                let key = edge_key(face[(corner + 1) % 3], face[(corner + 2) % 3]);
+                if edges.contains(&key) {
                     edge_bits |= 1 << corner;
+                }
+                if features.contains(&key) {
+                    feature_bits |= 1 << corner;
                 }
             }
             triangles.push(MeshTriangle {
                 vertices: face,
                 normals,
                 edge_bits,
+                feature_bits,
             });
         }
         Self {
@@ -260,7 +310,10 @@ impl Geometry {
                     generated0: prepared.generated[face[0] as usize]
                         .extend(material_index as f32)
                         .to_array(),
-                    generated1: vec4(prepared.generated[face[1] as usize]),
+                    // The spare lane carries the feature edge mask.
+                    generated1: prepared.generated[face[1] as usize]
+                        .extend(triangle.feature_bits as f32)
+                        .to_array(),
                     generated2: vec4(prepared.generated[face[2] as usize]),
                     v0: vec4(positions[face[0] as usize]),
                     v1: vec4(positions[face[1] as usize]),

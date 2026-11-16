@@ -52,8 +52,21 @@ impl Uniforms {
                     u32::from(settings.edit_wireframe) as f32
                 },
             ],
-            cam_right: vector(Vec3::X),
-            cam_up: vector(Vec3::Y),
+            // Spare lanes: feature edge opacity, and the light backdrop flag.
+            cam_right: with_w(
+                vector(Vec3::X),
+                if settings.show_edges
+                    && matches!(
+                        settings.mode,
+                        RenderMode::Solid | RenderMode::MaterialPreview
+                    )
+                {
+                    0.78
+                } else {
+                    0.0
+                },
+            ),
+            cam_up: with_w(vector(Vec3::Y), u32::from(settings.light_viewport) as f32),
             cam_forward: vector(Vec3::NEG_Z),
             world: if settings.mode == RenderMode::MaterialPreview
                 && !settings.preview.use_scene_world
@@ -125,6 +138,11 @@ impl Uniforms {
             },
         }
     }
+}
+
+fn with_w(mut v: [f32; 4], w: f32) -> [f32; 4] {
+    v[3] = w;
+    v
 }
 
 pub(crate) fn geometry_hash(scene: &Scene) -> u64 {

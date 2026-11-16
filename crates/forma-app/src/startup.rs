@@ -11,9 +11,10 @@
 //! launch like any part loaded from a file.
 use forma_core::{
     ChamferFeature, EdgeRef, ExtrudeExtent, ExtrudeFeature, FeatureKind, FeatureOperation,
-    Material, PartData, Primitive, Scene, Sketch, SketchCurve, SketchEntity, SketchPlane, Vec2,
-    Vec3,
+    Material, Mesh, PartData, Primitive, Scene, Sketch, SketchCurve, SketchEntity, SketchPlane,
+    Vec2, Vec3,
 };
+use std::collections::HashMap;
 
 /// Name of the part selected on launch, so its timeline shows immediately.
 pub(crate) const HERO_PART: &str = "Bracket";
@@ -159,6 +160,64 @@ pub(crate) fn bracket() -> PartData {
     part
 }
 
+/// A quad-only box of half-extent 1 whose edges and corners are rounded with
+/// `radius`. Lattice lines are spaced by angle across the rounds and evenly
+/// across the flats, so highlights run smoothly around every edge.
+pub(crate) fn rounded_box(radius: f32, round_segments: u32, flat_segments: u32) -> Mesh {
+    let inner = 1.0 - radius;
+    let mut coordinates = Vec::new();
+    for k in 0..round_segments {
+        let angle = std::f32::consts::FRAC_PI_2 * k as f32 / round_segments as f32;
+        coordinates.push(-(inner + radius * angle.cos()));
+    }
+    for k in 0..flat_segments {
+        coordinates.push(-inner + 2.0 * inner * k as f32 / flat_segments as f32);
+    }
+    for k in 0..=round_segments {
+        let angle = std::f32::consts::FRAC_PI_2 * k as f32 / round_segments as f32;
+        coordinates.push(inner + radius * angle.sin());
+    }
+    let n = coordinates.len() - 1;
+    let mut mesh = Mesh {
+        positions: Vec::new(),
+        faces: Vec::new(),
+        groups: Vec::new(),
+    };
+    let mut index = HashMap::new();
+    let mut vertex = |lattice: [usize; 3], mesh: &mut Mesh| -> u32 {
+        *index.entry(lattice).or_insert_with(|| {
+            let p = Vec3::from_array(lattice.map(|l| coordinates[l]));
+            let core = p.clamp(Vec3::splat(-inner), Vec3::splat(inner));
+            mesh.positions
+                .push(core + (p - core).normalize_or_zero() * radius);
+            mesh.positions.len() as u32 - 1
+        })
+    };
+    for axis in 0..3 {
+        let (b, c) = ((axis + 1) % 3, (axis + 2) % 3);
+        for side in [0, n] {
+            for i in 0..n {
+                for j in 0..n {
+                    let mut quad = [(0, 0), (1, 0), (1, 1), (0, 1)].map(|(di, dj)| {
+                        let mut lattice = [0; 3];
+                        lattice[axis] = side;
+                        lattice[b] = i + di;
+                        lattice[c] = j + dj;
+                        vertex(lattice, &mut mesh)
+                    });
+                    // b × c points along +axis, so this order faces outward on
+                    // the far side and must flip on the near side.
+                    if side == 0 {
+                        quad.reverse();
+                    }
+                    mesh.faces.push(quad.to_vec());
+                }
+            }
+        }
+    }
+    mesh
+}
+
 /// The startup studio: mesh objects and the bracket part on a plinth under
 /// a warm area light.
 pub(crate) fn studio_scene() -> Scene {
@@ -199,9 +258,9 @@ pub(crate) fn studio_scene() -> Scene {
     }
     if let Some(material) = scene.object_material_mut(torus) {
         *material = Material {
-            base_color: Vec3::new(0.035, 0.46, 0.38),
-            metallic: 0.45,
-            roughness: 0.24,
+            base_color: Vec3::new(0.05, 0.31, 0.27),
+            metallic: 0.35,
+            roughness: 0.3,
             ..Material::default()
         };
     }
@@ -222,8 +281,7 @@ pub(crate) fn studio_scene() -> Scene {
 
     let cube = scene.add(Primitive::Cube);
     if let Some(mesh) = scene.object_mesh_mut(cube) {
-        mesh.subdivide();
-        mesh.subdivide();
+        *mesh = rounded_box(0.32, 6, 6);
     }
     if let Some(object) = scene.object_mut(cube) {
         object.name = "Rounded cube".into();
@@ -287,6 +345,36 @@ mod tests {
                 .count()
                 >= 4
         );
+    }
+
+    #[test]
+    fn the_rounded_box_is_a_closed_outward_quad_mesh() {
+        let mesh = rounded_box(0.32, 6, 6);
+        assert!(mesh.faces.iter().all(|face| face.len() == 4));
+        // Closed: every edge is shared by exactly two quads.
+        let mut uses = HashMap::<(u32, u32), u32>::new();
+        for face in &mesh.faces {
+            for k in 0..4 {
+                let (a, b) = (face[k], face[(k + 1) % 4]);
+                *uses.entry((a.min(b), a.max(b))).or_default() += 1;
+            }
+        }
+        assert!(uses.values().all(|&count| count == 2));
+        // Outward: each face normal points away from the centre, and the
+        // flats stay flat at the full half-extent.
+        for face in 0..mesh.faces.len() {
+            let center = mesh.faces[face]
+                .iter()
+                .map(|&i| mesh.positions[i as usize])
+                .sum::<Vec3>()
+                / 4.0;
+            assert!(mesh.face_normal(face).dot(center) > 0.0);
+        }
+        let extent = mesh
+            .positions
+            .iter()
+            .fold(Vec3::ZERO, |m, p| m.max(p.abs()));
+        assert!((extent - Vec3::ONE).abs().max_element() < 1e-5);
     }
 
     #[test]

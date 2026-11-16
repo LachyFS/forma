@@ -109,6 +109,11 @@ pub struct RenderSettings {
     pub edit_wireframe: bool,
     /// Draw visible vertex markers as well as polygon edges.
     pub edit_vertices: bool,
+    /// Outline B-rep edges of parts and creases of meshes in Solid and
+    /// Material Preview, as CAD views do.
+    pub show_edges: bool,
+    /// Light viewport backdrop and grid, for light UI themes.
+    pub light_viewport: bool,
     pub preview: PreviewSettings,
     pub denoise: DenoiseSettings,
 }
@@ -126,6 +131,8 @@ impl Default for RenderSettings {
             selected: None,
             edit_wireframe: false,
             edit_vertices: false,
+            show_edges: true,
+            light_viewport: false,
             preview: PreviewSettings::default(),
             denoise: DenoiseSettings::default(),
         }

@@ -93,11 +93,17 @@ kernel void solid_main(device const Triangle *triangles [[buffer(0)]],
     float2 pixel = float2(gid) + 0.5f;
     Ray ray = camera_ray(pixel, u);
     Hit hit = preview_trace(ray, INFINITY, triangles, nodes, u PREVIEW_ACCEL_ARG);
-    float3 color = hit.triangle == NO_HIT ? viewport_background(ray)
-        : solid_shading(surface_at(ray, hit, triangles), ray, u);
-    color = add_grid(color, ray, hit, pixel, u);
+    float3 color = float3(0.0f);
+    float ink = 0.0f;
+    for (uint i = 0u; i < 4u; ++i) {
+        float2 p = pixel + SOLID_OFFSETS[i];
+        Ray r = camera_ray(p, u);
+        Hit h = preview_trace(r, INFINITY, triangles, nodes, u PREVIEW_ACCEL_ARG);
+        color += solid_sample(p, r, h, triangles, u) * 0.25f;
+        ink += feature_ink(r, h, triangles, u) * 0.25f;
+    }
     accumulation[gid.y * u.image.x + gid.x] = float4(color, 1.0f);
-    float3 display = composite_edit(display_transform(color, 0.0f), ray, hit, pixel, triangles, u);
+    float3 display = composite_edit(composite_features(display_transform(color, 0.0f), ink, u), ray, hit, pixel, triangles, u);
 #if FORMA_PREVIEW_SELECTION_ACCELERATED
     float coverage = preview_selection_coverage(pixel, hit, triangles, u, selected_acceleration);
 #else
@@ -200,7 +206,7 @@ float3 preview_surface(Ray ray, Hit hit, float ao, device const Triangle *triang
     // environment; transmitted rays can reveal other scene objects.
     for (uint depth = 0u; depth < 8u; ++depth) {
         if (hit.triangle == NO_HIT) {
-            float3 background = mix(viewport_background(ray), preview_world(ray.direction, blur, u, environment), u.preview_display.x);
+            float3 background = mix(viewport_background(ray, u), preview_world(ray.direction, blur, u, environment), u.preview_display.x);
             return color + throughput * background;
         }
         Surface s = evaluate_surface(ray, hit, triangles, u, MATERIAL_PASS);
@@ -252,14 +258,16 @@ kernel void preview_main(device const Triangle *triangles [[buffer(0)]],
     const float2 offsets[4] = { float2(-0.25f, -0.25f), float2(0.25f, -0.25f),
                                float2(-0.25f, 0.25f), float2(0.25f, 0.25f) };
     float3 color(0);
+    float ink = 0.0f;
     #pragma unroll
     for (uint i = 0u; i < 4u; ++i) {
         float2 p = pixel + offsets[i];
         Ray ray = camera_ray(p, u);
         Hit hit = preview_trace(ray, INFINITY, triangles, nodes, u PREVIEW_ACCEL_ARG);
+        ink += feature_ink(ray, hit, triangles, u) * 0.25f;
         float3 sample;
         if (hit.triangle == NO_HIT) {
-            sample = viewport_background(ray);
+            sample = viewport_background(ray, u);
             // The usual neutral background needs no environment lookup or
             // equirectangular trigonometry. Illumination is independent of this.
             if (u.preview_display.x > 0.0f) {
@@ -272,7 +280,7 @@ kernel void preview_main(device const Triangle *triangles [[buffer(0)]],
         color += add_grid(sample, ray, hit, p, u) * 0.25f;
     }
     accumulation[gid.y * u.image.x + gid.x] = float4(color, 1.0f);
-    float3 display = composite_edit(display_transform(color, u.settings.x), center_ray, center_hit, pixel, triangles, u);
+    float3 display = composite_edit(composite_features(display_transform(color, u.settings.x), ink, u), center_ray, center_hit, pixel, triangles, u);
 #if FORMA_PREVIEW_SELECTION_ACCELERATED
     float coverage = preview_selection_coverage(pixel, center_hit, triangles, u, selected_acceleration);
 #else

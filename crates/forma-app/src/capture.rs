@@ -618,6 +618,15 @@ async fn run(
             Timer::after(Duration::from_millis(50)).await;
         }
         Timer::after(Duration::from_millis(450)).await;
+        // Progressive modes: capture the converged image, as a user would see it
+        // after a moment, rather than the first noisy samples.
+        let deadline = Instant::now() + Duration::from_secs(30);
+        while window.update(cx, |s, _, _| {
+            s.settings.mode.progressive() && s.samples < s.settings.max_samples.min(96)
+        })? && Instant::now() < deadline
+        {
+            Timer::after(Duration::from_millis(100)).await;
+        }
         prepare_capture(window, cx).await?;
         let path = output.join(format!("{}.png", scenario.name));
         window.update(cx, |s, w, _| capture_window(s, w, &path))??;

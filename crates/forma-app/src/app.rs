@@ -418,6 +418,8 @@ impl Studio {
             settings: RenderSettings {
                 edit_wireframe: false,
                 edit_vertices: false,
+                show_edges: true,
+                light_viewport: false,
                 mode: RenderMode::MaterialPreview,
                 width: 1000,
                 height: 760,
@@ -3039,6 +3041,13 @@ impl Studio {
 
 impl Render for Studio {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // The viewport backdrop follows the theme, including live previews in
+        // the theme picker. Re-render only when the light/dark side changes.
+        let light = !self.theme_colors().dark;
+        if self.settings.light_viewport != light {
+            self.settings.light_viewport = light;
+            self.invalidate(false, cx);
+        }
         let viewport = self.viewport(cx);
         let chrome = crate::ui::render(self, viewport, window, cx);
         div()

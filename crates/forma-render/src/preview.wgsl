@@ -100,9 +100,10 @@ fn preview_main(@builtin(global_invocation_id) global_id: vec3<u32>) {
     var ao = 1.0;
     if center_hit.triangle != NO_HIT { ao = preview_contact_ao(surface_at(center_ray, center_hit)); }
     let offsets = array<vec2<f32>, 4>(vec2(-0.25, -0.25), vec2(0.25, -0.25), vec2(-0.25, 0.25), vec2(0.25, 0.25));
-    var color = vec3(0.0);
+    var color = vec3(0.0); var ink = 0.0;
     for (var i = 0u; i < 4u; i += 1u) {
         let p = pixel + offsets[i]; let ray = camera_ray(p); let hit = trace(ray, FAR, false);
+        ink += feature_ink(ray, hit) * 0.25;
         var sample_color: vec3<f32>;
         if hit.triangle == NO_HIT {
             sample_color = viewport_background(ray);
@@ -116,7 +117,7 @@ fn preview_main(@builtin(global_invocation_id) global_id: vec3<u32>) {
         color += add_grid(sample_color, ray, hit, p) * 0.25;
     }
     accumulation[gid.y * u.image.x + gid.x] = vec4(color, 1.0);
-    let display = composite_edit(display_transform(color, u.settings.x), center_ray, center_hit, pixel);
+    let display = composite_edit(composite_features(display_transform(color, u.settings.x), ink), center_ray, center_hit, pixel);
     let coverage = selection_coverage(pixel, center_hit);
     textureStore(output, vec2<i32>(gid), vec4(composite_selection(display, coverage), 1.0));
 }

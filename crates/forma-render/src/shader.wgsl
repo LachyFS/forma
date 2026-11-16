@@ -506,8 +506,10 @@ fn camera_ray(pixel: vec2<f32>) -> Ray {
     let direction = u.cam_forward.xyz + u.cam_right.xyz * (ndc.x * u.camera.y * u.camera.x) + u.cam_up.xyz * (ndc.y * u.camera.x);
     return Ray(u.cam_origin.xyz, normalize(direction));
 }
+fn light_viewport() -> bool { return u.cam_up.w > 0.5; }
 fn viewport_background(ray: Ray) -> vec3<f32> {
     let t = smoothstep(-0.5, 0.7, ray.direction.y);
+    if light_viewport() { return mix(vec3(0.60, 0.62, 0.65), vec3(0.84, 0.855, 0.875), t); }
     return mix(vec3(0.029, 0.034, 0.043), vec3(0.018, 0.023, 0.032), t);
 }
 fn project_to_pixels(point: vec3<f32>) -> vec2<f32> {
@@ -540,9 +542,32 @@ fn edge_coverage(ray: Ray, hit: Hit, tri: Triangle, thickness: f32) -> f32 {
     if (mask & 4u) != 0u { distance = min(distance, projected_edge_distance(position, tri.v0.xyz, tri.v1.xyz)); }
     return 1.0 - smoothstep(thickness * 0.45, thickness * 1.45, distance);
 }
+// B-rep edges of parts and creases of meshes, from the mask in generated1.w.
+fn feature_coverage(ray: Ray, hit: Hit, tri: Triangle, thickness: f32) -> f32 {
+    let mask = u32(tri.generated1.w + 0.5);
+    if mask == 0u { return 0.0; }
+    let position = ray.origin + hit.distance * ray.direction;
+    var distance = FAR;
+    if (mask & 1u) != 0u { distance = min(distance, projected_edge_distance(position, tri.v1.xyz, tri.v2.xyz)); }
+    if (mask & 2u) != 0u { distance = min(distance, projected_edge_distance(position, tri.v2.xyz, tri.v0.xyz)); }
+    if (mask & 4u) != 0u { distance = min(distance, projected_edge_distance(position, tri.v0.xyz, tri.v1.xyz)); }
+    return 1.0 - smoothstep(thickness * 0.3, thickness * 1.1, distance);
+}
+// Object-mode CAD feature lines. Kernels average this over their spatial
+// samples so lines stay antialiased along silhouettes, then ink once in
+// display space at the opacity in cam_right.w (0 = off).
+fn feature_ink(ray: Ray, hit: Hit) -> f32 {
+    if u.cam_origin.w >= 0.5 || u.cam_right.w <= 0.0 || hit.triangle == NO_HIT { return 0.0; }
+    return feature_coverage(ray, hit, triangles[hit.triangle], 1.0);
+}
+fn composite_features(display: vec3<f32>, coverage: f32) -> vec3<f32> {
+    let ink = select(vec3(0.03, 0.033, 0.04), vec3(0.17, 0.18, 0.2), light_viewport());
+    return mix(display, ink, clamp(coverage, 0.0, 1.0) * u.cam_right.w);
+}
 fn composite_edit(color: vec3<f32>, ray: Ray, hit: Hit, pixel: vec2<f32>) -> vec3<f32> {
-    if u.cam_origin.w < 0.5 || hit.triangle == NO_HIT { return color; }
+    if hit.triangle == NO_HIT { return color; }
     let tri = triangles[hit.triangle];
+    if u.cam_origin.w < 0.5 { return color; }
     var result = mix(color, vec3(0.10, 0.13, 0.16), edge_coverage(ray, hit, tri, 1.0) * 0.85);
     if u.cam_origin.w > 1.5 {
         let marker_pixel = vec2(pixel.x - f32(u.image.x) * 0.5, f32(u.image.y) * 0.5 - pixel.y);
@@ -581,11 +606,15 @@ fn solid_shading(s: Surface, ray: Ray) -> vec3<f32> {
     let key = normalize(-u.cam_forward.xyz * 0.6 - u.cam_right.xyz * 0.45 + u.cam_up.xyz * 0.85);
     let fill = normalize(u.cam_right.xyz * 0.8 + u.cam_up.xyz * 0.2 - u.cam_forward.xyz * 0.25);
     let rim = normalize(u.cam_forward.xyz * 0.8 + u.cam_up.xyz * 0.6);
-    let ambient = mix(0.15, 0.26, s.normal.y * 0.5 + 0.5);
-    let shade = ambient + 0.65 * max(0.0, dot(s.normal, key)) + 0.17 * max(0.0, dot(s.normal, fill));
-    let specular = pow(max(0.0, dot(s.normal, normalize(key - ray.direction))), 48.0) * 0.12;
-    let rim_light = pow(max(0.0, dot(s.normal, rim)), 3.0) * 0.07;
-    return vec3(0.39, 0.43, 0.49) * shade + vec3(specular + rim_light);
+    // Neutral clay: a sky/ground hemisphere, a soft key and fill, a broad
+    // highlight and a faint grazing rim, so curvature reads without color.
+    let ambient = mix(0.15, 0.30, s.normal.y * 0.5 + 0.5);
+    let shade = ambient + 0.62 * max(0.0, dot(s.normal, key)) + 0.16 * max(0.0, dot(s.normal, fill));
+    let specular = pow(max(0.0, dot(s.normal, normalize(key - ray.direction))), 40.0) * 0.16;
+    let facing = 1.0 - max(0.0, dot(s.normal, -ray.direction));
+    let rim_light = pow(max(0.0, dot(s.normal, rim)), 3.0) * 0.05 + pow(facing, 4.0) * 0.06;
+    let base = select(vec3(0.43, 0.445, 0.465), vec3(0.52, 0.53, 0.55), light_viewport());
+    return base * shade + vec3(specular + rim_light);
 }
 fn grid_line(coordinate: f32, spacing: f32, width: f32) -> f32 {
     let nearest = abs(coordinate - round(coordinate / spacing) * spacing);
@@ -621,11 +650,28 @@ fn add_grid(initial_color: vec3<f32>, ray: Ray, hit: Hit, pixel: vec2<f32>) -> v
     // At blend=1 the major/coarse pair exactly matches the next level's
     // minor/major pair, including their contrast at shared grid intersections.
     let opacity = mix(0.11 * minor + 0.13 * major, 0.11 * major + 0.13 * coarse, blend) * fade;
-    color = mix(color, vec3(0.13, 0.15, 0.18), opacity);
+    let light = light_viewport();
+    color = mix(color, select(vec3(0.13, 0.15, 0.18), vec3(0.22, 0.235, 0.26), light), opacity * select(1.0, 1.6, light));
     let x_axis = 1.0 - smoothstep(wz * 0.5, wz * 1.6, abs(p.z));
     let z_axis = 1.0 - smoothstep(wx * 0.5, wx * 1.6, abs(p.x));
-    color = mix(color, vec3(0.23, 0.055, 0.06), x_axis * fade * 0.55);
-    return mix(color, vec3(0.055, 0.12, 0.29), z_axis * fade * 0.55);
+    color = mix(color, select(vec3(0.23, 0.055, 0.06), vec3(0.62, 0.09, 0.1), light), x_axis * fade * 0.55);
+    return mix(color, select(vec3(0.055, 0.12, 0.29), vec3(0.08, 0.2, 0.62), light), z_axis * fade * 0.55);
+}
+fn solid_sample(p: vec2<f32>, ray: Ray, hit: Hit) -> vec3<f32> {
+    var color = viewport_background(ray);
+    if hit.triangle != NO_HIT { color = solid_shading(surface_at(ray, hit), ray); }
+    return add_grid(color, ray, hit, p);
+}
+// Four rotated-grid samples: smooth silhouettes and edges at Solid's low cost.
+// Returns the color, and the averaged feature line coverage in w.
+fn solid_supersampled(pixel: vec2<f32>) -> vec4<f32> {
+    let offsets = array<vec2<f32>, 4>(vec2(-0.125, -0.375), vec2(0.375, -0.125), vec2(-0.375, 0.125), vec2(0.125, 0.375));
+    var result = vec4(0.0);
+    for (var i = 0u; i < 4u; i += 1u) {
+        let p = pixel + offsets[i]; let r = camera_ray(p); let h = trace(r, FAR, false);
+        result += vec4(solid_sample(p, r, h), feature_ink(r, h)) * 0.25;
+    }
+    return result;
 }
 fn display_transform(linear: vec3<f32>, exposure: f32) -> vec3<f32> {
     let x = max(linear, vec3(0.0)) * exp2(clamp(exposure, -20.0, 20.0));
@@ -674,6 +720,7 @@ fn render_main(@builtin(global_invocation_id) global_id: vec3<u32>) {
     let pixel = vec2<f32>(gid) + jitter;
     let ray = camera_ray(pixel); let primary = trace(ray, FAR, false);
     var color: vec3<f32>;
+    var ink = 0.0;
     if refresh {
         let total = accumulation[index];
         color = total.xyz / max(1.0, total.w);
@@ -698,9 +745,9 @@ fn render_main(@builtin(global_invocation_id) global_id: vec3<u32>) {
         color = total.xyz / max(1.0, total.w);
     } else {
         if u.image.w == 0u { color = wireframe_shading(ray, pixel, primary); }
+        else if u.image.w == 1u { let solid = solid_supersampled(pixel); color = solid.xyz; ink = solid.w; }
         else if primary.triangle != NO_HIT { color = solid_shading(surface_at(ray, primary), ray); }
         else { color = viewport_background(ray); }
-        if u.image.w == 1u { color = add_grid(color, ray, primary, pixel); }
         accumulation[index] = vec4(color, 1.0);
     }
     // Use a stable pixel-center ray so the overlay does not shimmer with path
@@ -714,7 +761,7 @@ fn render_main(@builtin(global_invocation_id) global_id: vec3<u32>) {
     // Denoising replaces every displayed pixel, so the overlay travels to it in
     // the guide weight both guides share.
     if progressive { denoise_guides[index].normal.w = coverage; }
-    let display = composite_edit(display_transform(color, select(0.0, u.settings.x, progressive)), camera_ray(overlay_pixel), overlay_hit, overlay_pixel);
+    let display = composite_edit(composite_features(display_transform(color, select(0.0, u.settings.x, progressive)), ink), camera_ray(overlay_pixel), overlay_hit, overlay_pixel);
     textureStore(output, vec2<i32>(gid), vec4(composite_selection(display, coverage), 1.0));
 }
 
