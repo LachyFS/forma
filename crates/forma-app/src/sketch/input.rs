@@ -802,6 +802,7 @@ impl Studio {
         };
         let step = session.step;
         match step {
+            Step::Line { start, .. } => overlay.placed.push(start),
             Step::Rectangle { first } => overlay.placed.push(first),
             Step::Circle { center } | Step::Polygon { center } => overlay.placed.push(center),
             Step::Arc { start, end } => {
@@ -824,29 +825,32 @@ impl Studio {
         let preview = tools::preview(&step, cursor, locks, options);
         let values = tools::measure(&step, cursor, locks, options);
         let resolved = tools::resolve(&step, cursor, locks);
-        let label = |index: usize, at: Vec2, away: Vec2| -> Option<DimLabel> {
-            let dimension = *dimensions.get(index)?;
-            let typed = session.numeric.fields[index].trim().to_owned();
-            let parsed = session.numeric.value(index, dimension);
-            let text = if typed.is_empty() {
-                let value = values[index]?;
-                if dimension.is_angle() {
-                    format_angle(value)
+        let label =
+            |index: usize, at: Vec2, away: Vec2, span: Option<(Vec2, Vec2)>| -> Option<DimLabel> {
+                let dimension = *dimensions.get(index)?;
+                let typed = session.numeric.fields[index].trim().to_owned();
+                let parsed = session.numeric.value(index, dimension);
+                let text = if typed.is_empty() {
+                    let value = values[index]?;
+                    if dimension.is_angle() {
+                        format_angle(value)
+                    } else {
+                        format_length(value)
+                    }
                 } else {
-                    format_length(value)
-                }
-            } else {
-                typed.clone()
+                    typed.clone()
+                };
+                Some(DimLabel {
+                    at,
+                    away,
+                    span,
+                    radial: false,
+                    text,
+                    locked: !typed.is_empty(),
+                    active: session.numeric.active == index,
+                    invalid: parsed.is_err(),
+                })
             };
-            Some(DimLabel {
-                at,
-                away,
-                text,
-                locked: !typed.is_empty(),
-                active: session.numeric.active == index,
-                invalid: parsed.is_err(),
-            })
-        };
         match step {
             Step::Line {
                 start, arc: false, ..
@@ -865,9 +869,15 @@ impl Studio {
                     if away.y < 0.0 || (away.y == 0.0 && away.x > 0.0) {
                         away = -away;
                     }
-                    overlay
-                        .dims
-                        .extend(label(0, (start + resolved) * 0.5, away));
+                    overlay.dims.extend(label(
+                        0,
+                        (start + resolved) * 0.5,
+                        away,
+                        Some((start, resolved)),
+                    ));
+                    if matches!(step, Step::Line { .. }) {
+                        overlay.segment = Some((start, resolved, away));
+                    }
                     let angle = offset.y.atan2(offset.x);
                     let radius = 38.0 / scale;
                     let axis_aligned = (angle / std::f32::consts::FRAC_PI_2).fract().abs() < 1.0e-4;
@@ -881,11 +891,14 @@ impl Studio {
                         let middle = Vec2::from_angle(angle * 0.5);
                         overlay
                             .dims
-                            .extend(label(1, start + middle * radius * 1.6, middle));
+                            .extend(label(1, start + middle * radius * 1.6, middle, None));
                     } else if session.numeric.active == 1 {
-                        overlay
-                            .dims
-                            .extend(label(1, start - direction * 24.0 / scale, -direction));
+                        overlay.dims.extend(label(
+                            1,
+                            start - direction * 24.0 / scale,
+                            -direction,
+                            None,
+                        ));
                     }
                 }
             }
@@ -894,9 +907,9 @@ impl Studio {
                 if let Some(arc @ SketchCurve::Arc { center, .. }) = preview.first() {
                     let middle = arc.midpoint();
                     let away = (middle - *center).normalize_or(Vec2::Y);
-                    overlay.dims.extend(label(0, middle, away));
+                    overlay.dims.extend(label(0, middle, away, None));
                     if dimensions.len() > 1 {
-                        overlay.dims.extend(label(1, *center, -away));
+                        overlay.dims.extend(label(1, *center, -away, None));
                     }
                 }
             }
@@ -912,32 +925,41 @@ impl Studio {
                         0,
                         Vec2::new((min.x + max.x) * 0.5, min.y),
                         Vec2::NEG_Y,
+                        Some((min, Vec2::new(max.x, min.y))),
                     ));
-                    overlay
-                        .dims
-                        .extend(label(1, Vec2::new(max.x, (min.y + max.y) * 0.5), Vec2::X));
+                    overlay.dims.extend(label(
+                        1,
+                        Vec2::new(max.x, (min.y + max.y) * 0.5),
+                        Vec2::X,
+                        Some((Vec2::new(max.x, min.y), max)),
+                    ));
                 }
             }
             Step::Circle { center } | Step::Polygon { center } => {
                 overlay.preview = preview.clone();
                 if resolved.distance(center) * scale > 4.0 {
-                    overlay.preview_guides.push(SketchCurve::Line {
-                        start: center,
-                        end: resolved,
-                    });
                     let direction = (resolved - center).normalize();
                     let mut away = direction.perp();
                     if away.y < 0.0 {
                         away = -away;
                     }
-                    overlay
-                        .dims
-                        .extend(label(0, (center + resolved) * 0.5, away));
+                    // A radial dimension: the radius itself is the dimension
+                    // line, arrowed at the rim.
+                    overlay.dims.extend(
+                        label(0, (center + resolved) * 0.5, away, Some((center, resolved))).map(
+                            |dim| DimLabel {
+                                radial: true,
+                                ..dim
+                            },
+                        ),
+                    );
+                    overlay.segment = Some((center, resolved, away));
                     if matches!(step, Step::Polygon { .. }) && session.numeric.active == 1 {
                         overlay.dims.extend(label(
                             1,
                             center - direction * 24.0 / scale,
                             -direction,
+                            None,
                         ));
                     }
                 }
