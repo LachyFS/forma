@@ -560,6 +560,13 @@ pub(crate) fn group_rank(group: &str) -> usize {
         .unwrap_or(PALETTE_GROUPS.len())
 }
 
+/// Commands that add a parametric part. Their glyphs draw in the accent ink
+/// wherever meshes and parts are offered side by side, so a part never reads
+/// as its mesh look-alike at 16 px.
+pub(crate) fn adds_part(command: Command) -> bool {
+    matches!(command, Command::Cad(CadCommand::AddPart(_)))
+}
+
 /// Palette section for a command; also the category shown beside a search
 /// result.
 pub(crate) fn command_group(command: Command) -> &'static str {

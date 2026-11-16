@@ -268,6 +268,33 @@ pub(crate) enum Tone {
     Primary,
     /// The on state of a toggle or the current choice.
     Selected,
+    /// Accent outline on no fill: a commit action in a region that defers
+    /// to the screen's one filled primary elsewhere.
+    Outline,
+}
+
+thread_local! {
+    static QUIET_PRIMARY: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Build a region whose primary buttons draw as `Tone::Outline`. A running
+/// tool's panel repeats the commit buttons of the floating tool bar, which
+/// keeps the one filled Done on screen; the panel's copy stays as a quieter
+/// outline beside Cancel.
+pub(crate) fn with_quiet_primary<R>(build: impl FnOnce() -> R) -> R {
+    let before = QUIET_PRIMARY.with(|quiet| quiet.replace(true));
+    let built = build();
+    QUIET_PRIMARY.with(|quiet| quiet.set(before));
+    built
+}
+
+/// `tone` as this region draws it.
+fn resolved(tone: Tone) -> Tone {
+    if tone == Tone::Primary && QUIET_PRIMARY.with(|quiet| quiet.get()) {
+        Tone::Outline
+    } else {
+        tone
+    }
 }
 
 /// Run `command` on click, without letting the click reach the viewport.
@@ -289,6 +316,7 @@ pub(crate) fn button_base(
     tone: Tone,
     height: f32,
 ) -> Stateful<Div> {
+    let tone = resolved(tone);
     let (fill, ink, hover, pressed, border) = match tone {
         Tone::Ghost => (
             clear(),
@@ -317,6 +345,13 @@ pub(crate) fn button_base(
             hex(t.accent_soft_hover),
             hex(t.accent_soft_hover),
             None,
+        ),
+        Tone::Outline => (
+            clear(),
+            t.accent_text,
+            hex(t.accent_soft),
+            hex(t.accent_soft_hover),
+            Some(t.accent_border),
         ),
     };
     row()
@@ -349,11 +384,11 @@ pub(crate) fn button(
     glyph: Option<Icon>,
     tone: Tone,
 ) -> Stateful<Div> {
-    let ink = match tone {
+    let ink = match resolved(tone) {
         Tone::Ghost => t.text_muted,
         Tone::Secondary => t.text_muted,
         Tone::Primary => t.on_accent,
-        Tone::Selected => t.accent_text,
+        Tone::Selected | Tone::Outline => t.accent_text,
     };
     button_base(t, id, tone, H_SM)
         .px(px(SP_2 + 1.))
@@ -608,7 +643,7 @@ pub(crate) fn section(
     contents: impl IntoElement,
     cx: &mut Context<Studio>,
 ) -> Div {
-    let open = s.panels.is_open(panel);
+    let open = s.section_open(panel);
     col()
         .flex_shrink_0()
         .border_b_1()
@@ -1062,6 +1097,43 @@ pub(crate) fn numeric_row(
 
 /// A read-only fact (a count, a derived value): label and plain value with
 /// no well, so it never reads as an input. Hover explains where it comes from.
+/// A fact in the value column, left aligned like every other value. `locked`
+/// marks one the user cannot change here: muted, with a padlock after it.
+pub(crate) fn fact_row(
+    t: Colors,
+    label: &'static str,
+    value: impl Into<SharedString>,
+    reason: &'static str,
+    locked: bool,
+) -> Stateful<Div> {
+    row()
+        .id(label)
+        .min_h(px(ROW_H))
+        .gap(px(SP_2))
+        .tooltip(tip(t, reason, None))
+        .child(
+            div()
+                .w(px(LABEL_W))
+                .flex_shrink_0()
+                .text_color(rgb(t.text_muted))
+                .child(label),
+        )
+        .child(
+            row()
+                .flex_1()
+                .min_w(px(0.))
+                .gap(px(SP_1_5))
+                .child(
+                    div()
+                        .min_w(px(0.))
+                        .truncate()
+                        .text_color(rgb(if locked { t.text_muted } else { t.text }))
+                        .child(value.into()),
+                )
+                .when(locked, |d| d.child(icon(Icon::Lock, 12., t.text_faint))),
+        )
+}
+
 pub(crate) fn readonly_row(
     t: Colors,
     label: &'static str,

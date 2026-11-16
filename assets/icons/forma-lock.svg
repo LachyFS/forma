@@ -1,0 +1,6 @@
+<!-- Forma icon, drawn on the Lucide 24-unit grid. Part of Forma (MIT OR Apache-2.0). -->
+<!-- A padlock: a value fixed for every scene, shown but not editable. -->
+<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+  <rect x="4.5" y="11" width="15" height="10" rx="2"/>
+  <path d="M8 11V7.5a4 4 0 0 1 8 0V11"/>
+</svg>

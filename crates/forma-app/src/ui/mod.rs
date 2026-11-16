@@ -183,6 +183,10 @@ pub(crate) struct PanelState {
     pub(crate) timeline: crate::timeline::TimelineState,
     /// The sidebar width at the last layout, for text fitted ahead of layout.
     laid_out_sidebar: Cell<f32>,
+    /// Transform opened by hand while it has stepped aside for live work
+    /// (`Studio::transform_yields`). It lasts until that work ends; the
+    /// user's own open or closed choice is never touched meanwhile.
+    transform_peek: Cell<bool>,
 }
 
 impl Default for PanelState {
@@ -218,6 +222,7 @@ impl Default for PanelState {
             dismissed_update: None,
             timeline: Default::default(),
             laid_out_sidebar: Cell::new(SIDEBAR_DEFAULT_WIDTH),
+            transform_peek: Cell::new(false),
         }
     }
 }
@@ -309,6 +314,9 @@ impl PanelState {
                 self.open[section as usize] = true;
                 self.tab = section.tab();
             }
+        }
+        if PanelSection::Transform.contains_field(field) {
+            self.transform_peek.set(true);
         }
         if field != Field::Name {
             self.rename_in_outliner = false;
@@ -817,11 +825,42 @@ impl Studio {
         self.scene.objects.len() + self.scene.collections.len()
     }
 
+    /// Transform steps aside while live work owns the panel: a running CAD
+    /// tool, or a timeline feature whose values lead the page. Its location
+    /// and scale rows describe the object, not the operation, and folding
+    /// them leaves room for what is being edited. The user's own choice
+    /// returns once the work ends.
+    pub(crate) fn transform_yields(&self) -> bool {
+        self.cad_tool.tool.is_some() || self.selected_feature().is_some()
+    }
+
+    /// Whether `section` shows its contents this frame.
+    pub(crate) fn section_open(&self, section: PanelSection) -> bool {
+        if section == PanelSection::Transform && self.transform_yields() {
+            return self.panels.transform_peek.get();
+        }
+        self.panels.is_open(section)
+    }
+
+    /// Forget a hand-opened Transform once the work it yielded to has ended.
+    pub(crate) fn settle_transform_peek(&self) {
+        if !self.transform_yields() {
+            self.panels.transform_peek.set(false);
+        }
+    }
+
     pub(crate) fn toggle_section(&mut self, section: PanelSection, cx: &mut Context<Self>) {
-        let open = &mut self.panels.open[section as usize];
-        *open = !*open;
+        let open = if section == PanelSection::Transform && self.transform_yields() {
+            let peek = !self.panels.transform_peek.get();
+            self.panels.transform_peek.set(peek);
+            peek
+        } else {
+            let open = &mut self.panels.open[section as usize];
+            *open = !*open;
+            *open
+        };
         // A collapsed field must not keep consuming keyboard input.
-        if !*open
+        if !open
             && self
                 .active_field
                 .as_ref()
