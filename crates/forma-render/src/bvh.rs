@@ -109,7 +109,7 @@ const FEATURE_CREASE_COS: f32 = 0.82; // about 35 degrees
 /// leave a flat face split in two, and that seam carries no shape.
 const COPLANAR_COS: f32 = 0.99995;
 
-/// B-rep edges of a part, minus seams between coplanar faces. Tangent
+/// B-rep edges of a part, minus seams between coplanar faces and T-junctions. Tangent
 /// boundaries (fillets, cylinder seams) keep their lines, since tessellated
 /// neighbours across them still differ by the chord angle.
 fn brep_feature_edges(mesh: &Mesh, edges: &HashSet<(u32, u32)>) -> HashSet<(u32, u32)> {
@@ -137,10 +137,12 @@ fn brep_feature_edges(mesh: &Mesh, edges: &HashSet<(u32, u32)>) -> HashSet<(u32,
                 .or_insert((n, 1, false));
         }
     }
-    // Open boundaries (one side) stay; shared edges stay unless flat.
+    // Parts are closed solids, so a one-sided edge is a tessellation
+    // T-junction across a face, not a boundary: it would draw as a dotted
+    // crack. Shared edges stay unless flat.
     sides
         .into_iter()
-        .filter(|(_, (_, uses, bent))| *uses == 1 || *bent)
+        .filter(|(_, (_, uses, bent))| *uses > 1 && *bent)
         .map(|(key, _)| key)
         .collect()
 }

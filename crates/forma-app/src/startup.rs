@@ -261,7 +261,8 @@ pub(crate) fn studio_scene() -> Scene {
     }
     if let Some(material) = scene.object_material_mut(torus) {
         *material = Material {
-            base_color: Vec3::new(0.05, 0.31, 0.27),
+            // Slate blue, away from the jade accent, so a selection on it reads.
+            base_color: Vec3::new(0.1, 0.14, 0.26),
             metallic: 0.35,
             roughness: 0.3,
             ..Material::default()

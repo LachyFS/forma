@@ -559,7 +559,10 @@ fn feature_coverage(ray: Ray, hit: Hit, tri: Triangle, thickness: f32) -> f32 {
 // samples so lines stay antialiased along silhouettes, then ink once in
 // display space at the opacity in cam_right.w (0 = off).
 fn feature_ink(ray: Ray, hit: Hit) -> f32 {
-    if u.cam_origin.w >= 0.5 || u.cam_right.w <= 0.0 || hit.triangle == NO_HIT { return 0.0; }
+    if u.cam_right.w <= 0.0 || hit.triangle == NO_HIT { return 0.0; }
+    // While editing components, the edited object shows its wire instead;
+    // everything else keeps its CAD lines.
+    if u.cam_origin.w >= 0.5 && is_selected(hit) { return 0.0; }
     return feature_coverage(ray, hit, triangles[hit.triangle], 1.0);
 }
 // Silhouettes: a spatial sample that lands on another object, on the

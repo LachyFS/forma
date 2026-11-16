@@ -490,7 +490,10 @@ bool is_selected(Hit hit, device const Triangle *triangles, constant Uniforms &u
 // samples so lines stay antialiased along silhouettes, then ink once in
 // display space at the opacity in cam_right.w (0 = off).
 float feature_ink(Ray ray, Hit hit, device const Triangle *triangles, constant Uniforms &u) {
-    if (u.cam_origin.w >= 0.5f || u.cam_right.w <= 0.0f || hit.triangle == NO_HIT) return 0.0f;
+    if (u.cam_right.w <= 0.0f || hit.triangle == NO_HIT) return 0.0f;
+    // While editing components, the edited object shows its wire instead;
+    // everything else keeps its CAD lines.
+    if (u.cam_origin.w >= 0.5f && is_selected(hit, triangles, u)) return 0.0f;
     return feature_coverage(ray, hit, triangles[hit.triangle], u, 1.0f);
 }
 // Silhouettes: a spatial sample that lands on another object, on the
