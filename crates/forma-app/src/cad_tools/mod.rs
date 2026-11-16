@@ -203,7 +203,8 @@ pub(crate) fn operation_color(t: &crate::theme::Colors, operation: Operation) ->
         Operation::NewPart => t.text,
         Operation::Join => t.accent,
         Operation::Cut => t.danger,
-        Operation::Intersect => t.warning,
+        // Blue, as on the timeline's Intersect badge: amber means open ends.
+        Operation::Intersect => t.axis_text[2],
     }
 }
 
