@@ -672,13 +672,6 @@ fn feature_page(
         .child(parameters(t, s, feature, stacked, cx))
         .when_some(sketch_link(t, s, feature, cx), |d, link| d.child(link))
         .child(actions)
-        .child(
-            div()
-                .pt(px(SP_2))
-                .text_size(px(TEXT_SM))
-                .text_color(rgb(t.text_faint))
-                .child("Drag a value to scrub · the part regenerates live"),
-        )
 }
 
 /// One feature row in the summary's history list.
@@ -885,58 +878,41 @@ fn part_summary(
                 .enumerate()
                 .map(|(index, feature)| history_row(t, s, part, index, feature, cx)),
         )
-        .child(
-            div()
-                .pt(px(SP_1))
-                .text_size(px(TEXT_SM))
-                .text_color(rgb(t.text_faint))
-                .child("Click a feature here or in the timeline to edit it"),
-        )
         .children(combine_row(t, s, cx))
         .child(part_actions(t, cx))
 }
 
 fn part_actions(t: Colors, cx: &mut Context<Studio>) -> Div {
-    col()
-        .gap(px(SP_1))
-        .pt(px(SP_3))
-        .child(
-            row()
-                .gap(px(SP_1))
-                .child(
-                    command_button(
-                        t,
-                        "part-to-mesh",
-                        "Convert to mesh",
-                        Some(Icon::Mesh),
-                        Command::Cad(CadCommand::ConvertToMesh),
-                        Tone::Secondary,
-                        cx,
-                    )
-                    .flex_1()
-                    .min_w(px(0.)),
+    col().gap(px(SP_1)).pt(px(SP_3)).child(
+        row()
+            .gap(px(SP_1))
+            .child(
+                command_button(
+                    t,
+                    "part-to-mesh",
+                    "Convert to mesh",
+                    Some(Icon::Mesh),
+                    Command::Cad(CadCommand::ConvertToMesh),
+                    Tone::Secondary,
+                    cx,
                 )
-                .child(
-                    command_button(
-                        t,
-                        "part-export-step",
-                        "Export STEP…",
-                        Some(Icon::Export),
-                        Command::Cad(CadCommand::ExportStep),
-                        Tone::Secondary,
-                        cx,
-                    )
-                    .flex_1()
-                    .min_w(px(0.)),
-                ),
-        )
-        .child(
-            div()
-                .text_size(px(TEXT_SM))
-                .line_height(px(16.))
-                .text_color(rgb(t.text_faint))
-                .child("Converting bakes the history into editable polygons: the timeline and its parameters are gone (undo brings them back)."),
-        )
+                .flex_1()
+                .min_w(px(0.)),
+            )
+            .child(
+                command_button(
+                    t,
+                    "part-export-step",
+                    "Export STEP…",
+                    Some(Icon::Export),
+                    Command::Cad(CadCommand::ExportStep),
+                    Tone::Secondary,
+                    cx,
+                )
+                .flex_1()
+                .min_w(px(0.)),
+            ),
+    )
 }
 
 /// "Combine N objects into the active one" when several parts or meshes are

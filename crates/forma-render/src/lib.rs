@@ -114,6 +114,9 @@ pub struct RenderSettings {
     pub show_edges: bool,
     /// Light viewport backdrop and grid, for light UI themes.
     pub light_viewport: bool,
+    /// Selection outline as display-space 0xRRGGBB, normally the UI accent.
+    /// Zero keeps the built-in blue.
+    pub selection_rgb: u32,
     pub preview: PreviewSettings,
     pub denoise: DenoiseSettings,
 }
@@ -133,6 +136,7 @@ impl Default for RenderSettings {
             edit_vertices: false,
             show_edges: true,
             light_viewport: false,
+            selection_rgb: 0,
             preview: PreviewSettings::default(),
             denoise: DenoiseSettings::default(),
         }

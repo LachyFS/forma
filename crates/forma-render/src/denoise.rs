@@ -42,6 +42,8 @@ pub struct DenoiseInput {
     pub albedo: Vec<[f32; 4]>,
     pub normal: Vec<[f32; 4]>,
     pub selection: Vec<f32>,
+    /// Outline color, as `RenderSettings::selection_rgb`.
+    pub outline_rgb: u32,
 }
 
 impl DenoiseInput {
@@ -371,7 +373,7 @@ impl Denoiser {
         let started = Instant::now();
         let pixels = self.denoise(input, quality, prefilter)?;
         let mut rgba = display_pixels(&pixels, exposure);
-        composite_selection(&mut rgba, &input.selection);
+        composite_selection(&mut rgba, &input.selection, input.outline_rgb);
         Ok(Frame::from_denoised(
             input,
             rgba,
@@ -455,14 +457,24 @@ impl Denoiser {
 // Both shaders composite the selection outline over the tone mapped image at a
 // fixed exposure; a denoised frame replaces every displayed pixel and so has to
 // redraw the same overlay, from the same scene-linear color, to match them.
-fn composite_selection(rgba: &mut [u8], coverage: &[f32]) {
-    let outline = display_pixels(&[[0.055, 0.40, 0.95, 1.0]], 0.0);
+fn composite_selection(rgba: &mut [u8], coverage: &[f32], outline_rgb: u32) {
+    let outline = outline_display(outline_rgb);
     for (pixel, coverage) in rgba.as_chunks_mut::<4>().0.iter_mut().zip(coverage) {
         for (value, line) in pixel[..3].iter_mut().zip(&outline) {
             *value = (f32::from(*value) + (f32::from(*line) - f32::from(*value)) * coverage).round()
                 as u8;
         }
     }
+}
+
+/// The outline in display space: the packed theme color, or the default blue
+/// through the same transform as the shaders.
+fn outline_display(outline_rgb: u32) -> Vec<u8> {
+    if outline_rgb == 0 {
+        return display_pixels(&[[0.055, 0.40, 0.95, 1.0]], 0.0);
+    }
+    let [_, r, g, b] = outline_rgb.to_be_bytes();
+    vec![r, g, b, 255]
 }
 
 fn display_pixels(pixels: &[[f32; 4]], exposure: f32) -> Vec<u8> {
@@ -498,6 +510,7 @@ mod tests {
             albedo: vec![[0.5; 4]],
             normal: vec![[-1.0, 0.0, 0.0, 1.0]],
             selection: vec![0.5],
+            outline_rgb: 0,
         };
         input.validate().unwrap();
         input.selection[0] = 1.5;
@@ -522,7 +535,7 @@ mod tests {
     fn overlay_composites_only_where_the_outline_covers() {
         let outline = display_pixels(&[[0.055, 0.40, 0.95, 1.0]], 0.0);
         let mut rgba = vec![10, 20, 30, 255, 10, 20, 30, 255];
-        composite_selection(&mut rgba, &[0.0, 1.0]);
+        composite_selection(&mut rgba, &[0.0, 1.0], 0);
         assert_eq!(rgba[..4], [10, 20, 30, 255]);
         assert_eq!(rgba[4..7], outline[..3]);
         assert_eq!(rgba[7], 255);

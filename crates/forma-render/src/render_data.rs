@@ -67,7 +67,11 @@ impl Uniforms {
                 },
             ),
             cam_up: with_w(vector(Vec3::Y), u32::from(settings.light_viewport) as f32),
-            cam_forward: vector(Vec3::NEG_Z),
+            // 24-bit RGB is exact in an f32 lane.
+            cam_forward: with_w(
+                vector(Vec3::NEG_Z),
+                (settings.selection_rgb & 0x00ff_ffff) as f32,
+            ),
             world: if settings.mode == RenderMode::MaterialPreview
                 && !settings.preview.use_scene_world
             {

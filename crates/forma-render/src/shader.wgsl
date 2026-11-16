@@ -680,8 +680,15 @@ fn display_transform(linear: vec3<f32>, exposure: f32) -> vec3<f32> {
 }
 // Composited after the tone curve so exposure neither dims nor blows out the
 // overlay, and so the outline never enters the film the exports read.
+// The outline is the UI accent, packed as display-space 0xRRGGBB in
+// cam_forward.w; zero keeps the built-in blue.
+fn selection_display() -> vec3<f32> {
+    let packed = u32(u.cam_forward.w + 0.5);
+    if packed == 0u { return display_transform(SELECTION_COLOR, 0.0); }
+    return vec3(f32((packed >> 16u) & 255u), f32((packed >> 8u) & 255u), f32(packed & 255u)) / 255.0;
+}
 fn composite_selection(display: vec3<f32>, coverage: f32) -> vec3<f32> {
-    return mix(display, display_transform(SELECTION_COLOR, 0.0), coverage);
+    return mix(display, selection_display(), coverage);
 }
 fn wireframe_shading(ray: Ray, pixel: vec2<f32>, primary: Hit) -> vec3<f32> {
     var color = viewport_background(ray) * 1.10;

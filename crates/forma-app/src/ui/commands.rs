@@ -308,7 +308,7 @@ fn cad_info(command: CadCommand) -> CommandInfo {
         ),
         CadCommand::ConvertToMesh => explained(
             "Convert to mesh",
-            "Bake the part into polygons you can edit",
+            "Bake the part into editable polygons. Its feature history is dropped; undo restores it.",
         ),
         CadCommand::ImportStep => info("Import STEP…"),
         CadCommand::ExportStep => explained(

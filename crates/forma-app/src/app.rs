@@ -420,6 +420,7 @@ impl Studio {
                 edit_vertices: false,
                 show_edges: true,
                 light_viewport: false,
+                selection_rgb: 0,
                 mode: RenderMode::MaterialPreview,
                 width: 1000,
                 height: 760,
@@ -3043,9 +3044,11 @@ impl Render for Studio {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         // The viewport backdrop follows the theme, including live previews in
         // the theme picker. Re-render only when the light/dark side changes.
-        let light = !self.theme_colors().dark;
-        if self.settings.light_viewport != light {
+        let colors = self.theme_colors();
+        let light = !colors.dark;
+        if self.settings.light_viewport != light || self.settings.selection_rgb != colors.accent {
             self.settings.light_viewport = light;
+            self.settings.selection_rgb = colors.accent;
             self.invalidate(false, cx);
         }
         let viewport = self.viewport(cx);

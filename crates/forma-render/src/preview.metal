@@ -109,7 +109,7 @@ kernel void solid_main(device const Triangle *triangles [[buffer(0)]],
 #else
     float coverage = selection_coverage(pixel, hit, triangles, nodes, u);
 #endif
-    output.write(float4(composite_selection(display, coverage), 1.0f), gid);
+    output.write(float4(composite_selection(display, coverage, u), 1.0f), gid);
 }
 
 constant sampler preview_env_sampler(coord::normalized, s_address::repeat,
@@ -286,5 +286,5 @@ kernel void preview_main(device const Triangle *triangles [[buffer(0)]],
 #else
     float coverage = selection_coverage(pixel, center_hit, triangles, nodes, u);
 #endif
-    output.write(float4(composite_selection(display, coverage), 1.0f), gid);
+    output.write(float4(composite_selection(display, coverage, u), 1.0f), gid);
 }

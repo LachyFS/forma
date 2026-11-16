@@ -611,8 +611,15 @@ float3 display_transform(float3 linear, float exposure) {
 }
 // Composited after the tone curve so exposure neither dims nor blows out the
 // overlay, and so the outline never enters the film the exports read.
-float3 composite_selection(float3 display, float coverage) {
-    return mix(display, display_transform(SELECTION_COLOR, 0.0f), coverage);
+// The outline is the UI accent, packed as display-space 0xRRGGBB in
+// cam_forward.w; zero keeps the built-in blue.
+float3 selection_display(constant Uniforms &u) {
+    uint packed = uint(u.cam_forward.w + 0.5f);
+    if (packed == 0u) return display_transform(SELECTION_COLOR, 0.0f);
+    return float3(float((packed >> 16u) & 255u), float((packed >> 8u) & 255u), float(packed & 255u)) / 255.0f;
+}
+float3 composite_selection(float3 display, float coverage, constant Uniforms &u) {
+    return mix(display, selection_display(u), coverage);
 }
 
 float3 wireframe_shading(Ray ray, float2 pixel, Hit primary, device const Triangle *triangles,
@@ -724,5 +731,5 @@ kernel void render_main(device const Triangle *triangles [[buffer(0)]],
     // the guide weight both guides share.
     if (progressive) normal_accumulation[index].w = coverage;
     float3 display = composite_edit(composite_features(display_transform(color, progressive ? u.settings.x : 0.0f), ink, u), camera_ray(overlay_pixel, u), overlay_hit, overlay_pixel, triangles, u);
-    output.write(float4(composite_selection(display, coverage), 1.0f), gid);
+    output.write(float4(composite_selection(display, coverage, u), 1.0f), gid);
 }

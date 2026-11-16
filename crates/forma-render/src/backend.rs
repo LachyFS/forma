@@ -200,6 +200,7 @@ pub struct Renderer {
     last_frame: Option<Frame>,
     last_mode: RenderMode,
     exposure: f32,
+    selection_rgb: u32,
 }
 
 impl Renderer {
@@ -239,6 +240,7 @@ impl Renderer {
             last_frame: None,
             last_mode: RenderMode::Solid,
             exposure: 0.0,
+            selection_rgb: 0,
         })
     }
 
@@ -293,6 +295,7 @@ impl Renderer {
         self.last_frame = Some(frame.clone());
         self.last_mode = settings.mode;
         self.exposure = settings.exposure;
+        self.selection_rgb = settings.selection_rgb;
         Ok(frame)
     }
 
@@ -348,6 +351,7 @@ impl Renderer {
             albedo,
             normal,
             selection,
+            outline_rgb: self.selection_rgb,
         })
     }
 
