@@ -524,6 +524,13 @@ float outline_probe(float2 pixel, Hit center, device const Triangle *triangles,
     }
     return ink;
 }
+// Feature ink for one spatial sample of a pixel. The selected object's own
+// edges are left out at the outline's outer fringe (pixels centred off it),
+// where the outline already draws its boundary.
+float sample_ink(Ray ray, Hit hit, Hit center, device const Triangle *triangles, constant Uniforms &u) {
+    if (is_selected(hit, triangles, u) && !is_selected(center, triangles, u)) return 0.0f;
+    return feature_ink(ray, hit, triangles, u);
+}
 float3 composite_features(float3 display, float coverage, constant Uniforms &u) {
     float strength = light_viewport(u) ? 0.8f : 0.9f;
     // Spatial coverage of a 1px line rarely reaches 1 with four samples; the
@@ -686,6 +693,13 @@ float3 display_transform(float3 linear, float exposure) {
     float3 mapped = clamp((x * (2.51f * x + 0.03f)) / (x * (2.43f * x + 0.59f) + 0.14f), 0.0f, 1.0f);
     return select(1.055f * pow(mapped, float3(1.0f / 2.4f)) - 0.055f, 12.92f * mapped, mapped <= 0.0031308f);
 }
+// Where the selection outline covers only part of a pixel, blend it over the
+// samples off the selected object rather than over the whole pixel, so it
+// never shows the selected object's own dark sides at its stair steps.
+float3 outline_base(float3 display, float band, float4 outside, float exposure, float ink, constant Uniforms &u) {
+    if (band <= 0.0f || outside.w <= 0.0f) return display;
+    return composite_features(display_transform(outside.xyz / outside.w, exposure), ink * (1.0f - band), u);
+}
 // Composited after the tone curve so exposure neither dims nor blows out the
 // overlay, and so the outline never enters the film the exports read.
 // The outline is the UI accent, packed as display-space 0xRRGGBB in
@@ -758,6 +772,7 @@ kernel void render_main(device const Triangle *triangles [[buffer(0)]],
     Hit primary = trace(ray, INFINITY, triangles, nodes, u);
     float3 color;
     float ink = 0.0f;
+    float4 outside = float4(0.0f);
     if (refresh) {
         float4 total = accumulation[index];
         color = total.xyz / max(1.0f, total.w);
@@ -790,8 +805,10 @@ kernel void render_main(device const Triangle *triangles [[buffer(0)]],
                 float2 p = pixel + SOLID_OFFSETS[i];
                 Ray r = camera_ray(p, u);
                 Hit h = trace(r, INFINITY, triangles, nodes, u);
-                color += solid_sample(p, r, h, same_object(primary, h, triangles) ? ao : 1.0f, triangles, u) * 0.25f;
-                ink += feature_ink(r, h, triangles, u) * 0.25f;
+                float3 c = solid_sample(p, r, h, same_object(primary, h, triangles) ? ao : 1.0f, triangles, u);
+                color += c * 0.25f;
+                ink += sample_ink(r, h, primary, triangles, u) * 0.25f;
+                if (!is_selected(h, triangles, u)) outside += float4(c, 1.0f) * 0.25f;
             }
             ink = max(ink, outline_probe(pixel, primary, triangles, nodes, u));
         } else if (primary.triangle != NO_HIT) {
@@ -812,6 +829,8 @@ kernel void render_main(device const Triangle *triangles [[buffer(0)]],
     // Denoising replaces every displayed pixel, so the overlay travels to it in
     // the guide weight both guides share.
     if (progressive) normal_accumulation[index].w = coverage;
-    float3 display = composite_edit(composite_features(display_transform(color, progressive ? u.settings.x : 0.0f), ink * (1.0f - band), u), camera_ray(overlay_pixel, u), overlay_hit, overlay_pixel, triangles, u);
-    output.write(float4(composite_selection(display, coverage, u), 1.0f), gid);
+    float exposure = progressive ? u.settings.x : 0.0f;
+    float3 display = composite_edit(composite_features(display_transform(color, exposure), ink * (1.0f - band), u), camera_ray(overlay_pixel, u), overlay_hit, overlay_pixel, triangles, u);
+    float3 base = outline_base(display, band, outside, exposure, ink, u);
+    output.write(float4(composite_selection(base, coverage, u), 1.0f), gid);
 }

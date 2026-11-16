@@ -590,6 +590,13 @@ fn outline_probe(pixel: vec2<f32>, center: Hit) -> f32 {
     }
     return ink;
 }
+// Feature ink for one spatial sample of a pixel. The selected object's own
+// edges are left out at the outline's outer fringe (pixels centred off it),
+// where the outline already draws its boundary.
+fn sample_ink(ray: Ray, hit: Hit, center: Hit) -> f32 {
+    if is_selected(hit) && !is_selected(center) { return 0.0; }
+    return feature_ink(ray, hit);
+}
 fn composite_features(display: vec3<f32>, coverage: f32) -> vec3<f32> {
     let strength = select(0.9, 0.8, light_viewport());
     // Spatial coverage of a 1px line rarely reaches 1 with four samples; the
@@ -732,19 +739,32 @@ fn solid_sample(p: vec2<f32>, ray: Ray, hit: Hit, ao: f32) -> vec3<f32> {
 // Four rotated-grid samples: smooth silhouettes and edges at Solid's low cost.
 // Returns the color, and the averaged feature line coverage in w. Samples on
 // the centre hit's object share its contact shading.
-fn solid_supersampled(pixel: vec2<f32>, center: Hit) -> vec4<f32> {
+// Color, line coverage, and the summed color and share of the samples off
+// the selected object, which a partial outline pixel blends over (see
+// outline_base) so it never shows the selected object's own dark sides.
+struct SolidSample { color: vec3<f32>, ink: f32, outside: vec4<f32> }
+fn solid_supersampled(pixel: vec2<f32>, center: Hit) -> SolidSample {
     var ao = 1.0;
     if center.triangle != NO_HIT { ao = solid_ao(surface_at(camera_ray(pixel), center)); }
     let offsets = array<vec2<f32>, 4>(vec2(-0.125, -0.375), vec2(0.375, -0.125), vec2(-0.375, 0.125), vec2(0.125, 0.375));
-    var result = vec4(0.0);
+    var result = SolidSample(vec3(0.0), 0.0, vec4(0.0));
     for (var i = 0u; i < 4u; i += 1u) {
         let p = pixel + offsets[i]; let r = camera_ray(p); let h = trace(r, FAR, false);
         let same = center.triangle != NO_HIT && h.triangle != NO_HIT
             && triangles[h.triangle].params.z == triangles[center.triangle].params.z;
-        result += vec4(solid_sample(p, r, h, select(1.0, ao, same)), feature_ink(r, h)) * 0.25;
+        let c = solid_sample(p, r, h, select(1.0, ao, same));
+        result.color += c * 0.25;
+        result.ink += sample_ink(r, h, center) * 0.25;
+        if !is_selected(h) { result.outside += vec4(c, 1.0) * 0.25; }
     }
-    result.w = max(result.w, outline_probe(pixel, center));
+    result.ink = max(result.ink, outline_probe(pixel, center));
     return result;
+}
+// Where the selection outline covers only part of a pixel, blend it over the
+// samples off the selected object rather than over the whole pixel.
+fn outline_base(display: vec3<f32>, band: f32, outside: vec4<f32>, exposure: f32, ink: f32) -> vec3<f32> {
+    if band <= 0.0 || outside.w <= 0.0 { return display; }
+    return composite_features(display_transform(outside.xyz / outside.w, exposure), ink * (1.0 - band));
 }
 fn display_transform(linear: vec3<f32>, exposure: f32) -> vec3<f32> {
     let x = max(linear, vec3(0.0)) * exp2(clamp(exposure, -20.0, 20.0));
@@ -801,6 +821,7 @@ fn render_main(@builtin(global_invocation_id) global_id: vec3<u32>) {
     let ray = camera_ray(pixel); let primary = trace(ray, FAR, false);
     var color: vec3<f32>;
     var ink = 0.0;
+    var outside = vec4(0.0);
     if refresh {
         let total = accumulation[index];
         color = total.xyz / max(1.0, total.w);
@@ -825,7 +846,7 @@ fn render_main(@builtin(global_invocation_id) global_id: vec3<u32>) {
         color = total.xyz / max(1.0, total.w);
     } else {
         if u.image.w == 0u { color = wireframe_shading(ray, pixel, primary); }
-        else if u.image.w == 1u { let solid = solid_supersampled(pixel, primary); color = solid.xyz; ink = solid.w; }
+        else if u.image.w == 1u { let solid = solid_supersampled(pixel, primary); color = solid.color; ink = solid.ink; outside = solid.outside; }
         else if primary.triangle != NO_HIT { color = solid_shading(surface_at(ray, primary), ray); }
         else { color = viewport_background(ray); }
         accumulation[index] = vec4(color, 1.0);
@@ -844,8 +865,10 @@ fn render_main(@builtin(global_invocation_id) global_id: vec3<u32>) {
     // Denoising replaces every displayed pixel, so the overlay travels to it in
     // the guide weight both guides share.
     if progressive { denoise_guides[index].normal.w = coverage; }
-    let display = composite_edit(composite_features(display_transform(color, select(0.0, u.settings.x, progressive)), ink * (1.0 - band)), camera_ray(overlay_pixel), overlay_hit, overlay_pixel);
-    textureStore(output, vec2<i32>(gid), vec4(composite_selection(display, coverage), 1.0));
+    let exposure = select(0.0, u.settings.x, progressive);
+    let display = composite_edit(composite_features(display_transform(color, exposure), ink * (1.0 - band)), camera_ray(overlay_pixel), overlay_hit, overlay_pixel);
+    let base = outline_base(display, band, outside, exposure, ink);
+    textureStore(output, vec2<i32>(gid), vec4(composite_selection(base, coverage), 1.0));
 }
 
 // Explicit filtering supports HDR textures on adapters without FLOAT32_FILTERABLE.

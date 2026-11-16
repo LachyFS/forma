@@ -130,14 +130,17 @@ kernel void solid_main(device const Triangle *triangles [[buffer(0)]],
     Hit hit = preview_trace(ray, INFINITY, triangles, nodes, u PREVIEW_ACCEL_ARG);
     float3 color = float3(0.0f);
     float ink = 0.0f;
+    float4 outside = float4(0.0f);
     float ao = hit.triangle == NO_HIT ? 1.0f
         : preview_solid_ao(surface_at(ray, hit, triangles), triangles, nodes, u PREVIEW_ACCEL_ARG);
     for (uint i = 0u; i < 4u; ++i) {
         float2 p = pixel + SOLID_OFFSETS[i];
         Ray r = camera_ray(p, u);
         Hit h = preview_trace(r, INFINITY, triangles, nodes, u PREVIEW_ACCEL_ARG);
-        color += solid_sample(p, r, h, same_object(hit, h, triangles) ? ao : 1.0f, triangles, u) * 0.25f;
-        ink += feature_ink(r, h, triangles, u) * 0.25f;
+        float3 c = solid_sample(p, r, h, same_object(hit, h, triangles) ? ao : 1.0f, triangles, u);
+        color += c * 0.25f;
+        ink += sample_ink(r, h, hit, triangles, u) * 0.25f;
+        if (!is_selected(h, triangles, u)) outside += float4(c, 1.0f) * 0.25f;
     }
     ink = max(ink, preview_outline_probe(pixel, hit, triangles, nodes, u PREVIEW_ACCEL_ARG));
     accumulation[gid.y * u.image.x + gid.x] = float4(color, 1.0f);
@@ -150,7 +153,8 @@ kernel void solid_main(device const Triangle *triangles [[buffer(0)]],
 #endif
     // The outline replaces the line work under it rather than mixing with it.
     float3 display = composite_edit(composite_features(display_transform(color, 0.0f), ink * (1.0f - band), u), ray, hit, pixel, triangles, u);
-    output.write(float4(composite_selection(display, coverage, u), 1.0f), gid);
+    float3 base = outline_base(display, band, outside, 0.0f, ink, u);
+    output.write(float4(composite_selection(base, coverage, u), 1.0f), gid);
 }
 
 constant sampler preview_env_sampler(coord::normalized, s_address::repeat,
@@ -300,12 +304,13 @@ kernel void preview_main(device const Triangle *triangles [[buffer(0)]],
                                float2(-0.25f, 0.25f), float2(0.25f, 0.25f) };
     float3 color(0);
     float ink = 0.0f;
+    float4 outside = float4(0.0f);
     #pragma unroll
     for (uint i = 0u; i < 4u; ++i) {
         float2 p = pixel + offsets[i];
         Ray ray = camera_ray(p, u);
         Hit hit = preview_trace(ray, INFINITY, triangles, nodes, u PREVIEW_ACCEL_ARG);
-        ink += feature_ink(ray, hit, triangles, u) * 0.25f;
+        ink += sample_ink(ray, hit, center_hit, triangles, u) * 0.25f;
         float3 sample;
         if (hit.triangle == NO_HIT) {
             sample = viewport_background(ray, u);
@@ -323,7 +328,9 @@ kernel void preview_main(device const Triangle *triangles [[buffer(0)]],
                 sample = preview_surface(ray, hit, same_object ? ao : 1.0f, triangles, nodes, u, MATERIAL_PASS, environment, diffuse, specular, brdf PREVIEW_ACCEL_ARG);
             }
         }
-        color += add_grid(sample, ray, hit, p, u) * 0.25f;
+        float3 shaded = add_grid(sample, ray, hit, p, u);
+        color += shaded * 0.25f;
+        if (!is_selected(hit, triangles, u)) outside += float4(shaded, 1.0f) * 0.25f;
     }
     ink = max(ink, preview_outline_probe(pixel, center_hit, triangles, nodes, u PREVIEW_ACCEL_ARG));
     accumulation[gid.y * u.image.x + gid.x] = float4(color, 1.0f);
@@ -336,5 +343,6 @@ kernel void preview_main(device const Triangle *triangles [[buffer(0)]],
 #endif
     // The outline replaces the line work under it rather than mixing with it.
     float3 display = composite_edit(composite_features(display_transform(color, u.settings.x), ink * (1.0f - band), u), center_ray, center_hit, pixel, triangles, u);
-    output.write(float4(composite_selection(display, coverage, u), 1.0f), gid);
+    float3 base = outline_base(display, band, outside, u.settings.x, ink, u);
+    output.write(float4(composite_selection(base, coverage, u), 1.0f), gid);
 }
