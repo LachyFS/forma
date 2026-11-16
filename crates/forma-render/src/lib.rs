@@ -114,6 +114,9 @@ pub struct RenderSettings {
     pub show_edges: bool,
     /// Light viewport backdrop and grid, for light UI themes.
     pub light_viewport: bool,
+    /// While drawing, Material Preview shades the scene as matte clay, so
+    /// reflections never compete with the sketch drawn over it.
+    pub ghost_scene: bool,
     /// Selection outline as display-space 0xRRGGBB, normally the UI accent.
     /// Zero keeps the built-in blue.
     pub selection_rgb: u32,
@@ -136,6 +139,7 @@ impl Default for RenderSettings {
             edit_vertices: false,
             show_edges: true,
             light_viewport: false,
+            ghost_scene: false,
             selection_rgb: 0,
             preview: PreviewSettings::default(),
             denoise: DenoiseSettings::default(),

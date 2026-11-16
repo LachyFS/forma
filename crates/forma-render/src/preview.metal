@@ -304,7 +304,12 @@ kernel void preview_main(device const Triangle *triangles [[buffer(0)]],
             }
         } else {
             bool same_object = center_hit.triangle != NO_HIT && triangles[hit.triangle].params.z == triangles[center_hit.triangle].params.z;
-            sample = preview_surface(ray, hit, same_object ? ao : 1.0f, triangles, nodes, u, MATERIAL_PASS, environment, diffuse, specular, brdf PREVIEW_ACCEL_ARG);
+            if (ghost_scene(u)) {
+                // Drawing: matte clay, so reflections never compete with the sketch.
+                sample = solid_shading(surface_at(ray, hit, triangles), ray, u) * (same_object ? ao : 1.0f);
+            } else {
+                sample = preview_surface(ray, hit, same_object ? ao : 1.0f, triangles, nodes, u, MATERIAL_PASS, environment, diffuse, specular, brdf PREVIEW_ACCEL_ARG);
+            }
         }
         color += add_grid(sample, ray, hit, p, u) * 0.25f;
     }

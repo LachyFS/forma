@@ -506,7 +506,8 @@ fn camera_ray(pixel: vec2<f32>) -> Ray {
     let direction = u.cam_forward.xyz + u.cam_right.xyz * (ndc.x * u.camera.y * u.camera.x) + u.cam_up.xyz * (ndc.y * u.camera.x);
     return Ray(u.cam_origin.xyz, normalize(direction));
 }
-fn light_viewport() -> bool { return u.cam_up.w > 0.5; }
+fn light_viewport() -> bool { return (u32(u.cam_up.w + 0.5) & 1u) != 0u; }
+fn ghost_scene() -> bool { return (u32(u.cam_up.w + 0.5) & 2u) != 0u; }
 fn viewport_background(ray: Ray) -> vec3<f32> {
     let t = smoothstep(-0.5, 0.7, ray.direction.y);
     if light_viewport() { return mix(vec3(0.60, 0.62, 0.65), vec3(0.84, 0.855, 0.875), t); }

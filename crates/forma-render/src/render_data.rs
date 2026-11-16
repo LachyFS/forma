@@ -66,7 +66,11 @@ impl Uniforms {
                     0.0
                 },
             ),
-            cam_up: with_w(vector(Vec3::Y), u32::from(settings.light_viewport) as f32),
+            // Display flags: 1 light backdrop, 2 ghosted scene while drawing.
+            cam_up: with_w(
+                vector(Vec3::Y),
+                (u32::from(settings.light_viewport) | u32::from(settings.ghost_scene) << 1) as f32,
+            ),
             // 24-bit RGB is exact in an f32 lane.
             cam_forward: with_w(
                 vector(Vec3::NEG_Z),

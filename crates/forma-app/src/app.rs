@@ -420,6 +420,7 @@ impl Studio {
                 edit_vertices: false,
                 show_edges: true,
                 light_viewport: false,
+                ghost_scene: false,
                 selection_rgb: 0,
                 mode: RenderMode::MaterialPreview,
                 width: 1000,
@@ -3045,9 +3046,14 @@ impl Render for Studio {
         // the theme picker. Re-render only when the light/dark side changes.
         let colors = self.theme_colors();
         let light = !colors.dark;
-        if self.settings.light_viewport != light || self.settings.selection_rgb != colors.accent {
+        let ghost = self.is_drawing();
+        if self.settings.light_viewport != light
+            || self.settings.selection_rgb != colors.accent
+            || self.settings.ghost_scene != ghost
+        {
             self.settings.light_viewport = light;
             self.settings.selection_rgb = colors.accent;
+            self.settings.ghost_scene = ghost;
             self.invalidate(false, cx);
         }
         let viewport = self.viewport(cx);

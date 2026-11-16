@@ -112,7 +112,12 @@ fn preview_main(@builtin(global_invocation_id) global_id: vec3<u32>) {
             }
         } else {
             let same_object = center_hit.triangle != NO_HIT && triangles[hit.triangle].params.z == triangles[center_hit.triangle].params.z;
-            sample_color = preview_surface(ray, hit, select(1.0, ao, same_object));
+            if ghost_scene() {
+                // Drawing: matte clay, so reflections never compete with the sketch.
+                sample_color = solid_shading(surface_at(ray, hit), ray) * select(1.0, ao, same_object);
+            } else {
+                sample_color = preview_surface(ray, hit, select(1.0, ao, same_object));
+            }
         }
         color += add_grid(sample_color, ray, hit, p) * 0.25;
     }

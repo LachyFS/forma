@@ -435,7 +435,8 @@ Ray camera_ray(float2 pixel, constant Uniforms &u) {
     float3 direction = u.cam_forward.xyz + u.cam_right.xyz * (ndc.x * u.camera.y * u.camera.x) + u.cam_up.xyz * (ndc.y * u.camera.x);
     return { u.cam_origin.xyz, normalize(direction) };
 }
-bool light_viewport(constant Uniforms &u) { return u.cam_up.w > 0.5f; }
+bool light_viewport(constant Uniforms &u) { return (uint(u.cam_up.w + 0.5f) & 1u) != 0u; }
+bool ghost_scene(constant Uniforms &u) { return (uint(u.cam_up.w + 0.5f) & 2u) != 0u; }
 float3 viewport_background(Ray ray, constant Uniforms &u) {
     float t = smoothstep(-0.5f, 0.7f, ray.direction.y);
     if (light_viewport(u)) return mix(float3(0.60f, 0.62f, 0.65f), float3(0.84f, 0.855f, 0.875f), t);
