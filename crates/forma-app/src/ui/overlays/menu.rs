@@ -19,6 +19,10 @@ use std::ops::Range;
 
 const ADD_WIDTH: f32 = 280.;
 const VIEW_WIDTH: f32 = 224.;
+/// Menu rows and section headings. Dense enough that the Add menu, with all
+/// four sections open, stays well clear of the bottom of a 960 px window.
+const ITEM_H: f32 = H_SM;
+const HEADING_H: f32 = 20.;
 /// Space between a menu and the edge of the control that opened it.
 const MENU_GAP: f32 = SP_2;
 /// Longest filter the Add menu accepts; anything longer matches nothing.
@@ -26,12 +30,15 @@ const QUERY_MAX: usize = 40;
 
 #[derive(Clone, Copy)]
 pub(crate) enum MenuItem {
-    /// A section title and a short note on what the section makes.
+    /// A section title and a short note on what the section makes. The note
+    /// is shown in the footer while one of the section's items is highlighted.
     Heading(&'static str, Option<&'static str>),
     Action {
         command: Command,
         label: &'static str,
         checked: bool,
+        /// A muted second word after the label ("Wavefront mesh").
+        note: Option<&'static str>,
     },
     Separator,
 }
@@ -50,6 +57,17 @@ fn action(command: Command, label: &'static str) -> MenuItem {
         command,
         label,
         checked: false,
+        note: None,
+    }
+}
+
+/// An import row: the format, and what it becomes in the scene.
+fn import(command: Command, label: &'static str, note: &'static str) -> MenuItem {
+    MenuItem::Action {
+        command,
+        label,
+        checked: false,
+        note: Some(note),
     }
 }
 
@@ -62,7 +80,6 @@ pub(crate) fn items(kind: MenuKind, camera: forma_core::Camera) -> Vec<MenuItem>
             action(Command::Add(Primitive::Cylinder), "Cylinder"),
             action(Command::Add(Primitive::Torus), "Torus"),
             action(Command::Add(Primitive::Plane), "Plane"),
-            MenuItem::Separator,
             MenuItem::Heading("Part", Some(PART_DETAIL)),
             action(Command::Cad(CadCommand::AddPart(PartShape::Box)), "Box"),
             action(
@@ -73,14 +90,12 @@ pub(crate) fn items(kind: MenuKind, camera: forma_core::Camera) -> Vec<MenuItem>
                 Command::Cad(CadCommand::AddPart(PartShape::Sphere)),
                 "Sphere",
             ),
-            MenuItem::Separator,
             MenuItem::Heading("Sketch", Some(SKETCH_DETAIL)),
             action(Command::Draw(DrawCommand::NewSketch), "New sketch"),
-            MenuItem::Separator,
-            MenuItem::Heading("Import", Some("From a file")),
-            action(Command::ImportObj, "Wavefront OBJ…"),
-            action(Command::ImportStl, "STL…"),
-            action(Command::Cad(CadCommand::ImportStep), "STEP…"),
+            MenuItem::Heading("Import", Some("Meshes or parts from a file")),
+            import(Command::ImportObj, "OBJ…", "Wavefront mesh"),
+            import(Command::ImportStl, "STL…", "Triangle mesh"),
+            import(Command::Cad(CadCommand::ImportStep), "STEP…", "Solid part"),
         ],
         MenuKind::View => {
             let current = view_name(camera);
@@ -88,6 +103,7 @@ pub(crate) fn items(kind: MenuKind, camera: forma_core::Camera) -> Vec<MenuItem>
                 command,
                 label,
                 checked: current == label,
+                note: None,
             };
             vec![
                 view(Command::ViewFront, "Front"),
@@ -101,6 +117,7 @@ pub(crate) fn items(kind: MenuKind, camera: forma_core::Camera) -> Vec<MenuItem>
                     command: Command::ToggleProjection,
                     label: "Orthographic",
                     checked: camera.orthographic,
+                    note: None,
                 },
                 action(Command::ViewPerspective, "Reset perspective"),
                 MenuItem::Separator,
@@ -153,7 +170,8 @@ fn label_matches(label: &str, words: &[String]) -> Vec<Range<usize>> {
 }
 
 /// The menu as drawn: with a query, only matching actions, under the
-/// headings of the sections they belong to.
+/// headings of the sections they belong to. Headings are the only breaks
+/// between sections.
 pub(crate) fn visible_items(
     kind: MenuKind,
     camera: forma_core::Camera,
@@ -173,8 +191,17 @@ pub(crate) fn visible_items(
                 sections.push((Some(item), Vec::new()));
             }
             MenuItem::Separator => {}
-            MenuItem::Action { command, label, .. } => {
-                if item_matches(label, section, command, &words) {
+            MenuItem::Action {
+                command,
+                label,
+                note,
+                ..
+            } => {
+                let label = match note {
+                    Some(note) => format!("{label} {note}"),
+                    None => label.to_owned(),
+                };
+                if item_matches(&label, section, command, &words) {
                     sections.last_mut().unwrap().1.push(item);
                 }
             }
@@ -182,7 +209,7 @@ pub(crate) fn visible_items(
     }
     let mut visible = Vec::new();
     for (heading, actions) in sections.into_iter().filter(|(_, a)| !a.is_empty()) {
-        if !visible.is_empty() {
+        if heading.is_none() && !visible.is_empty() {
             visible.push(MenuItem::Separator);
         }
         visible.extend(heading);
@@ -201,6 +228,18 @@ fn is_named_view(command: Command) -> bool {
             | Command::ViewTop
             | Command::ViewBottom
     )
+}
+
+/// The note of the section holding item `index`, for the footer.
+fn section_note(items: &[MenuItem], index: usize) -> Option<&'static str> {
+    items[..=index.min(items.len().saturating_sub(1))]
+        .iter()
+        .rev()
+        .find_map(|item| match item {
+            MenuItem::Heading(_, note) => Some(*note),
+            _ => None,
+        })
+        .flatten()
 }
 
 fn first_action(items: &[MenuItem]) -> usize {
@@ -290,7 +329,7 @@ fn filter_field(t: Colors, query: &str) -> Div {
     let caret = || div().w(px(1.5)).h(px(15.)).bg(rgb(t.focus));
     row()
         .flex_shrink_0()
-        .h(px(H_LG + 2.))
+        .h(px(H_LG))
         .px(px(SP_3))
         .gap(px(SP_2))
         .border_b_1()
@@ -318,20 +357,36 @@ fn filter_field(t: Colors, query: &str) -> Div {
         )
 }
 
-/// Keys that drive the Add menu, in the shared footer style.
-fn footer(t: Colors) -> Div {
+/// What the highlighted item's section makes, and the key that adds it: the
+/// palette's footer pattern, so section headings stay one word.
+fn footer(t: Colors, note: Option<&'static str>, cx: &App) -> Div {
+    const KEYS: f32 = 76.;
     row()
         .flex_shrink_0()
-        .h(px(H_MD + 2.))
+        .h(px(H_MD))
         .px(px(SP_3))
         .gap(px(SP_3))
         .border_t_1()
         .border_color(rgb(t.hairline))
         .bg(rgb(t.raised))
-        .child(hint(t, "↑ ↓", "Move"))
+        .child(
+            div()
+                .flex_1()
+                .min_w(px(0.))
+                .overflow_hidden()
+                .whitespace_nowrap()
+                .text_size(px(TEXT_SM))
+                .text_color(rgb(t.text_muted))
+                .when_some(note, |d, note| {
+                    d.child(fit_text(
+                        cx,
+                        note.into(),
+                        TEXT_SM,
+                        ADD_WIDTH - SP_3 * 3. - KEYS,
+                    ))
+                }),
+        )
         .child(hint(t, "Return", "Add"))
-        .child(spacer())
-        .child(hint(t, "Esc", "Close"))
 }
 
 pub(super) fn overlay(t: Colors, s: &Studio, cx: &mut Context<Studio>) -> AnyElement {
@@ -343,6 +398,9 @@ pub(super) fn overlay(t: Colors, s: &Studio, cx: &mut Context<Studio>) -> AnyEle
     let query = menu.query.clone();
     let words = query_words(&query);
     let items = visible_items(kind, s.scene.camera, &query);
+    let note = (!items.is_empty())
+        .then(|| section_note(&items, selected))
+        .flatten();
     // Rail menus open beside the rail, level with their button; others drop
     // below their trigger. `RAIL_EDGE` is the rail's padding and border
     // around the button, so the gap is measured from the rail itself.
@@ -357,7 +415,7 @@ pub(super) fn overlay(t: Colors, s: &Studio, cx: &mut Context<Studio>) -> AnyEle
             Corner::TopRight,
         ),
     };
-    let mut list = col().p(px(SP_1)).gap(px(1.));
+    let mut list = col().p(px(SP_1));
     if items.is_empty() {
         list = list.child(
             col()
@@ -375,22 +433,12 @@ pub(super) fn overlay(t: Colors, s: &Studio, cx: &mut Context<Studio>) -> AnyEle
     }
     for (index, item) in items.into_iter().enumerate() {
         list = match item {
-            // The section's name leads; its description is secondary but
-            // still body text, so it keeps the muted ink.
-            MenuItem::Heading(label, detail) => list.child(
+            // The section's name alone; what it makes is in the footer.
+            MenuItem::Heading(label, _) => list.child(
                 heading(t, label)
-                    .h(px(H_MD - 2.))
-                    .gap(px(SP_2))
+                    .h(px(HEADING_H))
                     .text_color(rgb(t.text))
-                    .child(spacer())
-                    .when_some(detail, |d, detail| {
-                        d.child(
-                            div()
-                                .font_weight(FontWeight::NORMAL)
-                                .text_color(rgb(t.text_muted))
-                                .child(detail),
-                        )
-                    }),
+                    .when(index > 0, |d| d.mt(px(SP_1))),
             ),
             MenuItem::Separator => list.child(
                 div()
@@ -403,6 +451,7 @@ pub(super) fn overlay(t: Colors, s: &Studio, cx: &mut Context<Studio>) -> AnyEle
                 command,
                 label,
                 checked,
+                note,
             } => {
                 let active = index == selected;
                 let info = command_info(command);
@@ -414,7 +463,8 @@ pub(super) fn overlay(t: Colors, s: &Studio, cx: &mut Context<Studio>) -> AnyEle
                 list.child(
                     row()
                         .id(("menu-item", index))
-                        .h(px(H_MD))
+                        .h(px(ITEM_H))
+                        .flex_shrink_0()
                         .px(px(SP_2))
                         .gap(px(SP_2 + 2.))
                         .rounded(px(R_SM + 1.))
@@ -433,18 +483,33 @@ pub(super) fn overlay(t: Colors, s: &Studio, cx: &mut Context<Studio>) -> AnyEle
                             },
                         )
                         .child(
-                            div()
+                            row()
                                 .flex_1()
                                 .min_w(px(0.))
-                                .text_size(px(TEXT_LG))
-                                .text_color(rgb(t.text))
+                                .gap(px(SP_1_5))
                                 .child(
-                                    StyledText::new(label).with_highlights(
-                                        label_matches(label, &words)
-                                            .into_iter()
-                                            .map(|range| (range, highlight)),
-                                    ),
-                                ),
+                                    div()
+                                        .flex_shrink_0()
+                                        .text_size(px(TEXT_LG))
+                                        .text_color(rgb(t.text))
+                                        .child(
+                                            StyledText::new(label).with_highlights(
+                                                label_matches(label, &words)
+                                                    .into_iter()
+                                                    .map(|range| (range, highlight)),
+                                            ),
+                                        ),
+                                )
+                                .when_some(note, |d, note| {
+                                    d.child(
+                                        div()
+                                            .min_w(px(0.))
+                                            .truncate()
+                                            .text_size(px(TEXT_MD))
+                                            .text_color(rgb(t.text_muted))
+                                            .child(note),
+                                    )
+                                }),
                         )
                         .when(checked, |d| {
                             d.child(icon(Icon::Check, ICON_SM, t.accent_text))
@@ -475,7 +540,7 @@ pub(super) fn overlay(t: Colors, s: &Studio, cx: &mut Context<Studio>) -> AnyEle
         .shadow(float_shadow(t))
         .when(add, |d| d.child(filter_field(t, &query)))
         .child(list)
-        .when(add, |d| d.child(footer(t)));
+        .when(add, |d| d.child(footer(t, note, cx)));
     backdrop(
         t,
         "menu-backdrop",
@@ -546,12 +611,24 @@ mod tests {
             [Command::Cad(CadCommand::AddPart(PartShape::Cylinder))]
         );
         assert!(commands("no such thing").is_empty());
-        // Matches keep their section heading, one separator between sections.
+        // Matches keep their section heading, which is the only break
+        // between sections.
         let shown = visible_items(MenuKind::Add, camera, "sphere");
         assert!(matches!(shown[0], MenuItem::Heading("Mesh", _)));
-        assert!(matches!(shown[2], MenuItem::Separator));
-        assert!(matches!(shown[3], MenuItem::Heading("Part", _)));
-        assert_eq!(shown.len(), 5);
+        assert!(matches!(shown[2], MenuItem::Heading("Part", _)));
+        assert_eq!(shown.len(), 4);
+        // An import row's note is searchable ("wavefront" finds OBJ).
+        assert_eq!(commands("wavefront"), [Command::ImportObj]);
+        // The footer describes the highlighted item's section.
+        let all = items(MenuKind::Add, camera);
+        let step_row = all
+            .iter()
+            .position(|item| item.command() == Some(Command::Cad(CadCommand::ImportStep)))
+            .unwrap();
+        assert_eq!(
+            super::section_note(&all, step_row),
+            Some("Meshes or parts from a file")
+        );
         // Matched words highlight separately; touching ones join.
         let ranges = label_matches("Cylinder", &["der".into(), "cy".into()]);
         assert_eq!(ranges, [0..2, 5..8]);

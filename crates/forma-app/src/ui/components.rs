@@ -35,6 +35,34 @@ pub(crate) fn hrule(t: Colors) -> Div {
     div().h(px(1.)).w_full().flex_shrink_0().bg(rgb(t.hairline))
 }
 
+/// Height of the shadow along a scrolled list's edge.
+pub(crate) const SCROLL_SHADOW: f32 = 8.;
+
+/// The shadow's ink at the edge it hugs, and the same ink fully clear.
+pub(crate) fn scroll_shadow_inks(t: Colors) -> (Hsla, Hsla) {
+    let mut ink = hex_alpha(t.shadow);
+    ink.a = ink.a.min(if t.dark { 0.4 } else { 0.12 });
+    let mut clear = ink;
+    clear.a = 0.;
+    (ink, clear)
+}
+
+/// A short shadow line along a scrolled list's edge while content continues
+/// past it. It adds depth instead of a wash, so the row beside it keeps its
+/// contrast and never reads as disabled. `bottom` puts it on the lower edge.
+/// Position it absolutely; it takes no input.
+pub(crate) fn scroll_shadow(t: Colors, bottom: bool) -> Div {
+    let (ink, clear) = scroll_shadow_inks(t);
+    div()
+        .h(px(SCROLL_SHADOW))
+        .flex_shrink_0()
+        .bg(linear_gradient(
+            if bottom { 180. } else { 0. },
+            linear_color_stop(clear, 0.),
+            linear_color_stop(ink, 1.),
+        ))
+}
+
 /// Shorten `text` to fit `width` at the UI font and `size`, ending in "…".
 /// GPUI 0.2 caches a no-wrap text's first, unconstrained measurement, so
 /// `text_ellipsis` only works when the text's width is known up front;

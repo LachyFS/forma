@@ -44,7 +44,7 @@ pub(crate) fn feature_icon(feature: &Feature) -> Icon {
         FeatureKind::Chamfer(_) => Icon::Bevel,
         FeatureKind::BaseBody(base) => match base.body {
             BaseBody::Mesh { .. } => Icon::Mesh,
-            BaseBody::Step { .. } => Icon::Import,
+            BaseBody::Step { .. } => Icon::ImportStep,
         },
     }
 }
@@ -53,24 +53,31 @@ fn short(value: f32) -> String {
     compact_number(crate::transform::format_precision_value(value), 5)
 }
 
-/// A compact parameter summary for a chip, e.g. `0.6 m` or `2.2×0.3×1.5`.
+/// A compact parameter summary for a chip, e.g. `0.6 m` or
+/// `2.2 × 0.3 × 1.5 m`. Every length carries its unit, written once at the
+/// end, in the same words as the feature's tooltip.
 pub(crate) fn chip_hint(feature: &Feature) -> String {
     match &feature.kind {
         FeatureKind::Primitive(primitive) => match primitive.shape {
             PrimitiveShape::Box { size } => {
-                format!("{}×{}×{}", short(size.x), short(size.y), short(size.z))
+                format!(
+                    "{} × {} × {} m",
+                    short(size.x),
+                    short(size.y),
+                    short(size.z)
+                )
             }
             PrimitiveShape::Cylinder { radius, height }
             | PrimitiveShape::Cone {
                 bottom_radius: radius,
                 height,
                 ..
-            } => format!("r {} × {}", short(radius), short(height)),
-            PrimitiveShape::Sphere { radius } => format!("r {}", short(radius)),
+            } => format!("r {} · h {} m", short(radius), short(height)),
+            PrimitiveShape::Sphere { radius } => format!("r {} m", short(radius)),
             PrimitiveShape::Torus {
                 major_radius,
                 minor_radius,
-            } => format!("{} / {}", short(major_radius), short(minor_radius)),
+            } => format!("{} / {} m", short(major_radius), short(minor_radius)),
         },
         FeatureKind::Extrude(extrude) => match extrude.extent {
             ExtrudeExtent::OneSide => format!("{} m", short(extrude.distance)),
@@ -125,9 +132,10 @@ pub(crate) fn chip_state(s: &Studio, part: &PartData, feature: &Feature) -> Chip
     ChipState::Ok
 }
 
-/// The operation glyph shown before a hint, for features that remove or
-/// intersect material (joins are the unmarked default).
-fn hint_operation(feature: &Feature) -> Option<Icon> {
+/// The badge on a feature's glyph for features that remove or intersect
+/// material (joins are the unmarked default), where the glyph itself does
+/// not already say so.
+fn operation_badge(feature: &Feature) -> Option<Icon> {
     match &feature.kind {
         FeatureKind::Primitive(primitive) => Some(primitive.operation),
         FeatureKind::Revolve(revolve) => Some(revolve.operation),
@@ -137,8 +145,47 @@ fn hint_operation(feature: &Feature) -> Option<Icon> {
         }
         _ => None,
     }
-    .filter(|op| matches!(op, FeatureOperation::Cut | FeatureOperation::Intersect))
-    .map(operation_icon)
+    .and_then(|op| match op {
+        FeatureOperation::Cut => Some(Icon::BadgeCut),
+        FeatureOperation::Intersect => Some(Icon::BadgeIntersect),
+        _ => None,
+    })
+}
+
+/// The dock's fill made opaque: what a chip's operation badge is cut from.
+fn dock_ground(t: Colors) -> Hsla {
+    let mut ground = hex_alpha(t.hud);
+    ground.a = 1.;
+    ground
+}
+
+/// A feature's glyph at `size` in `ink`: its kind, with a small operation
+/// badge on the lower right for cuts and intersections. `ground` is the fill
+/// behind the glyph; the badge sits in a ring of it, so it stays separate
+/// from the strokes it overlaps.
+pub(crate) fn feature_glyph(feature: &Feature, size: f32, ink: u32, ground: Hsla) -> Div {
+    const BADGE: f32 = 9.;
+    const RING: f32 = 1.5;
+    div()
+        .relative()
+        .flex_shrink_0()
+        .size(px(size))
+        .child(icon(feature_icon(feature), size, ink))
+        .when_some(operation_badge(feature), |d, badge| {
+            d.child(
+                div()
+                    .absolute()
+                    .right(px(-RING - 1.))
+                    .bottom(px(-RING - 1.))
+                    .size(px(BADGE + RING * 2.))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .rounded_full()
+                    .bg(ground)
+                    .child(icon(badge, BADGE, ink)),
+            )
+        })
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -200,7 +247,16 @@ fn chip(
         })
         .when(rolled_back && !selected, |d| d.opacity(0.42))
         .when(rolled_back && selected, |d| d.opacity(0.7))
-        .child(icon(feature_icon(feature), ICON_SM, glyph_ink))
+        .child(feature_glyph(
+            feature,
+            ICON_SM,
+            glyph_ink,
+            if selected {
+                hex(t.accent_soft)
+            } else {
+                dock_ground(t)
+            },
+        ))
         .child(
             div()
                 .max_w(px(NAME_MAX))
@@ -218,18 +274,7 @@ fn chip(
                 .child(feature.name.clone()),
         )
         .when(!compact, |d| {
-            d.when_some(hint_operation(feature), |d, glyph| {
-                d.child(icon(
-                    glyph,
-                    12.,
-                    if selected {
-                        t.accent_text
-                    } else {
-                        t.text_muted
-                    },
-                ))
-            })
-            .child(
+            d.child(
                 div()
                     .flex_shrink_0()
                     .tabular()
@@ -724,7 +769,7 @@ pub(super) fn context_menu(t: Colors, s: &Studio, cx: &mut Context<Studio>) -> O
 #[cfg(test)]
 mod tests {
     // Not `super::*`: GPUI's prelude exports its own `test` attribute.
-    use super::{Icon, chip_hint, feature_icon, hint_operation};
+    use super::{Icon, chip_hint, feature_icon, operation_badge};
     use forma_core::{
         ExtrudeExtent, ExtrudeFeature, Feature, FeatureKind, FeatureOperation, Placement,
         PrimitiveFeature, PrimitiveShape, Sketch, SketchPlane, Vec3,
@@ -743,9 +788,9 @@ mod tests {
                 operation: FeatureOperation::Cut,
             }),
         );
-        assert_eq!(chip_hint(&boxed), "2.2×0.3×1.5");
+        assert_eq!(chip_hint(&boxed), "2.2 × 0.3 × 1.5 m");
         assert_eq!(feature_icon(&boxed), Icon::Cube);
-        assert_eq!(hint_operation(&boxed), Some(Icon::Subtract));
+        assert_eq!(operation_badge(&boxed), Some(Icon::BadgeCut));
         let mut extrude = Feature::new(
             2,
             "Holes",
@@ -760,10 +805,24 @@ mod tests {
         );
         assert_eq!(chip_hint(&extrude), "±0.3 m");
         assert_eq!(feature_icon(&extrude), Icon::ExtrudeCut);
-        assert_eq!(hint_operation(&extrude), None, "the icon already says cut");
+        assert_eq!(operation_badge(&extrude), None, "the icon already says cut");
         if let FeatureKind::Extrude(feature) = &mut extrude.kind {
             feature.extent = ExtrudeExtent::TwoSides { back_distance: 0.1 };
         }
         assert_eq!(chip_hint(&extrude), "0.6 / 0.1 m");
+        let bore = Feature::new(
+            3,
+            "Bore",
+            FeatureKind::Primitive(PrimitiveFeature {
+                shape: PrimitiveShape::Cylinder {
+                    radius: 0.3,
+                    height: 2.0,
+                },
+                placement: Placement::default(),
+                operation: FeatureOperation::Intersect,
+            }),
+        );
+        assert_eq!(chip_hint(&bore), "r 0.3 · h 2 m");
+        assert_eq!(operation_badge(&bore), Some(Icon::BadgeIntersect));
     }
 }

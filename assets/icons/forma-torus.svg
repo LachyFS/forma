@@ -1,0 +1,7 @@
+<!-- Forma icon, drawn on the Lucide 24-unit grid. Part of Forma (MIT OR Apache-2.0). -->
+<!-- A ring seen from above. The far inner wall's arc rests on the near tube's, whose ends run on past it as a real torus's contour does, so the hole reads as a donut's rather than an eye. -->
+<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+  <ellipse cx="12" cy="12" rx="10" ry="8"/>
+  <path d="M7.2 11.2C8.5 8.4 15.5 8.4 16.8 11.2"/>
+  <path d="M5.6 9.4C7.4 14.2 16.6 14.2 18.4 9.4"/>
+</svg>

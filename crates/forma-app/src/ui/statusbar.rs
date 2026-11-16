@@ -139,10 +139,97 @@ fn regeneration(s: &Studio) -> Option<(String, String)> {
     super::feature_inspector::regeneration_timing(s, part.id)
 }
 
+/// Recent frame times, so the readout shows what frames typically cost
+/// rather than whichever frame came last. The first frame after a scene or
+/// settings change re-uploads the scene and can take 20 times longer; one
+/// such frame must not become the number the status bar shows until the
+/// next edit.
+#[derive(Default)]
+struct FrameClock {
+    /// The last frame seen, as its time and sample count: the status bar is
+    /// drawn far more often than frames arrive.
+    last: Option<(u64, u32)>,
+    /// What the last frame was drawn from (see [`FrameChange`]).
+    change: Option<FrameChange>,
+    recent: std::collections::VecDeque<f64>,
+}
+
+/// What makes the next frame slow when it changes: geometry to upload, or a
+/// new shading mode or film size to allocate.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct FrameChange {
+    scene_revision: u64,
+    mode: RenderMode,
+    size: (u32, u32),
+}
+
+impl FrameChange {
+    fn of(s: &Studio) -> Self {
+        Self {
+            scene_revision: s.scene_revision,
+            mode: s.settings.mode,
+            size: (s.settings.width, s.settings.height),
+        }
+    }
+}
+
+impl FrameClock {
+    const WINDOW: usize = 24;
+
+    /// Note a frame. The first frame after a change, and the very first
+    /// one, are left out of the typical time: they pay for the upload, not
+    /// for drawing.
+    fn record(&mut self, render_ms: f64, samples: u32, change: FrameChange) {
+        let key = (render_ms.to_bits(), samples);
+        if render_ms <= 0. || self.last == Some(key) {
+            return;
+        }
+        self.last = Some(key);
+        let first = self.change != Some(change);
+        self.change = Some(change);
+        if first {
+            return;
+        }
+        if self.recent.len() == Self::WINDOW {
+            self.recent.pop_front();
+        }
+        self.recent.push_back(render_ms);
+    }
+
+    /// The median of recent frames; with fewer than three, the fastest, so a
+    /// lone slow first frame is never the headline.
+    fn typical(&self) -> Option<f64> {
+        let mut times: Vec<f64> = self.recent.iter().copied().collect();
+        times.sort_by(f64::total_cmp);
+        match times.len() {
+            0 => None,
+            1 | 2 => times.first().copied(),
+            n => Some(times[n / 2]),
+        }
+    }
+}
+
+thread_local! {
+    static FRAMES: std::cell::RefCell<FrameClock> = Default::default();
+}
+
+/// The frame time to show: typical of recent frames, falling back to the
+/// last one before any have been seen.
+fn frame_time(s: &Studio) -> f64 {
+    FRAMES.with(|clock| {
+        let mut clock = clock.borrow_mut();
+        clock.record(s.render_ms, s.samples, FrameChange::of(s));
+        clock.typical().unwrap_or(s.render_ms)
+    })
+}
+
 /// The performance readout's tooltip: frame time, the active part's last
 /// regeneration and the GPU, one fact per line.
-fn performance_detail(s: &Studio) -> String {
-    let mut lines = vec![format!("Frame {:.1} ms", s.render_ms)];
+fn performance_detail(s: &Studio, typical: f64) -> String {
+    let mut lines = vec![format!(
+        "Frame {typical:.1} ms typical · last {:.1} ms",
+        s.render_ms
+    )];
     if let Some((total, detail)) = regeneration(s) {
         lines.push(format!("Part regenerated in {total} · {detail}"));
     }
@@ -182,6 +269,7 @@ pub(super) fn statusbar(
 ) -> AnyElement {
     use crate::updater::State;
     let wide = f32::from(window.viewport_size().width) >= 1280.;
+    let typical = frame_time(s);
     let health = if s.render_error.is_some() {
         t.danger
     } else if s.frame.is_none() {
@@ -319,9 +407,14 @@ pub(super) fn statusbar(
                         .whitespace_nowrap()
                         .tabular()
                         .text_color(rgb(t.text_faint))
-                        .child(format!("{:.1} ms", s.render_ms)),
+                        .child(format!("{typical:.1} ms")),
                 )
-                .tooltip(tip_detail(t, "Performance", performance_detail(s), None)),
+                .tooltip(tip_detail(
+                    t,
+                    "Performance",
+                    performance_detail(s, typical),
+                    None,
+                )),
         )
         .child(match update {
             Some((label, tone)) => on_command(
@@ -356,4 +449,45 @@ pub(super) fn statusbar(
             cx,
         ))
         .into_any_element()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{FrameChange, FrameClock};
+    use forma_render::RenderMode;
+
+    #[test]
+    fn a_slow_frame_after_an_edit_does_not_become_the_readout() {
+        let scene = |scene_revision| FrameChange {
+            scene_revision,
+            mode: RenderMode::Solid,
+            size: (1200, 900),
+        };
+        let mut clock = FrameClock::default();
+        assert_eq!(clock.typical(), None);
+        // The first frame after loading the scene is slow and left out.
+        clock.record(144.9, 1, scene(1));
+        assert_eq!(clock.typical(), None);
+        clock.record(7.2, 1, scene(1));
+        assert_eq!(clock.typical(), Some(7.2));
+        for ms in [6.9, 7.1, 7.4, 7.0] {
+            clock.record(ms, 1, scene(1));
+        }
+        // An edit uploads the scene: its first frame is left out entirely.
+        clock.record(151.3, 1, scene(2));
+        assert_eq!(clock.recent.len(), 5);
+        assert_eq!(clock.typical(), Some(7.1));
+        // Redrawing the status bar without a new frame records nothing.
+        clock.record(7.3, 1, scene(2));
+        clock.record(7.3, 1, scene(2));
+        assert_eq!(clock.recent.len(), 6);
+        // A lone slow frame among steady ones never wins the median either.
+        clock.record(98.0, 1, scene(2));
+        assert_eq!(clock.typical(), Some(7.2));
+        // Frames that really are slower move the readout within a window.
+        for frame in 0..FrameClock::WINDOW {
+            clock.record(30.0 + frame as f64 * 1e-3, 2, scene(2));
+        }
+        assert!(clock.typical().unwrap() > 29.);
+    }
 }

@@ -62,7 +62,10 @@ pub(crate) fn command_info(command: Command) -> CommandInfo {
             "Save project as…",
             platform_shortcut("⇧ ⌘ S", "Ctrl+Shift+S"),
         ),
-        Command::ImportObj => info("Import Wavefront OBJ…"),
+        Command::ImportObj => explained(
+            "Import Wavefront OBJ…",
+            "Bring in its objects as editable meshes",
+        ),
         Command::ImportStl => explained(
             "Import STL…",
             "Choose the file's units, then place its meshes",
@@ -317,7 +320,10 @@ fn cad_info(command: CadCommand) -> CommandInfo {
             "Convert to mesh",
             "Bake the part into editable polygons. Its feature history is dropped; undo restores it.",
         ),
-        CadCommand::ImportStep => info("Import STEP…"),
+        CadCommand::ImportStep => explained(
+            "Import STEP…",
+            "Bring in its solids as parts that take new features",
+        ),
         CadCommand::ExportStep => explained(
             "Export STEP…",
             "Save the selected parts, or all visible parts, in millimetres",
@@ -402,7 +408,8 @@ pub(crate) fn command_icon(command: Command) -> Option<Icon> {
         Command::New => Icon::Plus,
         Command::Open => Icon::Open,
         Command::Save | Command::SaveAs => Icon::Save,
-        Command::ImportObj | Command::ImportStl => Icon::Import,
+        Command::ImportObj => Icon::ImportObj,
+        Command::ImportStl => Icon::ImportStl,
         Command::ToggleTheme => Icon::Theme,
         Command::ToggleUpdates => Icon::Settings,
         Command::ExportObj | Command::ExportStl => Icon::Export,
@@ -473,7 +480,7 @@ pub(crate) fn command_icon(command: Command) -> Option<Icon> {
         Command::Cad(CadCommand::Combine(_)) => Icon::Join,
         Command::Cad(CadCommand::ConvertToPart) => Icon::Part,
         Command::Cad(CadCommand::ConvertToMesh) => Icon::Mesh,
-        Command::Cad(CadCommand::ImportStep) => Icon::Import,
+        Command::Cad(CadCommand::ImportStep) => Icon::ImportStep,
         Command::Cad(CadCommand::ExportStep) => Icon::Export,
         Command::CadTool(ToolCommand::Extrude) => Icon::Extrude,
         Command::CadTool(ToolCommand::Revolve) => Icon::Revolve,

@@ -1,0 +1,9 @@
+<!-- Forma icon, drawn on the Lucide 24-unit grid. Part of Forma (MIT OR Apache-2.0). -->
+<!-- A file holding a quad mesh: Wavefront OBJ. -->
+<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+  <path d="M4 10V4a2 2 0 0 1 2-2h8l6 6v12a2 2 0 0 1-2 2h-5"/>
+  <path d="M14 2v4a2 2 0 0 0 2 2h4"/>
+  <rect x="2" y="13" width="9" height="9" rx="1.5"/>
+  <path d="M6.5 13v9"/>
+  <path d="M2 17.5h9"/>
+</svg>

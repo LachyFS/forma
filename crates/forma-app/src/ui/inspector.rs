@@ -5,7 +5,7 @@ use super::assets::{Icon, icon};
 use super::components::*;
 use super::outliner::{kind_icon, kind_label, object_kind};
 use super::tokens::*;
-use super::{Anchor, InspectorTab, MenuKind, OpenMenu, PanelSection};
+use super::{InspectorTab, PanelSection};
 use crate::app::{Command, Field, Studio};
 use crate::theme::Colors;
 use forma_core::{DenoiseQuality, ShaderKind, TextureMapping, TextureSlot};
@@ -347,13 +347,16 @@ fn part_selection(t: Colors, s: &Studio, id: u64, cx: &mut Context<Studio>) -> O
             "No faces selected".to_owned(),
             "Click a face · Shift adds".to_owned(),
         ),
+        // Several faces report their summed area, named as a total so it
+        // never reads as the area of the face the canvas tag measures.
         (faces, 0) => (
             Icon::Face,
             plural(faces, "face", "faces"),
             format!(
-                "{} · {} m²",
+                "{} · {} m²{}",
                 mix(faces, facts.planar, "planar", "curved"),
-                measure(facts.area)
+                measure(facts.area),
+                if faces == 1 { "" } else { " total" }
             ),
         ),
         (0, edges) => (
@@ -374,7 +377,7 @@ fn part_selection(t: Colors, s: &Studio, id: u64, cx: &mut Context<Studio>) -> O
                 plural(edges, "edge", "edges")
             ),
             format!(
-                "{} m² · {} m of edges",
+                "{} m² of faces · {} m of edges",
                 measure(facts.area),
                 measure(facts.length)
             ),
@@ -1170,37 +1173,101 @@ pub(crate) fn preview_light_name(s: &Studio) -> String {
     }
 }
 
+/// How the viewport's denoising stands, in the status line's words.
+#[derive(Debug, PartialEq)]
+enum DenoiseState {
+    Off,
+    Unavailable,
+    /// Waiting for the first pass at `start` samples.
+    Waiting {
+        start: u32,
+    },
+    /// The first pass is running.
+    Running,
+    /// The shown image is the pass at `at` samples; the next one runs at
+    /// `next` samples, or is already under way when `next` is reached.
+    Shown {
+        at: u32,
+        next: Option<u32>,
+        due: bool,
+    },
+}
+
+/// The render worker denoises at the start sample, then whenever the sample
+/// count has doubled since the last pass, and always at the target
+/// (`render_worker::denoise_due`). `denoised` is the sample count of the
+/// pass on screen, if one is.
+fn denoise_state(
+    viewport: bool,
+    failed: bool,
+    denoised: Option<u32>,
+    samples: u32,
+    target: u32,
+    start: u32,
+) -> DenoiseState {
+    let target = target.max(1);
+    let start = start.max(1).min(target);
+    if !viewport {
+        return DenoiseState::Off;
+    }
+    if failed {
+        return DenoiseState::Unavailable;
+    }
+    match denoised {
+        Some(at) => {
+            let next = (at < target).then(|| at.saturating_mul(2).min(target));
+            DenoiseState::Shown {
+                at,
+                next,
+                due: next.is_some_and(|next| samples >= next),
+            }
+        }
+        None if samples < start => DenoiseState::Waiting { start },
+        None => DenoiseState::Running,
+    }
+}
+
 fn denoise(t: Colors, s: &Studio, cx: &mut Context<Studio>) -> Div {
     let settings = s.settings.denoise;
-    let clean = s.denoised_generation.is_some() && s.samples > 0;
-    let (status, tone) = if !settings.viewport {
-        ("Showing original samples".to_string(), t.text_muted)
-    } else if s.denoise_error.is_some() {
-        (
-            "Unavailable · showing original samples".to_string(),
+    let shown = s
+        .frame
+        .as_ref()
+        .filter(|_| s.denoised_generation.is_some() && s.samples > 0);
+    let state = denoise_state(
+        settings.viewport,
+        s.denoise_error.is_some(),
+        shown.map(|frame| frame.samples),
+        s.samples,
+        s.settings.max_samples,
+        settings.start_sample,
+    );
+    let (status, tone) = match state {
+        DenoiseState::Off => ("Showing original samples".to_owned(), t.text_muted),
+        DenoiseState::Unavailable => (
+            "Unavailable · showing original samples".to_owned(),
             t.danger,
-        )
-    } else if clean {
-        let frame = s.frame.as_ref().unwrap();
-        (
-            format!(
-                "Denoised at {} samples · {}",
-                frame.samples,
-                frame.denoise_device.as_deref().unwrap_or("Auto")
-            ),
+        ),
+        DenoiseState::Waiting { start } => (format!("First pass at {start} samples"), t.text_muted),
+        DenoiseState::Running => ("Denoising…".to_owned(), t.accent_text),
+        DenoiseState::Shown { at, next: None, .. } => {
+            (format!("Denoised at {at} samples · final"), t.success)
+        }
+        DenoiseState::Shown { at, due: true, .. } => (
+            format!("Denoised at {at} samples · updating…"),
+            t.accent_text,
+        ),
+        DenoiseState::Shown {
+            at,
+            next: Some(next),
+            ..
+        } => (
+            format!("Denoised at {at} samples · next at {next}"),
             t.success,
-        )
-    } else if s.samples < settings.start_sample.min(s.settings.max_samples) {
-        (
-            format!(
-                "Starts at sample {}",
-                settings.start_sample.min(s.settings.max_samples)
-            ),
-            t.text_muted,
-        )
-    } else {
-        ("Denoising…".to_string(), t.accent_text)
+        ),
     };
+    let device = shown
+        .and_then(|frame| frame.denoise_device.clone())
+        .map(|device| format!("Open Image Denoise on {device}"));
     col()
         .gap(px(SP_1))
         .child(switch_row(
@@ -1261,16 +1328,27 @@ fn denoise(t: Colors, s: &Studio, cx: &mut Context<Studio>) -> Div {
         ))
         .child(
             row()
+                .id("denoise-status")
                 .pt(px(SP_1))
                 .gap(px(SP_1_5))
                 .child(dot(tone, 6.))
                 .child(
-                    caption(t, status)
+                    caption(t, status.clone())
                         .flex_shrink()
                         .min_w(px(0.))
                         .truncate()
+                        .tabular()
                         .text_color(rgb(tone)),
-                ),
+                )
+                .tooltip(tip_detail(
+                    t,
+                    status,
+                    device.unwrap_or_else(|| {
+                        "Passes run at the start sample, each time the samples double, and at the target"
+                            .to_owned()
+                    }),
+                    None,
+                )),
         )
 }
 
@@ -1510,15 +1588,47 @@ fn render_page(t: Colors, s: &Studio, cx: &mut Context<Studio>) -> Div {
         "Viewport display",
         None,
         col()
-            .child(switch_row(
-                t,
-                "display-grid",
-                "Ground grid",
-                None,
-                s.settings.show_grid,
-                Command::ToggleGrid,
-                cx,
-            ))
+            // The path tracer draws no grid, so in Rendered mode the switch
+            // says so instead of claiming a grid that is not there.
+            .child(if mode == RenderMode::Rendered {
+                row()
+                    .id("display-grid")
+                    .min_h(px(ROW_H))
+                    .py(px(SP_1))
+                    .gap(px(SP_3))
+                    .child(
+                        col()
+                            .flex_1()
+                            .min_w(px(0.))
+                            .gap(px(1.))
+                            .child(div().text_color(rgb(t.text_muted)).child("Ground grid"))
+                            .child(
+                                div()
+                                    .text_size(px(TEXT_SM))
+                                    .text_color(rgb(t.text_muted))
+                                    .child("Not drawn in Rendered mode"),
+                            ),
+                    )
+                    .child(disabled(switch(t, s.settings.show_grid)))
+                    .tooltip(tip_detail(
+                        t,
+                        "Ground grid",
+                        "The path tracer renders the scene without it. The switch applies in the other shading modes.",
+                        None,
+                    ))
+                    .into_any_element()
+            } else {
+                switch_row(
+                    t,
+                    "display-grid",
+                    "Ground grid",
+                    None,
+                    s.settings.show_grid,
+                    Command::ToggleGrid,
+                    cx,
+                )
+                .into_any_element()
+            })
             .child(switch_row(
                 t,
                 "display-measurements",
@@ -1537,10 +1647,10 @@ pub(super) fn inspector(t: Colors, s: &Studio, width: f32, cx: &mut Context<Stud
         return panel;
     }
     let stacked = width < STACK_BELOW;
-    // An empty scene has nothing to inspect: no header or tabs, just the two
-    // ways to start, placed where the eye lands in the panel.
+    // An empty scene has nothing to inspect: no header or tabs, just what
+    // will appear here and the scene's fixed facts.
     if s.selected.is_none() && s.scene.objects.is_empty() {
-        return empty_scene(t, s, cx);
+        return empty_scene(t, s);
     }
     let object_tab = s.panels.tab == InspectorTab::Object;
     // A running tool leads, pinned above the page, and the page beneath it
@@ -1597,48 +1707,41 @@ pub(super) fn inspector(t: Colors, s: &Studio, width: f32, cx: &mut Context<Stud
         )
 }
 
-/// Soft fades over a scrolled panel's edges while content continues past
-/// them: a short one under the header once scrolled, a taller one at the
-/// bottom while more sits below. They are painted, not laid out, after the
-/// scroll area has measured itself, so they match this frame's content even
-/// when a section opens or closes, and they never take input. `editing`
-/// drops the bottom fade so a field being edited at the edge stays clear.
+/// Short shadow lines along a scrolled panel's edges while content continues
+/// past them: under the header once scrolled, and at the bottom while more
+/// sits below. They darken a few pixels instead of washing out a row, so the
+/// last visible row never reads as disabled. They are painted, not laid out,
+/// after the scroll area has measured itself, so they match this frame's
+/// content even when a section opens or closes, and they never take input.
+/// `editing` drops the bottom one so a field being edited at the edge stays
+/// clear.
 pub(super) fn scroll_fades(t: Colors, scroll: &ScrollHandle, editing: bool) -> impl IntoElement {
-    const TOP: f32 = 14.;
-    const BOTTOM: f32 = 32.;
     let scroll = scroll.clone();
-    let mut solid = hex(t.surface);
-    solid.a = 1.;
-    let mut clear = solid;
-    clear.a = 0.;
+    let (ink, clear) = scroll_shadow_inks(t);
     canvas(
         |_, _, _| (),
         move |bounds, _, window, _| {
             let offset = -f32::from(scroll.offset().y);
             let maximum = f32::from(scroll.max_offset().height);
-            let band = |top: Pixels, height: f32| {
+            let band = |top: Pixels| {
                 Bounds::new(
                     point(bounds.left(), top),
-                    size(bounds.size.width, px(height)),
+                    size(bounds.size.width, px(SCROLL_SHADOW)),
                 )
             };
             if offset > 0.5 {
                 window.paint_quad(fill(
-                    band(bounds.top(), TOP),
-                    linear_gradient(
-                        0.,
-                        linear_color_stop(clear, 0.),
-                        linear_color_stop(solid, 1.),
-                    ),
+                    band(bounds.top()),
+                    linear_gradient(0., linear_color_stop(clear, 0.), linear_color_stop(ink, 1.)),
                 ));
             }
             if !editing && maximum - offset > 0.5 {
                 window.paint_quad(fill(
-                    band(bounds.bottom() - px(BOTTOM), BOTTOM),
+                    band(bounds.bottom() - px(SCROLL_SHADOW)),
                     linear_gradient(
                         180.,
                         linear_color_stop(clear, 0.),
-                        linear_color_stop(solid, 1.),
+                        linear_color_stop(ink, 1.),
                     ),
                 ));
             }
@@ -1649,118 +1752,144 @@ pub(super) fn scroll_fades(t: Colors, scroll: &ScrollHandle, editing: bool) -> i
     .size_full()
 }
 
-/// Open the Add menu below `anchor`, or close it if this button opened it.
-/// It drops below its trigger like the view menu, whose slot it borrows:
-/// that trigger only lights up for its own menu.
-fn open_add_menu(s: &mut Studio, anchor: Bounds<Pixels>, cx: &mut Context<Studio>) {
-    if add_menu_open(s) {
-        s.panels.menu = None;
-    } else {
-        s.active_field = None;
-        s.palette_open = false;
-        s.preview_open = false;
-        s.panels.menu = Some(OpenMenu {
-            kind: MenuKind::Add,
-            from: Anchor::ViewHud,
-            anchor,
-            index: super::overlays::menu::first_item(MenuKind::Add),
-            query: String::new(),
-        });
-    }
-    cx.notify();
-}
-
-fn add_menu_open(s: &Studio) -> bool {
-    s.panels
-        .menu
-        .as_ref()
-        .is_some_and(|menu| menu.kind == MenuKind::Add && menu.from == Anchor::ViewHud)
-}
-
-/// The inspector of an empty scene: what goes here, and the two ways to
-/// begin. The viewport's start card offers every kind; this stays quiet.
-fn empty_scene(t: Colors, s: &Studio, cx: &mut Context<Studio>) -> Div {
-    // The Add button records where it was drawn, so its menu opens beneath it.
-    let bounds = std::rc::Rc::new(std::cell::Cell::new(Bounds::<Pixels>::default()));
-    let recorder = bounds.clone();
-    let tone = if add_menu_open(s) {
-        Tone::Selected
-    } else {
-        Tone::Secondary
-    };
-    let add = button(t, "inspector-empty-add", "Add", Some(Icon::Plus), tone)
-        .h(px(H_MD))
-        .flex_1()
-        .relative()
-        .child(
-            canvas(move |b, _, _| recorder.set(b), |_, _, _, _| {})
-                .absolute()
-                .inset_0()
-                .size_full(),
-        )
-        .tooltip(tip_detail(
-            t,
-            "Add",
-            "Meshes, parts, sketches and imports",
-            None,
-        ))
-        .on_click(cx.listener(move |s, _, _, cx| {
-            cx.stop_propagation();
-            open_add_menu(s, bounds.get(), cx);
-        }));
-    let sketch = command_button(
-        t,
-        "inspector-empty-sketch",
-        "Sketch",
-        Some(Icon::DrawMode),
-        Command::Draw(crate::sketch::DrawCommand::NewGroundSketch),
-        Tone::Secondary,
-        cx,
-    )
-    .h(px(H_MD))
-    .flex_1();
+/// The inspector of an empty scene. The viewport's start card is where
+/// modelling begins, so this panel adds no second set of buttons: one quiet
+/// line about what appears here, then the facts every new object inherits.
+fn empty_scene(t: Colors, s: &Studio) -> Div {
+    let facts = [
+        (
+            "Units",
+            "Metres".to_owned(),
+            "Every length in Forma is in metres; STL and STEP convert on import and export",
+        ),
+        (
+            "Up axis",
+            "Y".to_owned(),
+            "The ground grid lies on the X–Z plane at height 0",
+        ),
+        (
+            "Ground grid",
+            if s.settings.show_grid {
+                "Shown"
+            } else {
+                "Hidden"
+            }
+            .to_owned(),
+            "Toggle it in the viewport toolbar or the Render tab",
+        ),
+    ];
     col()
         .flex_1()
         .min_h(px(0.))
-        .px(px(SP_5))
-        .pt(px(SP_6 + SP_4))
-        .items_center()
-        .gap(px(SP_2))
         .child(
-            div()
-                .flex()
+            col()
+                .px(px(SP_5))
+                .pt(px(SP_6 + SP_4))
+                .pb(px(SP_5))
                 .items_center()
-                .justify_center()
-                .size(px(36.))
-                .rounded(px(R_LG))
-                .bg(rgb(t.control))
-                .border_1()
+                .gap(px(SP_2))
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .size(px(36.))
+                        .rounded(px(R_LG))
+                        .bg(rgb(t.control))
+                        .border_1()
+                        .border_color(rgb(t.hairline))
+                        .child(icon(Icon::Scene, ICON_LG, t.text_muted)),
+                )
+                .child(
+                    div()
+                        .mt(px(SP_1))
+                        .text_size(px(TEXT_LG))
+                        .font_weight(WEIGHT_MEDIUM)
+                        .text_color(rgb(t.text))
+                        .child("Empty scene"),
+                )
+                .child(
+                    div()
+                        .max_w(px(232.))
+                        .text_center()
+                        .line_height(px(17.))
+                        .text_color(rgb(t.text_muted))
+                        .child("Start from the card in the viewport."),
+                ),
+        )
+        .child(
+            col()
+                .mx(px(SP_3))
+                .pt(px(SP_2))
+                .border_t_1()
                 .border_color(rgb(t.hairline))
-                .child(icon(Icon::Scene, ICON_LG, t.text_muted)),
+                .children(
+                    facts
+                        .into_iter()
+                        .map(|(label, value, reason)| readonly_row(t, label, "", value, reason)),
+                ),
         )
-        .child(
-            div()
-                .mt(px(SP_1))
-                .text_size(px(TEXT_LG))
-                .font_weight(WEIGHT_MEDIUM)
-                .text_color(rgb(t.text))
-                .child("Empty scene"),
-        )
-        .child(
-            div()
-                .max_w(px(232.))
-                .text_center()
-                .line_height(px(17.))
-                .text_color(rgb(t.text_muted))
-                .child("Add a mesh or part, or sketch a profile to extrude. Its properties appear here."),
-        )
-        .child(
-            row()
-                .w_full()
-                .max_w(px(232.))
-                .mt(px(SP_2))
-                .gap(px(SP_1_5))
-                .child(add)
-                .child(sketch),
-        )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{DenoiseState, denoise_state};
+
+    #[test]
+    fn denoise_status_names_the_pass_on_screen_and_the_next_one() {
+        // 60 samples denoised, 101 of 128 rendered: the next pass runs at the
+        // target, not at a stale 60.
+        assert_eq!(
+            denoise_state(true, false, Some(60), 101, 128, 8),
+            DenoiseState::Shown {
+                at: 60,
+                next: Some(120),
+                due: false
+            }
+        );
+        assert_eq!(
+            denoise_state(true, false, Some(60), 120, 128, 8),
+            DenoiseState::Shown {
+                at: 60,
+                next: Some(120),
+                due: true
+            }
+        );
+        assert_eq!(
+            denoise_state(true, false, Some(120), 126, 128, 8),
+            DenoiseState::Shown {
+                at: 120,
+                next: Some(128),
+                due: false
+            }
+        );
+        assert_eq!(
+            denoise_state(true, false, Some(128), 128, 128, 8),
+            DenoiseState::Shown {
+                at: 128,
+                next: None,
+                due: false
+            }
+        );
+        assert_eq!(
+            denoise_state(true, false, None, 3, 128, 8),
+            DenoiseState::Waiting { start: 8 }
+        );
+        assert_eq!(
+            denoise_state(true, false, None, 3, 4, 8),
+            DenoiseState::Waiting { start: 4 }
+        );
+        assert_eq!(
+            denoise_state(true, false, None, 9, 128, 8),
+            DenoiseState::Running
+        );
+        assert_eq!(
+            denoise_state(false, true, None, 9, 128, 8),
+            DenoiseState::Off
+        );
+        assert_eq!(
+            denoise_state(true, true, Some(8), 9, 128, 8),
+            DenoiseState::Unavailable
+        );
+    }
 }
