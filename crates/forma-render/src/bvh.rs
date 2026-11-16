@@ -582,6 +582,85 @@ mod tests {
     }
 
     #[test]
+    fn part_edges_survive_split_vertices_and_coplanar_seams_do_not() {
+        // A part-style cube: every face has its own four vertices (sharp
+        // shading) and its own group, and the top is split into two coplanar
+        // faces, as a boolean can leave it.
+        // The front and back faces carry the seam's end vertex on their top
+        // edge, as a B-rep shell shares the split edge with both sides.
+        let faces: [&[[f32; 3]]; 7] = [
+            &[
+                [-1., -1., 1.],
+                [1., -1., 1.],
+                [1., 1., 1.],
+                [0., 1., 1.],
+                [-1., 1., 1.],
+            ],
+            &[
+                [1., -1., -1.],
+                [-1., -1., -1.],
+                [-1., 1., -1.],
+                [0., 1., -1.],
+                [1., 1., -1.],
+            ],
+            &[
+                [-1., -1., -1.],
+                [-1., -1., 1.],
+                [-1., 1., 1.],
+                [-1., 1., -1.],
+            ],
+            &[[1., -1., 1.], [1., -1., -1.], [1., 1., -1.], [1., 1., 1.]],
+            &[
+                [-1., -1., -1.],
+                [1., -1., -1.],
+                [1., -1., 1.],
+                [-1., -1., 1.],
+            ],
+            &[[-1., 1., 1.], [0., 1., 1.], [0., 1., -1.], [-1., 1., -1.]],
+            &[[0., 1., 1.], [1., 1., 1.], [1., 1., -1.], [0., 1., -1.]],
+        ];
+        let mut mesh = Mesh {
+            positions: Vec::new(),
+            faces: Vec::new(),
+            groups: Vec::new(),
+        };
+        for (group, face) in faces.iter().enumerate() {
+            let base = mesh.positions.len() as u32;
+            mesh.positions
+                .extend(face.iter().map(|p| Vec3::from_array(*p)));
+            mesh.faces.push((base..base + face.len() as u32).collect());
+            mesh.groups.push(group as u32);
+        }
+        let edges: HashSet<_> = mesh
+            .display_edges()
+            .into_iter()
+            .map(|[a, b]| edge_key(a, b))
+            .collect();
+        let features = brep_feature_edges(&mesh, &edges);
+        let seam_x = |key: &(u32, u32)| {
+            [key.0, key.1]
+                .iter()
+                .all(|&i| mesh.positions[i as usize].x == 0.0)
+        };
+        // Every cube edge draws from at least one side; the seam never does.
+        assert!(
+            features.iter().all(|key| !seam_x(key)),
+            "coplanar seam drawn"
+        );
+        let drawn: HashSet<_> = features
+            .iter()
+            .map(|&(a, b)| {
+                let (p, q) = (mesh.positions[a as usize], mesh.positions[b as usize]);
+                let key = |v: Vec3| (v * 2.0).round().as_ivec3().to_array();
+                let (p, q) = (key(p), key(q));
+                if p <= q { (p, q) } else { (q, p) }
+            })
+            .collect();
+        // 12 cube edges; the two top edges split by the seam count twice.
+        assert_eq!(drawn.len(), 14);
+    }
+
+    #[test]
     fn grouped_meshes_hide_edges_inside_a_group() {
         let mut scene = Scene::default();
         scene.objects.clear();
