@@ -21,6 +21,7 @@ mod adjust;
 pub(crate) mod demo;
 mod earcut;
 mod edit;
+mod feature;
 pub(crate) mod geometry;
 mod hud;
 pub(crate) mod overlay;
@@ -166,6 +167,8 @@ pub(crate) struct CadToolState {
     /// Sketch region under the pointer while no tool runs.
     pub region_hover: Option<RegionHover>,
     pub edit: EditState,
+    /// The selected timeline feature's ghost and handle drag.
+    pub feature: feature::FeatureState,
     pub last: Option<LastOperation>,
     pub pending: Vec<PendingGhost>,
     /// Bumped by every change that should cancel a scheduled kernel preview.
@@ -392,6 +395,18 @@ impl Studio {
                 | Command::ResetPreview
                 | Command::SetTool(_)
         );
+        // A feature handle drag ends before anything else acts on the
+        // document. Esc (which reaches here as the timeline's Deselect) and
+        // Undo do nothing more than cancel it.
+        if self.cad_tool.feature.drag.is_some() && !view_only {
+            self.feature_drag_cancel(cx);
+            if matches!(
+                command,
+                Command::Undo | Command::Timeline(crate::timeline::TimelineCommand::Deselect)
+            ) {
+                return true;
+            }
+        }
         if let Command::CadTool(tool_command) = command {
             if !matches!(
                 tool_command,
@@ -469,6 +484,9 @@ impl Studio {
         }
         let key = event.keystroke.key.as_str();
         let mods = event.keystroke.modifiers;
+        if key == "escape" && self.feature_drag_cancel(cx) {
+            return true;
+        }
         if self.cad_tool.active() {
             return self.tool_key(event, window, cx);
         }
@@ -655,6 +673,9 @@ impl Studio {
         }
         let position = crate::viewport::mouse_point(event.position);
         if event.button == MouseButton::Right {
+            if self.feature_drag_cancel(cx) {
+                return true;
+            }
             // Right presses orbit, except during a modal drag where they cancel.
             return match self.cad_tool.tool.as_ref() {
                 Some(Tool::Chamfer(_)) => {
@@ -685,6 +706,8 @@ impl Studio {
             None => {
                 if let Some(id) = self.part_editing() {
                     self.part_edit_press(id, position, event, window, cx)
+                } else if self.feature_press(position, cx) {
+                    true
                 } else {
                     // A selection click starts a new action.
                     self.cad_tool.last = None;
@@ -727,6 +750,13 @@ impl Studio {
                 true
             }
             None => {
+                if self.cad_tool.feature.drag.is_some() {
+                    if held {
+                        return self.feature_drag_move(position, cx);
+                    }
+                    // The release happened outside the window.
+                    self.feature_drag_end(cx);
+                }
                 if self.cad_tool.last_hover == Some(position) {
                     return false;
                 }
@@ -734,7 +764,12 @@ impl Studio {
                 if let Some(id) = self.part_editing() {
                     self.part_edit_hover(id, position, cx);
                 } else if self.edit_mode == EditMode::Object && !held {
-                    let hover = self.sketch_region_at(position);
+                    let hot = self.feature_hover(position, cx);
+                    let hover = if hot {
+                        None
+                    } else {
+                        self.sketch_region_at(position)
+                    };
                     if hover != self.cad_tool.region_hover {
                         self.cad_tool.region_hover = hover;
                         cx.notify();
@@ -759,13 +794,14 @@ impl Studio {
             Some(Tool::Sketch(_)) => self.sketch_tool_release(position, cx),
             Some(Tool::PushPull(_)) => self.push_pull_release(position, cx),
             Some(Tool::Chamfer(_)) => self.chamfer_release(cx),
-            None => {}
+            None => self.feature_drag_end(cx),
         }
     }
 
     /// The pointer left the viewport for a tool's HUD: hovers step aside.
     pub(crate) fn cad_tool_pointer_in_hud(&mut self, cx: &mut Context<Self>) {
-        let mut changed = self.cad_tool.region_hover.take().is_some();
+        let mut changed = self.cad_tool.region_hover.take().is_some()
+            | std::mem::take(&mut self.cad_tool.feature.hot);
         match self.cad_tool.tool.as_mut() {
             Some(Tool::Sketch(tool)) => {
                 changed |= tool.hover.take().is_some() | tool.hover_line.take().is_some();
@@ -812,6 +848,7 @@ impl Studio {
         state.last = None;
         state.pending.clear();
         state.edit = EditState::default();
+        state.feature = Default::default();
         state.region_hover = None;
         state.preview_token += 1;
     }

@@ -38,24 +38,25 @@ pub(crate) struct EditState {
     hover: Option<(u64, EditHover)>,
     /// The pointer rests on the active face's push/pull arrow.
     pub arrow_hot: bool,
-    /// The active face's pick and area, per scene revision and face.
+    /// The active face's pick, per scene revision and face.
     arrow_face: std::cell::RefCell<Option<ArrowFace>>,
 }
 
 /// The active face of a part edit selection, prepared for its arrow.
-type ArrowFace = ((u64, u64, u32), Rc<super::push_pull::FacePick>, f32);
+type ArrowFace = ((u64, u64, u32), Rc<super::push_pull::FacePick>);
 
 /// The push/pull arrow on the active face of a part edit selection: its
-/// screen base and tip, and the face's area (world).
+/// screen base and tip.
 pub(crate) struct FaceArrow {
     pub base: Vec2,
     pub tip: Vec2,
-    pub area: f32,
 }
 
-/// Screen length of the selected face's push/pull arrow: shorter than a
-/// running tool's, as it only offers the tool.
-const FACE_ARROW_PIXELS: f32 = 40.0;
+/// Screen length of the selected face's push/pull arrow, constant however
+/// the face is turned: a little shorter than a running tool's, as it only
+/// offers the tool. It grows by [`FACE_ARROW_HOVER`] under the pointer.
+const FACE_ARROW_PIXELS: f32 = 50.0;
+const FACE_ARROW_HOVER: f32 = 6.0;
 
 impl EditState {
     /// The hovered face group or edge, if it was picked at `revision`.
@@ -149,15 +150,24 @@ impl ChamferEdge {
     }
 
     /// The material the chamfer removes, as the faces of a closed solid:
-    /// the strips it cuts from both faces and its two end caps. The chamfer
-    /// face itself closes the solid.
-    pub(crate) fn wedge(&self, distance: f32) -> [Vec<Vec3>; 4] {
+    /// the strips it cuts from both faces and its two end caps, each with
+    /// the direction it faces out of the solid (the face's own normal for
+    /// a strip, back or ahead along the edge for a cap). The chamfer face
+    /// itself closes the solid.
+    ///
+    /// The directions are given, not guessed from the solid's middle: a
+    /// mitre can slide a corner of the chamfer face past the edge's end
+    /// (onto a clipped corner's plane), and the middle of so skewed a solid
+    /// can sit on the wrong side of a cap, turning a cap that faces away
+    /// toward the viewer.
+    pub(crate) fn wedge(&self, distance: f32) -> [(Vec<Vec3>, Vec3); 4] {
         let [sa, ea, eb, sb] = self.quad(distance);
+        let along = (self.end - self.start).normalize_or_zero();
         [
-            vec![self.start, self.end, ea, sa],
-            vec![self.start, sb, eb, self.end],
-            vec![self.start, sa, sb],
-            vec![self.end, eb, ea],
+            (vec![self.start, self.end, ea, sa], self.face_normal(0)),
+            (vec![self.start, sb, eb, self.end], self.face_normal(1)),
+            (vec![self.start, sa, sb], -along),
+            (vec![self.end, eb, ea], along),
         ]
     }
 
@@ -620,15 +630,14 @@ impl Studio {
             .arrow_face
             .borrow()
             .as_ref()
-            .filter(|(k, _, _)| *k == key)
-            .map(|(_, face, area)| (face.clone(), *area));
-        let (face, area) = match cached {
+            .filter(|(k, _)| *k == key)
+            .map(|(_, face)| face.clone());
+        let face = match cached {
             Some(found) => found,
             None => {
                 let face = Rc::new(self.face_pick_for_group(id, group, reference)?);
-                let area = face.prism.area();
-                *self.cad_tool.edit.arrow_face.borrow_mut() = Some((key, face.clone(), area));
-                (face, area)
+                *self.cad_tool.edit.arrow_face.borrow_mut() = Some((key, face.clone()));
+                face
             }
         };
         if !face.planar {
@@ -639,10 +648,14 @@ impl Studio {
         let ahead =
             self.world_to_screen(anchor + face.normal * self.world_per_pixel(anchor) * 10.0)?;
         let direction = (ahead - base).try_normalize().unwrap_or(Vec2::NEG_Y);
+        let length = if self.cad_tool.edit.arrow_hot {
+            FACE_ARROW_PIXELS + FACE_ARROW_HOVER
+        } else {
+            FACE_ARROW_PIXELS
+        };
         Some(FaceArrow {
             base,
-            tip: base + direction * FACE_ARROW_PIXELS,
-            area,
+            tip: base + direction * length,
         })
     }
 

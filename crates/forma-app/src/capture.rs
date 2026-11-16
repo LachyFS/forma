@@ -142,6 +142,51 @@ pub(crate) fn leave_parts(s: &mut Studio, w: &mut gpui::Window, cx: &mut gpui::C
     s.execute(Command::SetMode(RenderMode::MaterialPreview), w, cx);
 }
 
+/// The CAD showcase with feature `feature` of `object` selected in the
+/// timeline, and the pointer on that feature's arrow: resting on it, or
+/// `drag` pixels into a drag along it.
+fn feature_handle(
+    s: &mut Studio,
+    w: &mut gpui::Window,
+    cx: &mut gpui::Context<Studio>,
+    (object, feature): (&str, &str),
+    drag: Option<f32>,
+) {
+    parts(s, w, cx, RenderMode::MaterialPreview, Some(object));
+    let target = s.selected.and_then(|id| {
+        let part = s.scene.object_part(id)?;
+        part.features
+            .iter()
+            .find(|f| f.name == feature)
+            .map(|f| f.id)
+    });
+    if let Some(target) = target {
+        s.execute(
+            Command::Timeline(crate::timeline::TimelineCommand::Select(target)),
+            w,
+            cx,
+        );
+    }
+    let Some((base, tip)) = s.feature_arrow_screen() else {
+        return;
+    };
+    let grip = base.lerp(tip, 0.5);
+    s.feature_hover(grip, cx);
+    if let Some(pixels) = drag
+        && s.feature_press(grip, cx)
+    {
+        let along = (tip - base).normalize_or_zero();
+        for step in 1..=4 {
+            s.feature_drag_move(grip + along * (pixels * step as f32 / 4.), cx);
+        }
+    }
+}
+fn leave_feature_handle(s: &mut Studio, w: &mut gpui::Window, cx: &mut gpui::Context<Studio>) {
+    s.feature_drag_cancel(cx);
+    s.cad_tool.feature = Default::default();
+    leave_parts(s, w, cx);
+}
+
 /// Modelling-tool states (see `cad_tools::demo`).
 fn tool_scenarios() -> Vec<Scenario> {
     use crate::cad_tools::demo;
@@ -164,6 +209,23 @@ fn tool_scenarios() -> Vec<Scenario> {
         scenario("tools-chamfer-drag", demo::chamfer_drag),
         scenario("tools-part-edit-face-arrow", demo::part_edit_face_arrow),
         scenario("tools-adjust", demo::adjust),
+        // The selected feature's arrow under the pointer, and mid-drag.
+        Scenario {
+            name: "timeline-handle-hover",
+            enter: |s, w, cx| feature_handle(s, w, cx, ("Bracket", "Boss"), None),
+            leave: leave_feature_handle,
+        },
+        Scenario {
+            // A revolve's profile and lathe ghost (no handle yet).
+            name: "timeline-revolve",
+            enter: |s, w, cx| feature_handle(s, w, cx, ("Knob", "Revolve"), None),
+            leave: leave_feature_handle,
+        },
+        Scenario {
+            name: "timeline-handle-drag",
+            enter: |s, w, cx| feature_handle(s, w, cx, ("Block", "Round"), Some(36.)),
+            leave: leave_feature_handle,
+        },
         Scenario {
             name: "tools-light-theme",
             enter: demo::extrude_light,

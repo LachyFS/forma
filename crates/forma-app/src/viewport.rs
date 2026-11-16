@@ -452,6 +452,361 @@ fn visible_point(scene: &forma_core::Scene, point: Vec3) -> bool {
     visible_in_query(scene.camera, &forma_core::SurfaceQuery::new(scene), point)
 }
 
+/// Selected mesh components (or the outlines of other selected objects),
+/// clipped to what the camera sees: the pieces of every outline in view,
+/// the faces wholly in view (filled) and the vertices in view.
+#[derive(Default)]
+pub(crate) struct ComponentHighlight {
+    pub fills: Vec<Vec<Vec3>>,
+    /// The visible parts of faces an occluder cuts.
+    pub pieces: Vec<Vec<Vec3>>,
+    pub runs: Vec<Vec<Vec3>>,
+    pub markers: Vec<Vec3>,
+}
+
+/// Pieces of a segment shorter than this many pixels are not split further:
+/// an occlusion boundary is found to within it.
+const CLIP_PIXELS: f32 = 2.0;
+/// Segments in view at both ends and the middle are still split down to
+/// this length, so an occluder narrower than a segment is not missed.
+const CLIP_SAMPLE_PIXELS: f32 = 40.0;
+
+/// Parameter intervals along a segment, in order.
+type Spans = Vec<(f32, f32)>;
+
+/// Visibility of mesh points and edges for one camera, shared between the
+/// components that meet at them: each vertex and each edge is tested once.
+struct Clipper<'a> {
+    camera: forma_core::Camera,
+    query: &'a forma_core::SurfaceQuery,
+    matrix: Mat4,
+    bounds: Bounds<Pixels>,
+    /// The camera's view matrix, eye and backward direction, and world
+    /// units per pixel per unit of depth, computed once per highlight.
+    view: Mat4,
+    eye: Vec3,
+    backward: Vec3,
+    pixel: f32,
+    vertices: std::collections::HashMap<(u64, u32), bool>,
+    /// Visible parameter spans along each edge, from its lower vertex index.
+    edges: std::collections::HashMap<(u64, u32, u32), Rc<Spans>>,
+    rays: usize,
+}
+
+impl Clipper<'_> {
+    /// Whether `point` (on a mesh) is in view. It is tested a fraction of a
+    /// pixel toward the eye: a ray to a vertex at a grazing angle meets the
+    /// faces around it within rounding of the vertex itself, and would read
+    /// the mesh as hiding its own outline.
+    /// The same test as [`visible_in_query`], with the camera's matrices
+    /// computed once rather than per ray.
+    fn visible(&mut self, point: Vec3) -> bool {
+        self.rays += 1;
+        let depth = -self.view.transform_point3(point).z;
+        if depth <= 0. {
+            return false;
+        }
+        let (toward, origin) = if self.camera.orthographic {
+            (self.backward, point + self.backward * depth)
+        } else {
+            ((self.eye - point).normalize_or_zero(), self.eye)
+        };
+        let reach = if self.camera.orthographic {
+            self.camera.distance
+        } else {
+            depth
+        };
+        let point = point + toward * (reach * self.pixel * 0.5);
+        let distance = point.distance(origin);
+        !self.query.occludes(
+            forma_core::Ray {
+                origin,
+                direction: (point - origin).normalize_or_zero(),
+            },
+            distance - (distance * 0.0001).max(0.0001),
+        )
+    }
+
+    fn vertex(&mut self, object: u64, index: u32, point: Vec3) -> bool {
+        if let Some(seen) = self.vertices.get(&(object, index)) {
+            return *seen;
+        }
+        let seen = self.visible(point);
+        self.vertices.insert((object, index), seen);
+        seen
+    }
+
+    fn span(&self, a: Vec3, b: Vec3) -> f32 {
+        match (
+            project(a, self.matrix, self.bounds),
+            project(b, self.matrix, self.bounds),
+        ) {
+            (Some(a), Some(b)) => mouse_point(a).distance(mouse_point(b)),
+            _ => 0.,
+        }
+    }
+
+    /// Visible spans of the edge between vertices `i` and `j` (world `a`
+    /// and `b`), as parameters from `a` to `b`.
+    fn edge(&mut self, object: u64, [i, j]: [u32; 2], [a, b]: [Vec3; 2]) -> Vec<(f32, f32)> {
+        let key = (object, i.min(j), i.max(j));
+        let spans = match self.edges.get(&key) {
+            Some(spans) => spans.clone(),
+            None => {
+                let (low, high) = if i <= j { (a, b) } else { (b, a) };
+                let (vl, vh) = (
+                    self.vertex(object, key.1, low),
+                    self.vertex(object, key.2, high),
+                );
+                let mut spans = Vec::new();
+                self.refine(low, high, (0., 1.), (vl, vh), 0, &mut spans);
+                let spans = Rc::new(merge_spans(spans));
+                self.edges.insert(key, spans.clone());
+                spans
+            }
+        };
+        if i <= j {
+            spans.to_vec()
+        } else {
+            spans.iter().rev().map(|&(s, e)| (1. - e, 1. - s)).collect()
+        }
+    }
+
+    /// Splits `a`–`b` between parameters `t` until each piece is in view
+    /// or hidden at both ends and its middle, or is a couple of pixels long.
+    fn refine(
+        &mut self,
+        a: Vec3,
+        b: Vec3,
+        (t0, t1): (f32, f32),
+        (v0, v1): (bool, bool),
+        depth: u32,
+        out: &mut Vec<(f32, f32)>,
+    ) {
+        let span = self.span(a.lerp(b, t0), a.lerp(b, t1));
+        if span <= CLIP_PIXELS || depth >= 10 {
+            if v0 && v1 {
+                out.push((t0, t1));
+            }
+            return;
+        }
+        let tm = (t0 + t1) * 0.5;
+        let vm = self.visible(a.lerp(b, tm));
+        if v0 == v1 && v1 == vm && span <= CLIP_SAMPLE_PIXELS {
+            if v0 {
+                out.push((t0, t1));
+            }
+            return;
+        }
+        self.refine(a, b, (t0, tm), (v0, vm), depth + 1, out);
+        self.refine(a, b, (tm, t1), (vm, v1), depth + 1, out);
+    }
+
+    /// Whether a polygon faces the camera (back faces at a silhouette show
+    /// an edge, never their inside).
+    fn facing(&self, points: &[Vec3]) -> bool {
+        let mut normal = Vec3::ZERO;
+        for (k, a) in points.iter().enumerate() {
+            normal += a.cross(points[(k + 1) % points.len()]);
+        }
+        let center = points.iter().sum::<Vec3>() / points.len() as f32;
+        let toward = if self.camera.orthographic {
+            self.backward
+        } else {
+            self.eye - center
+        };
+        normal.dot(toward) > 0.
+    }
+
+    /// The visible pieces of a polyline over mesh vertices, joined into
+    /// runs wherever consecutive pieces meet.
+    fn runs(&mut self, object: u64, indices: &[u32], points: &[Vec3], out: &mut Vec<Vec<Vec3>>) {
+        fn flush(run: &mut Vec<Vec3>, out: &mut Vec<Vec<Vec3>>) {
+            if run.len() > 1 {
+                out.push(std::mem::take(run));
+            } else {
+                run.clear();
+            }
+        }
+        let mut run: Vec<Vec3> = Vec::new();
+        for k in 0..indices.len().saturating_sub(1) {
+            let (a, b) = (points[k], points[k + 1]);
+            let mut reached = false;
+            for (s, e) in self.edge(object, [indices[k], indices[k + 1]], [a, b]) {
+                // A piece from the shared vertex continues the run there.
+                if s > 0. || run.is_empty() {
+                    flush(&mut run, out);
+                    run.push(if s > 0. { a.lerp(b, s) } else { a });
+                }
+                if e < 1. {
+                    run.push(a.lerp(b, e));
+                    flush(&mut run, out);
+                } else {
+                    run.push(b);
+                    reached = true;
+                }
+            }
+            // A hidden end breaks the run at this vertex.
+            if !reached {
+                flush(&mut run, out);
+            }
+        }
+        flush(&mut run, out);
+    }
+}
+
+/// Spans sorted and joined where they touch.
+fn merge_spans(mut spans: Vec<(f32, f32)>) -> Vec<(f32, f32)> {
+    spans.sort_by(|a, b| a.0.total_cmp(&b.0));
+    let mut merged: Vec<(f32, f32)> = Vec::with_capacity(spans.len());
+    for (s, e) in spans {
+        match merged.last_mut() {
+            Some(last) if s <= last.1 + 1.0e-6 => last.1 = last.1.max(e),
+            _ => merged.push((s, e)),
+        }
+    }
+    merged
+}
+
+/// What the component highlight is built from.
+#[derive(Clone, PartialEq)]
+struct HighlightKey {
+    revision: u64,
+    camera: forma_core::Camera,
+    bounds: Bounds<Pixels>,
+    mode: EditMode,
+    active: Option<u64>,
+    elements: BTreeSet<forma_core::MeshElement>,
+    others: Vec<u64>,
+}
+
+thread_local! {
+    static HIGHLIGHT: std::cell::RefCell<Option<(HighlightKey, Rc<ComponentHighlight>)>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Clips the selected components of `active` and the display edges of
+/// `others` (other selected objects) to what the camera sees. Returns the
+/// highlight and how many visibility rays it took.
+pub(crate) fn clip_highlight(
+    scene: &forma_core::Scene,
+    query: &forma_core::SurfaceQuery,
+    bounds: Bounds<Pixels>,
+    active: Option<u64>,
+    elements: &BTreeSet<forma_core::MeshElement>,
+    others: &[u64],
+) -> (ComponentHighlight, usize) {
+    let camera = scene.camera;
+    let aspect = f32::from(bounds.size.width) / f32::from(bounds.size.height).max(1.);
+    let view = camera.view_matrix();
+    let mut clipper = Clipper {
+        camera,
+        query,
+        matrix: camera.projection_matrix(aspect) * view,
+        bounds,
+        view,
+        eye: camera.position(),
+        backward: view.inverse().z_axis.truncate(),
+        pixel: (camera.fov_y * 0.5).tan() * 2. / f32::from(bounds.size.height).max(1.),
+        vertices: Default::default(),
+        edges: Default::default(),
+        rays: 0,
+    };
+    let mut highlight = ComponentHighlight::default();
+    if let Some(object) = active.and_then(|id| scene.mesh_instance(id)) {
+        let world = |i: u32| {
+            object
+                .world_transform
+                .transform_point3(object.mesh.positions[i as usize])
+        };
+        for element in elements {
+            let indices = element.vertex_indices(object.mesh);
+            if indices.is_empty() {
+                continue;
+            }
+            let points: Vec<Vec3> = indices.iter().map(|&i| world(i)).collect();
+            match element {
+                forma_core::MeshElement::Vertex(_) => {
+                    if clipper.vertex(object.id, indices[0], points[0]) {
+                        highlight.markers.push(points[0]);
+                    }
+                }
+                forma_core::MeshElement::Edge(_) => {
+                    let before = highlight.runs.len();
+                    clipper.runs(object.id, &indices, &points, &mut highlight.runs);
+                    if highlight.runs.len() > before {
+                        for (&i, &p) in indices.iter().zip(&points) {
+                            if clipper.vertex(object.id, i, p) {
+                                highlight.markers.push(p);
+                            }
+                        }
+                    }
+                }
+                forma_core::MeshElement::Face(_) => {
+                    let mut ring = indices.clone();
+                    ring.push(indices[0]);
+                    let mut closed = points.clone();
+                    closed.push(points[0]);
+                    clipper.runs(object.id, &ring, &closed, &mut highlight.runs);
+                    // Filled whole when wholly in view (its whole outline and
+                    // its middle). A face an occluder cuts is tinted only
+                    // where it shows: its visible outline pieces in order,
+                    // joined across each hidden stretch by a chord. Faces are
+                    // a few pixels across, so the chord follows the
+                    // occluder's outline to well under a pixel, and the
+                    // outline clipping has already paid for every ray.
+                    let spans: Vec<Spans> = (0..indices.len())
+                        .map(|k| {
+                            clipper.edge(
+                                object.id,
+                                [ring[k], ring[k + 1]],
+                                [closed[k], closed[k + 1]],
+                            )
+                        })
+                        .collect();
+                    let whole = spans.iter().all(|s| s[..] == [(0., 1.)]);
+                    let center = points.iter().sum::<Vec3>() / points.len() as f32;
+                    if whole && clipper.visible(center) {
+                        highlight.fills.push(points);
+                    } else if !whole && clipper.facing(&points) {
+                        let mut part: Vec<Vec3> = Vec::new();
+                        for (k, spans) in spans.iter().enumerate() {
+                            let (a, b) = (closed[k], closed[k + 1]);
+                            for &(s, e) in spans {
+                                let start = a.lerp(b, s);
+                                if part.last().is_none_or(|p| p.distance(start) > 1.0e-6) {
+                                    part.push(start);
+                                }
+                                part.push(a.lerp(b, e));
+                            }
+                        }
+                        if part.len() > 2 && part[0].distance(part[part.len() - 1]) <= 1.0e-6 {
+                            part.pop();
+                        }
+                        if part.len() > 2 {
+                            highlight.pieces.push(part);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    for &id in others {
+        if let Some(object) = scene.mesh_instance(id) {
+            // Parts outline their B-rep edges, not tessellation diagonals.
+            for edge in object.mesh.display_edges() {
+                let points = edge.map(|i| {
+                    object
+                        .world_transform
+                        .transform_point3(object.mesh.positions[i as usize])
+                });
+                clipper.runs(id, &edge, &points, &mut highlight.runs);
+            }
+        }
+    }
+    (highlight, clipper.rays)
+}
+
 pub(crate) fn visible_in_query(
     camera: forma_core::Camera,
     query: &forma_core::SurfaceQuery,
@@ -833,6 +1188,53 @@ impl Studio {
         }
     }
 
+    /// The selected components (or other selected objects' outlines),
+    /// clipped to what the camera sees. Cached per scene revision, camera,
+    /// viewport and selection, so repaints reuse it and only a view change
+    /// re-tests visibility: each vertex and edge once, with only the pieces
+    /// that cross an occluder's outline split further.
+    fn component_highlight(&self) -> Option<Rc<ComponentHighlight>> {
+        let elements = self.component_elements();
+        let others: Vec<u64> = if self.edit_mode == EditMode::Object {
+            self.selected_ids()
+                .into_iter()
+                .filter(|id| Some(*id) != self.selected)
+                .collect()
+        } else {
+            Vec::new()
+        };
+        if elements.is_empty() && others.is_empty() {
+            return None;
+        }
+        let key = HighlightKey {
+            revision: self.scene_revision,
+            camera: self.scene.camera,
+            bounds: self.bounds.get(),
+            mode: self.edit_mode,
+            active: self.selected,
+            elements,
+            others,
+        };
+        HIGHLIGHT.with(|cache| {
+            if let Some((cached, highlight)) = cache.borrow().as_ref()
+                && *cached == key
+            {
+                return Some(highlight.clone());
+            }
+            let (highlight, _) = clip_highlight(
+                &self.scene,
+                self.visibility_query(),
+                key.bounds,
+                key.active,
+                &key.elements,
+                &key.others,
+            );
+            let highlight = Rc::new(highlight);
+            *cache.borrow_mut() = Some((key, highlight.clone()));
+            Some(highlight)
+        })
+    }
+
     pub(crate) fn viewport(&self, cx: &mut Context<Self>) -> AnyElement {
         let t = self.theme_colors();
         let measurements = self
@@ -843,54 +1245,7 @@ impl Studio {
             self.selected
                 .is_some_and(|id| self.scene.is_effectively_visible(id))
         });
-        let query = (!self.component_elements().is_empty() || self.selected_ids().len() > 1)
-            .then(|| self.visibility_query());
-        let mut highlights = self
-            .selected_object()
-            .map(|object| {
-                self.component_elements()
-                    .into_iter()
-                    .filter_map(|element| {
-                        let points = element
-                            .vertex_indices(object.mesh)
-                            .iter()
-                            .map(|i| {
-                                object
-                                    .world_transform
-                                    .transform_point3(object.mesh.positions[*i as usize])
-                            })
-                            .collect::<Vec<_>>();
-                        let center = points.iter().sum::<Vec3>() / points.len() as f32;
-                        query
-                            .is_some_and(|q| visible_in_query(self.scene.camera, q, center))
-                            .then_some(points)
-                    })
-                    .collect::<Vec<_>>()
-            })
-            .unwrap_or_default();
-        if self.edit_mode == EditMode::Object {
-            for id in self
-                .selected_ids()
-                .into_iter()
-                .filter(|id| Some(*id) != self.selected)
-            {
-                if let Some(object) = self.scene.mesh_instance(id) {
-                    // Parts outline their B-rep edges, not tessellation diagonals.
-                    for edge in object.mesh.display_edges() {
-                        let points = edge.map(|i| {
-                            object
-                                .world_transform
-                                .transform_point3(object.mesh.positions[i as usize])
-                        });
-                        if query.is_some_and(|q| {
-                            visible_in_query(self.scene.camera, q, (points[0] + points[1]) * 0.5)
-                        }) {
-                            highlights.push(points.to_vec());
-                        }
-                    }
-                }
-            }
-        }
+        let highlight = self.component_highlight();
         let box_selection = self.box_select;
         #[cfg(target_os = "macos")]
         let surface = self
@@ -973,40 +1328,50 @@ impl Studio {
                 // Faces read as a translucent tint with a fine border, edges
                 // as solid strokes with small end caps, vertices as dots: the
                 // marker size follows the component, so a large face
-                // selection never turns into a field of beads.
-                let projected: Vec<Vec<_>> = highlights
-                    .iter()
-                    .filter_map(|element| {
-                        let points: Vec<_> = element
+                // selection never turns into a field of beads. Everything is
+                // clipped to what the camera sees (`clip_highlight`), so no
+                // piece of an outline draws over the geometry hiding it.
+                if let Some(highlight) = highlight.as_ref() {
+                    let projector = crate::sketch::overlay::Projector { matrix, bounds };
+                    if edit_mode == EditMode::Face {
+                        let fills: Vec<Vec<Point<Pixels>>> = highlight
+                            .fills
                             .iter()
-                            .filter_map(|v| project(*v, matrix, bounds))
+                            .filter_map(|face| face.iter().map(|p| projector.point(*p)).collect())
                             .collect();
-                        (points.len() == element.len() && !points.is_empty()).then_some(points)
-                    })
-                    .collect();
-                if edit_mode == EditMode::Face {
-                    crate::sketch::overlay::fill_polygons(
-                        window,
-                        &projected,
-                        crate::sketch::overlay::ink(COMPONENT_HIGHLIGHT, 0.26),
-                    );
-                }
-                for mut points in projected {
+                        let tint = crate::sketch::overlay::ink(COMPONENT_HIGHLIGHT, 0.26);
+                        crate::sketch::overlay::fill_polygons(window, &fills, tint);
+                        // The visible parts of cut faces, as one non-zero
+                        // fill, whatever their winding.
+                        let pieces: Vec<Vec<Point<Pixels>>> = highlight
+                            .pieces
+                            .iter()
+                            .filter_map(|piece| piece.iter().map(|p| projector.point(*p)).collect())
+                            .collect();
+                        crate::cad_tools::overlay::fill_union(window, &pieces, tint);
+                    }
+                    let runs: Vec<Vec<Point<Pixels>>> = highlight
+                        .runs
+                        .iter()
+                        .flat_map(|run| projector.polyline(run))
+                        .collect();
                     let (width, marker) = match edit_mode {
-                        EditMode::Face => {
-                            points.push(points[0]);
-                            (1.25, 0.)
-                        }
+                        EditMode::Face => (1.25, 0.),
                         EditMode::Edge => (2., 4.),
                         _ if edit_mode.is_component() => (2., 6.),
                         _ => (2., 0.),
                     };
-                    line(window, &points, COMPONENT_HIGHLIGHT, width);
+                    crate::sketch::overlay::stroke_runs(
+                        window,
+                        &runs,
+                        width,
+                        crate::sketch::overlay::ink(COMPONENT_HIGHLIGHT, 1.),
+                    );
                     if marker > 0. {
-                        for p in &points {
+                        for p in highlight.markers.iter().filter_map(|p| projector.point(*p)) {
                             window.paint_quad(fill(
                                 Bounds::new(
-                                    *p - point(px(marker * 0.5), px(marker * 0.5)),
+                                    p - point(px(marker * 0.5), px(marker * 0.5)),
                                     size(px(marker), px(marker)),
                                 ),
                                 rgb(COMPONENT_VERTEX),
@@ -1738,6 +2103,94 @@ mod tests {
         }
         scene.object_mut(cube).unwrap().visible = false;
         assert!(visible_point(&scene, Vec3::new(0., 0., -1.)));
+    }
+
+    /// A whole-torus face selection partly behind a sphere: no outline
+    /// piece or filled face lands behind the sphere, the outline still runs
+    /// up to its edge, and the visibility work stays a few rays per face.
+    #[test]
+    fn component_highlight_clips_outlines_at_occluders() {
+        let mut scene = forma_core::Scene::empty();
+        let torus = scene.add(forma_core::Primitive::Torus);
+        let sphere = scene.add(forma_core::Primitive::Sphere);
+        {
+            let object = scene.object_mut(sphere).unwrap();
+            object.transform.translation = Vec3::new(0.7, -0.2, 1.4);
+            object.transform.scale = Vec3::splat(0.55);
+        }
+        scene.camera.target = Vec3::ZERO;
+        scene.camera.yaw = 0.3;
+        scene.camera.pitch = 0.45;
+        scene.camera.distance = 5.;
+        let bounds = Bounds::new(point(px(0.), px(0.)), size(px(1200.), px(800.)));
+        let query = forma_core::SurfaceQuery::new(&scene);
+        let faces = scene.object_mesh(torus).unwrap().faces.len();
+        assert_eq!(faces, 768);
+        let elements: BTreeSet<_> = (0..faces).map(forma_core::MeshElement::Face).collect();
+        let start = std::time::Instant::now();
+        let (highlight, rays) = clip_highlight(&scene, &query, bounds, Some(torus), &elements, &[]);
+        let elapsed = start.elapsed();
+        eprintln!(
+            "clip_highlight: {faces} faces, {rays} rays, {} runs, {} fills, {} pieces, {elapsed:?}",
+            highlight.runs.len(),
+            highlight.fills.len(),
+            highlight.pieces.len()
+        );
+        assert!(rays < faces * 6, "{rays} rays for {faces} faces");
+        assert!(
+            !highlight.pieces.is_empty(),
+            "no face cut by the sphere was tinted"
+        );
+        assert!(!highlight.runs.is_empty() && highlight.fills.len() < faces);
+        // What the sphere alone hides.
+        let mut alone = scene.clone();
+        alone.object_mut(torus).unwrap().visible = false;
+        let behind_sphere = forma_core::SurfaceQuery::new(&alone);
+        let hidden = |p: Vec3| !visible_in_query(scene.camera, &behind_sphere, p);
+        for run in &highlight.runs {
+            for pair in run.windows(2) {
+                for k in 1..4 {
+                    let p = pair[0].lerp(pair[1], k as f32 / 4.);
+                    assert!(!hidden(p), "outline drawn behind the sphere at {p}");
+                }
+            }
+        }
+        for piece in &highlight.pieces {
+            let centre = piece.iter().sum::<Vec3>() / piece.len() as f32;
+            assert!(
+                !hidden(centre),
+                "cut face tinted behind the sphere at {centre}"
+            );
+        }
+        for face in &highlight.fills {
+            for p in face {
+                assert!(
+                    !hidden(*p),
+                    "face filled behind the sphere at {p}: full query says {}",
+                    visible_in_query(scene.camera, &query, *p)
+                );
+            }
+        }
+        // The outline is clipped at the sphere, not dropped near it: some
+        // piece ends within a few pixels of the sphere's silhouette.
+        let aspect = 1200. / 800.;
+        let matrix = scene.camera.projection_matrix(aspect) * scene.camera.view_matrix();
+        let center = mouse_point(project(Vec3::new(0.7, -0.2, 1.4), matrix, bounds).unwrap());
+        let rim = mouse_point(
+            project(
+                Vec3::new(0.7, -0.2, 1.4)
+                    + scene.camera.view_matrix().inverse().x_axis.truncate() * 0.55,
+                matrix,
+                bounds,
+            )
+            .unwrap(),
+        );
+        let radius = center.distance(rim);
+        let touching = highlight.runs.iter().flatten().any(|p| {
+            let s = mouse_point(project(*p, matrix, bounds).unwrap());
+            (s.distance(center) - radius).abs() < 4.
+        });
+        assert!(touching, "no outline reaches the sphere's silhouette");
     }
 
     fn scroll(delta: gpui::ScrollDelta, modifiers: gpui::Modifiers) -> ScrollWheelEvent {

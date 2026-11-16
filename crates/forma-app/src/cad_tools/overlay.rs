@@ -71,11 +71,11 @@ pub(crate) struct LabelPaint {
     pub style: LabelStyle,
 }
 
-/// The material an operation removes, as the faces of a closed convex
-/// solid: its front faces are tinted faintly, so the cut reads as a ghost
-/// inside the part's old silhouette.
+/// The material an operation removes, as the faces of a closed solid, each
+/// with the direction it faces out of the solid: its front faces are tinted
+/// faintly, so the cut reads as a ghost inside the part's old silhouette.
 pub(crate) struct WedgePaint {
-    pub faces: Vec<Vec<Vec3>>,
+    pub faces: Vec<(Vec<Vec3>, Vec3)>,
     pub color: u32,
     pub fill: f32,
 }
@@ -205,8 +205,8 @@ impl Studio {
                 overlay.areas.push(AreaPaint {
                     polygons: vec![quad.to_vec()],
                     color: ghost.color,
-                    fill: 0.35,
-                    outline: 2.0,
+                    fill: CHAMFER_TINT,
+                    outline: CHAMFER_OUTLINE,
                 });
             }
         }
@@ -217,7 +217,10 @@ impl Studio {
             None => {
                 if let Some(id) = self.part_editing() {
                     self.part_edit_overlay(id, &mut overlay);
-                } else if let Some(hover) = self
+                    return (!overlay.is_empty()).then_some(overlay);
+                }
+                self.feature_context_overlay(&mut overlay);
+                if let Some(hover) = self
                     .cad_tool
                     .region_hover
                     .filter(|hover| hover.revision == self.scene_revision)
@@ -237,12 +240,14 @@ impl Studio {
         (!overlay.is_empty()).then_some(overlay)
     }
 
-    /// The chamfer as its result. Each new face is painted as a lit
-    /// surface tinted with the accent and outlined, so it covers the corner
-    /// it cuts and the old edge disappears; where the cut reaches past the
-    /// new face (its ends, edges seen in silhouette) the removed wedge shows
-    /// as a faint red ghost. An arrow on the first edge drags the distance,
-    /// with the value hanging off its tip.
+    /// The chamfer as its result. Each new face in view is painted as a
+    /// lit surface under a light accent tint ([`CHAMFER_TINT`]) with a
+    /// crisp accent outline, so it covers the corner it cuts, the old edge
+    /// disappears and the bevel still reads as shaded material rather than
+    /// a sticker. A new face hidden from view (an edge behind the part)
+    /// stays see-through, with the wedge it removes as a faint red ghost.
+    /// An arrow on the first edge drags the distance, with the value
+    /// hanging off its tip.
     fn chamfer_overlay(&self, tool: &super::ChamferTool, overlay: &mut ToolOverlay) {
         let t = overlay.colors;
         let value = tool.value();
@@ -261,11 +266,6 @@ impl Studio {
                 });
                 continue;
             }
-            overlay.wedges.push(WedgePaint {
-                faces: edge.wedge(value).to_vec(),
-                color: t.danger,
-                fill: 0.18,
-            });
             // An edge behind other geometry keeps a see-through face: an
             // opaque one would float in front of what hides it.
             let outward = edge.outward();
@@ -284,12 +284,22 @@ impl Studio {
                     fill: 0.94,
                     outline: 0.0,
                 });
+            } else {
+                // The new face is hidden: the material it removes is the cue.
+                // A face in view says it alone; a ghost beside it would only
+                // show where a mitred end stops short of the old corner, as
+                // a tinted sliver past the part's outline.
+                overlay.wedges.push(WedgePaint {
+                    faces: edge.wedge(value).to_vec(),
+                    color: t.danger,
+                    fill: 0.18,
+                });
             }
             overlay.areas.push(AreaPaint {
                 polygons: vec![quad],
                 color: t.accent,
-                fill: 0.35,
-                outline: 2.0,
+                fill: CHAMFER_TINT,
+                outline: CHAMFER_OUTLINE,
             });
         }
         if let Some((base, tip)) = tool.handle_screen(self) {
@@ -584,9 +594,11 @@ impl Studio {
         );
     }
 
-    /// Part edit mode: selected faces and edges in full accent, hovered ones
-    /// in a clearly lighter accent, and on the active flat face an arrow to
-    /// push or pull it, with its area hanging off the tip.
+    /// Part edit mode: selected faces as a light accent tint under a full
+    /// accent outline (the face's shading reads through), selected edges in
+    /// full accent, hovered ones clearly lighter, and on the active flat
+    /// face an arrow to push or pull it, with the distance hanging off the
+    /// tip.
     fn part_edit_overlay(&self, id: u64, overlay: &mut ToolOverlay) {
         let t = overlay.colors;
         let Some(instance) = self.scene.mesh_instance(id) else {
@@ -618,7 +630,17 @@ impl Studio {
         let hover = self.cad_tool.edit.hover(self.scene_revision);
         for (group, _) in &selected_faces {
             let hovered = hover == Some(EditHover::Face(*group));
-            paint_face(*group, if hovered { 0.32 } else { 0.26 }, 2.0, 1.0, overlay);
+            paint_face(
+                *group,
+                if hovered {
+                    FACE_TINT_HOVERED
+                } else {
+                    FACE_TINT
+                },
+                1.75,
+                1.0,
+                overlay,
+            );
         }
         let topology = self.part_topology(id);
         let edge_points = |index: usize| -> Option<Vec<Vec3>> {
@@ -672,13 +694,13 @@ impl Studio {
                 color: t.accent,
                 hot: self.cad_tool.edit.arrow_hot,
             });
+            // The chip reads what dragging the arrow changes: the push/pull
+            // distance, zero until it moves (the running tool then counts
+            // from here). The face's area lives in the panel.
             overlay.labels.push(LabelPaint {
                 at: arrow.tip,
                 leader: (arrow.tip - arrow.base).try_normalize(),
-                text: format!(
-                    "{} m²",
-                    crate::transform::format_precision_value(arrow.area)
-                ),
+                text: crate::sketch::overlay::format_length(0.0),
                 style: LabelStyle::Measured,
             });
         }
@@ -824,6 +846,18 @@ impl Studio {
     }
 }
 
+/// Accent tint of a selected part face, and of one under the pointer: light
+/// enough that the face's shading and edges read through on white tops and
+/// dark walls alike; the outline carries the selection.
+const FACE_TINT: f32 = 0.13;
+const FACE_TINT_HOVERED: f32 = 0.19;
+
+/// Accent tint over a previewed chamfer face's lit grey: enough to mark
+/// the new face, light enough that its shading still reads.
+const CHAMFER_TINT: f32 = 0.22;
+/// Width of a previewed chamfer face's outline.
+const CHAMFER_OUTLINE: f32 = 1.5;
+
 /// A plain lit grey for a new face with outward `normal`, as the viewport's
 /// overhead studio light shades parts: faces turned up read light, walls
 /// dark. Previewed faces painted in it cover the geometry they replace.
@@ -861,7 +895,7 @@ fn label_style(numeric: &str, invalid: bool, snapped: bool) -> LabelStyle {
 
 /// Fills polygons as one non-zero path: front faces of a closed ghost share
 /// one orientation on screen, so overlaps tint once, never twice.
-fn fill_union(window: &mut Window, polygons: &[Vec<Point<Pixels>>], color: gpui::Rgba) {
+pub(crate) fn fill_union(window: &mut Window, polygons: &[Vec<Point<Pixels>>], color: gpui::Rgba) {
     let mut path = PathBuilder::fill().with_style(PathStyle::Fill(
         FillOptions::default().with_fill_rule(FillRule::NonZero),
     ));
@@ -923,8 +957,10 @@ pub(crate) fn paint(
                         projector.polyline(&closed)
                     })
                     .collect();
-                stroke_runs(window, &runs, area.outline + 2.0, ink(c.canvas, 0.35));
-                stroke_runs(window, &runs, area.outline, ink(area.color, 0.95));
+                // A narrow dark halo under a full-strength core keeps the
+                // boundary crisp on light and dark surfaces alike.
+                stroke_runs(window, &runs, area.outline + 1.5, ink(c.canvas, 0.3));
+                stroke_runs(window, &runs, area.outline, ink(area.color, 1.0));
             }
         }
         for prism in &overlay.prisms {
@@ -1060,24 +1096,19 @@ fn paint_wedge(
     projector: &Projector,
     window: &mut Window,
 ) {
-    let count: usize = wedge.faces.iter().map(Vec::len).sum();
-    if count == 0 {
-        return;
-    }
-    let centroid = wedge.faces.iter().flatten().copied().sum::<Vec3>() / count as f32;
     let mut front: Vec<Vec<Point<Pixels>>> = Vec::new();
-    for face in &wedge.faces {
+    for (face, outward) in &wedge.faces {
         if face.len() < 3 {
             continue;
         }
-        // Newell's normal, turned away from the solid's middle.
+        // Newell's normal, turned the way the face looks out of the solid.
         let mut normal = Vec3::ZERO;
         for (k, a) in face.iter().enumerate() {
             normal += a.cross(face[(k + 1) % face.len()]);
         }
         let center = face.iter().copied().sum::<Vec3>() / face.len() as f32;
         let mut points = face.clone();
-        if normal.dot(center - centroid) < 0.0 {
+        if normal.dot(*outward) < 0.0 {
             normal = -normal;
             points.reverse();
         }
@@ -1289,19 +1320,22 @@ fn paint_lathe(
     fill_polygons(window, &ends, ink(paint.color, 0.22 * paint.fill.max(0.4)));
 }
 
+/// A screen-space arrow handle: a 12 px cone on a shaft from a grip dot.
+/// Under the pointer (or while dragged) the cone, shaft and grip all grow a
+/// step, so the handle answers the hover before it is pressed.
 fn paint_arrow(arrow: &ArrowPaint, c: Colors, window: &mut Window) {
     let direction = (arrow.tip - arrow.base).normalize_or(Vec2::NEG_Y);
     let side = Vec2::new(-direction.y, direction.x);
-    let head = 13.0;
+    let (head, half) = if arrow.hot { (15.0, 8.0) } else { (12.0, 6.5) };
     let neck = arrow.tip - direction * head;
     let shaft = [to_point(arrow.base), to_point(neck)];
-    let width = if arrow.hot { 3.0 } else { 2.4 };
+    let width = if arrow.hot { 3.2 } else { 2.4 };
     stroke_runs(window, &[shaft.to_vec()], width + 3.0, ink(c.canvas, 0.45));
     stroke_runs(window, &[shaft.to_vec()], width, ink(arrow.color, 1.0));
     let triangle = vec![
         to_point(arrow.tip),
-        to_point(neck + side * 7.0),
-        to_point(neck - side * 7.0),
+        to_point(neck + side * half),
+        to_point(neck - side * half),
         to_point(arrow.tip),
     ];
     stroke_runs(

@@ -130,6 +130,17 @@ thread_local! {
 /// Inks for Draw mode. Curves pair a core that contrasts with the theme's
 /// viewport backdrop with a halo that separates them from any shaded
 /// surface, so they read over dark space and light faces alike.
+///
+/// Draw's colour rule, the same for every tool and both themes:
+/// - committed curves, open or closed, are the two-tone ink (`core` over
+///   `halo`); a closed outline is not recoloured;
+/// - the curve being drawn (the tool's preview) is the accent;
+/// - a closed profile is marked by a light accent fill (`PROFILE_FILL`),
+///   never by recolouring its curves;
+/// - an open end, which keeps a region from closing, carries an accent
+///   ring around its point;
+/// - selection is the accent and hover a lighter accent: interaction
+///   states, layered over the rule rather than part of it.
 #[derive(Clone, Copy)]
 pub(crate) struct SketchInk {
     pub core: Rgba,
@@ -140,7 +151,9 @@ pub(crate) struct SketchInk {
     /// Dimension and extension lines.
     pub annotation: Rgba,
     /// Laid over the rendered frame so the plane and sketch stand out while
-    /// the scene stays visible: about 40% of the viewport backdrop.
+    /// the scene stays visible: about two thirds of the viewport backdrop,
+    /// so bodies keep about a third of their contrast. A face being
+    /// sketched on is cut out of it and stays at full strength.
     pub scrim: Rgba,
 }
 
@@ -153,7 +166,7 @@ impl SketchInk {
                 point: ink(0xffffff, 1.0),
                 point_ring: ink(0x07080a, 0.9),
                 annotation: ink(c.text, 0.82),
-                scrim: ink(0x1c2027, 0.42),
+                scrim: ink(0x1c2027, 0.66),
             }
         } else {
             Self {
@@ -162,7 +175,7 @@ impl SketchInk {
                 point: ink(0xffffff, 1.0),
                 point_ring: ink(c.text, 0.92),
                 annotation: ink(c.text, 0.78),
-                scrim: ink(0xe3e5e8, 0.42),
+                scrim: ink(0xe3e5e8, 0.62),
             }
         }
     }
@@ -758,8 +771,7 @@ pub(crate) fn paint(
     let c = overlay.colors;
     window.with_content_mask(Some(gpui::ContentMask { bounds }), |window| {
         if let Some(active) = &overlay.active {
-            // The scene recedes behind the plane being drawn on.
-            window.paint_quad(fill(bounds, SketchInk::new(c).scrim));
+            paint_scrim(active, &projector, c, window);
             paint_grid(active, &projector, c, window);
         }
         for (index, display) in overlay.others.iter().enumerate() {
@@ -823,6 +835,76 @@ pub(crate) fn paint(
             paint_active(active, &projector, c, window, cx);
         }
     });
+}
+
+/// The scene recedes behind the plane being drawn on. Sketching on a face,
+/// the face itself (its outline, less its holes) is left out of the scrim,
+/// so the surface being drawn on keeps its full shading.
+fn paint_scrim(active: &ActiveOverlay, projector: &Projector, c: Colors, window: &mut Window) {
+    let bounds = projector.bounds;
+    let scrim = SketchInk::new(c).scrim;
+    let mut polygons = vec![vec![
+        bounds.origin,
+        bounds.top_right(),
+        bounds.bottom_right(),
+        bounds.bottom_left(),
+    ]];
+    for outline in reference_loops(&active.reference) {
+        let runs = plane_runs(&active.frame, projector, &outline);
+        // A face crossing behind the camera cannot be cut out cleanly.
+        if runs.len() != 1 {
+            polygons.truncate(1);
+            break;
+        }
+        polygons.extend(runs);
+    }
+    // One even-odd fill: the viewport, less the face, plus its holes.
+    fill_polygons(window, &polygons, scrim);
+}
+
+/// Closed loops (in plane coordinates) of a face outline given as separate
+/// curves, chained end to end. Curves that do not close a loop are left out.
+fn reference_loops(reference: &[SketchCurve]) -> Vec<Vec<Vec2>> {
+    let mut open: Vec<Vec<Vec2>> = Vec::new();
+    let mut loops = Vec::new();
+    let mut extent = 0.0_f32;
+    for curve in reference.iter().filter(|c| c.is_valid()) {
+        let polyline = curve.polyline(display_tolerance(curve));
+        if polyline.len() < 2 {
+            continue;
+        }
+        let (min, max) = curve.bounds();
+        extent = extent.max((max - min).max_element());
+        open.push(polyline);
+    }
+    let near = (extent * 1.0e-4).max(SKETCH_TOLERANCE * 4.0);
+    let closes = |l: &[Vec2]| l.len() > 2 && l[0].distance(l[l.len() - 1]) <= near;
+    while let Some(mut chain) = open.pop() {
+        while !closes(&chain) {
+            let end = chain[chain.len() - 1];
+            let Some((index, reverse)) = open.iter().enumerate().find_map(|(i, l)| {
+                if l[0].distance(end) <= near {
+                    Some((i, false))
+                } else if l[l.len() - 1].distance(end) <= near {
+                    Some((i, true))
+                } else {
+                    None
+                }
+            }) else {
+                break;
+            };
+            let mut next = open.swap_remove(index);
+            if reverse {
+                next.reverse();
+            }
+            chain.extend(next.into_iter().skip(1));
+        }
+        if closes(&chain) {
+            chain.pop();
+            loops.push(chain);
+        }
+    }
+    loops
 }
 
 fn smoothstep(edge0: f32, edge1: f32, x: f32) -> f32 {
@@ -1056,8 +1138,9 @@ fn paint_active(
     let analysis = &active.analysis;
     let inks = SketchInk::new(c);
     let screen = |p: Vec2| projector.point(frame.to_world(p));
-    // Profile regions: what CAD features will extrude. A light tint, with
-    // the region's outline drawn crisp over the curves below.
+    // Profile regions: what CAD features will extrude, marked by a light
+    // tint alone (see `SketchInk` for the colour rule); a hovered region
+    // adds an accent outline.
     let profiles: Vec<(bool, Vec<Vec<Point<Pixels>>>)> = analysis
         .profile_polygons
         .iter()
@@ -1074,7 +1157,14 @@ fn paint_active(
         fill_polygons(
             window,
             projected,
-            ink(c.accent, if *hovered { 0.3 } else { 0.12 }),
+            ink(
+                c.accent,
+                if *hovered {
+                    PROFILE_FILL_HOVERED
+                } else {
+                    PROFILE_FILL
+                },
+            ),
         );
     }
     for curve in &active.reference {
@@ -1137,8 +1227,9 @@ fn paint_active(
     stroke_runs(window, &normal, 2.0, inks.core);
     stroke_runs(window, &hovered, 2.2, ink(c.accent, 0.85));
     stroke_runs(window, &selected, 2.4, ink(c.accent, 1.0));
-    // Closed regions: a solid accent outline marks what can be extruded.
-    for (hovered, projected) in &profiles {
+    // The hovered region: an accent outline over its curves says which
+    // region a click or an extrude would take.
+    for (_, projected) in profiles.iter().filter(|(hovered, _)| *hovered) {
         let outlines: Vec<Vec<Point<Pixels>>> = projected
             .iter()
             .map(|polygon| {
@@ -1147,12 +1238,7 @@ fn paint_active(
                 closed
             })
             .collect();
-        stroke_runs(
-            window,
-            &outlines,
-            if *hovered { 2.2 } else { 1.5 },
-            ink(c.accent, 1.0),
-        );
+        stroke_runs(window, &outlines, 2.2, ink(c.accent, 1.0));
     }
     // One ink scheme for Draw: committed curves in the two-tone ink, the
     // curve being drawn in the accent, and every vertex, committed or just
@@ -1333,6 +1419,9 @@ fn ink_alpha(color: Rgba, alpha: f32) -> Rgba {
 
 /// Radius of the accent ring around an open end.
 const OPEN_RING: f32 = 7.0;
+/// Accent fill of a closed profile, and of the one under the pointer.
+const PROFILE_FILL: f32 = 0.15;
+const PROFILE_FILL_HOVERED: f32 = 0.3;
 
 /// A filled point with a thin ring around it.
 fn point_marker(window: &mut Window, center: Point<Pixels>, diameter: f32, fill: Rgba, ring: Rgba) {
