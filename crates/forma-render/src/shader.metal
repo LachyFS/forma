@@ -537,7 +537,7 @@ float3 composite_edit(float3 color, Ray ray, Hit hit, float2 pixel, device const
     // The mesh being edited carries the wire; other meshes keep a faint
     // cage for context, and only the edited mesh shows vertex markers.
     bool editing = is_selected(hit, triangles, u);
-    float3 result = mix(color, float3(0.10f, 0.13f, 0.16f), edge_coverage(ray, hit, tri, u, 1.0f) * (editing ? 0.85f : 0.25f));
+    float3 result = mix(color, float3(0.10f, 0.13f, 0.16f), edge_coverage(ray, hit, tri, u, 1.0f) * (editing ? 0.85f : 0.1f));
     if (u.cam_origin.w > 1.5f && editing) {
         float2 marker_pixel(pixel.x - float(u.image.x) * 0.5f, float(u.image.y) * 0.5f - pixel.y);
         float distance = min(length(marker_pixel - project_to_pixels(tri.v0.xyz, u)), min(length(marker_pixel - project_to_pixels(tri.v1.xyz, u)), length(marker_pixel - project_to_pixels(tri.v2.xyz, u))));
@@ -606,6 +606,9 @@ float3 add_grid(float3 color, Ray ray, Hit hit, float2 pixel, constant Uniforms 
     float depth_tolerance = max(2e-5f * max(1.0f, distance),
         pixel_world * 0.05f / max(0.1f, abs(ray.direction.y)));
     if (distance + depth_tolerance >= hit.distance) return color;
+    // The ground grid is a floor: geometry that reaches below it (a plinth
+    // whose top sits on the grid) hides the grid instead of wearing it.
+    if (hit.triangle != NO_HIT && ray.origin.y + hit.distance * ray.direction.y < -1e-4f * max(1.0f, distance)) return color;
     float3 p = ray.origin + distance * ray.direction;
     Ray rx = camera_ray(pixel + float2(1, 0), u), ry = camera_ray(pixel + float2(0, 1), u);
     if (abs(rx.direction.y) < 1e-5f || abs(ry.direction.y) < 1e-5f) return color;
@@ -638,7 +641,7 @@ float3 add_grid(float3 color, Ray ray, Hit hit, float2 pixel, constant Uniforms 
 // traced once per pixel from the centre hit, so objects sit on what they
 // touch and creases read without a light rig.
 constant float SOLID_AO_RADIUS = 0.5f;
-float solid_occlusion(float occlusion) { return max(0.3f, 1.0f - 0.8f * occlusion / 8.0f); }
+float solid_occlusion(float occlusion) { return max(0.25f, 1.0f - 0.95f * occlusion / 8.0f); }
 float solid_ao(Surface s, device const Triangle *triangles, device const BvhNode *nodes, constant Uniforms &u) {
     float occlusion = 0.0f;
     for (uint i = 0u; i < 8u; ++i) {

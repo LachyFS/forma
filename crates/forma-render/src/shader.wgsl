@@ -603,7 +603,7 @@ fn composite_edit(color: vec3<f32>, ray: Ray, hit: Hit, pixel: vec2<f32>) -> vec
     // The mesh being edited carries the wire; other meshes keep a faint
     // cage for context, and only the edited mesh shows vertex markers.
     let editing = is_selected(hit);
-    var result = mix(color, vec3(0.10, 0.13, 0.16), edge_coverage(ray, hit, tri, 1.0) * select(0.25, 0.85, editing));
+    var result = mix(color, vec3(0.10, 0.13, 0.16), edge_coverage(ray, hit, tri, 1.0) * select(0.1, 0.85, editing));
     if u.cam_origin.w > 1.5 && editing {
         let marker_pixel = vec2(pixel.x - f32(u.image.x) * 0.5, f32(u.image.y) * 0.5 - pixel.y);
         let distance = min(length(marker_pixel - project_to_pixels(tri.v0.xyz)), min(length(marker_pixel - project_to_pixels(tri.v1.xyz)), length(marker_pixel - project_to_pixels(tri.v2.xyz))));
@@ -677,6 +677,9 @@ fn add_grid(initial_color: vec3<f32>, ray: Ray, hit: Hit, pixel: vec2<f32>) -> v
     let pixel_world = 2.0 * select(forward_depth * u.camera.x, u.camera.z, u.camera.w > 0.5) / f32(u.image.y);
     let depth_tolerance = max(2e-5 * max(1.0, distance), pixel_world * 0.05 / max(0.1, abs(ray.direction.y)));
     if distance + depth_tolerance >= hit.distance { return color; }
+    // The ground grid is a floor: geometry that reaches below it (a plinth
+    // whose top sits on the grid) hides the grid instead of wearing it.
+    if hit.triangle != NO_HIT && ray.origin.y + hit.distance * ray.direction.y < -1e-4 * max(1.0, distance) { return color; }
     let p = ray.origin + distance * ray.direction;
     let rx = camera_ray(pixel + vec2(1.0, 0.0)); let ry = camera_ray(pixel + vec2(0.0, 1.0));
     if abs(rx.direction.y) < 1e-5 || abs(ry.direction.y) < 1e-5 { return color; }
@@ -719,7 +722,7 @@ fn solid_ao(s: Surface) -> f32 {
         let hit = trace(ray, SOLID_AO_RADIUS, false);
         if hit.triangle != NO_HIT { occlusion += 1.0 - smoothstep(0.0, SOLID_AO_RADIUS, hit.distance); }
     }
-    return max(0.3, 1.0 - 0.8 * occlusion / 8.0);
+    return max(0.25, 1.0 - 0.95 * occlusion / 8.0);
 }
 fn solid_sample(p: vec2<f32>, ray: Ray, hit: Hit, ao: f32) -> vec3<f32> {
     var color = viewport_background(ray);
