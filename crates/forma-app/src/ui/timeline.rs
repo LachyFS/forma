@@ -239,7 +239,7 @@ fn chip(
                     } else {
                         t.text_muted
                     }))
-                    .child(chip_hint(feature)),
+                    .child(typeset_minus(&chip_hint(feature))),
             )
         })
         .map(|d| match &state {

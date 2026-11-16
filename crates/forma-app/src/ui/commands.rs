@@ -212,7 +212,7 @@ fn tool_info(command: ToolCommand) -> CommandInfo {
             "Draw on the selected or pointed-at flat face",
             "D",
         ),
-        ToolCommand::Done => keyed("Apply", "Return"),
+        ToolCommand::Done => keyed("Done", "Return"),
         ToolCommand::Cancel => keyed("Cancel", "Esc"),
         ToolCommand::SetOperation(operation) => match operation {
             Operation::NewPart => explained_keyed("New part", "Make a separate part", "N"),

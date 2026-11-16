@@ -2,11 +2,10 @@
 //! the selection's properties and the viewport/render settings — built from
 //! collapsible sections and label/value property rows.
 use super::assets::{Icon, icon};
-use super::commands::shading_icon;
 use super::components::*;
-use super::outliner::{kind_icon, kind_label};
+use super::outliner::{kind_icon, kind_label, object_kind};
 use super::tokens::*;
-use super::{InspectorTab, PanelSection};
+use super::{Anchor, InspectorTab, MenuKind, OpenMenu, PanelSection};
 use crate::app::{Command, Field, Studio};
 use crate::theme::Colors;
 use forma_core::{DenoiseQuality, ShaderKind, TextureMapping, TextureSlot};
@@ -43,7 +42,7 @@ fn header(t: Colors, s: &Studio, cx: &mut Context<Studio>) -> Div {
     let selected = s.selected_ids().len();
     let body = match object {
         Some(object) => {
-            let kind = object.kind();
+            let kind = object_kind(&s.scene, object);
             let inline = !(s.panels.rename_in_outliner && s.field_is_active(Field::Name));
             row()
                 .gap(px(SP_2))
@@ -774,25 +773,31 @@ fn surface(
                                 })),
                         ),
                 )
-                .child(
+                .child({
+                    // One precision for the three channels.
+                    let texts: Vec<String> = (0..3)
+                        .map(|axis| s.field_value(Field::Color(axis)))
+                        .collect();
+                    let mut shown = row_numbers(&texts, 5).into_iter();
                     row()
                         .flex_1()
                         .min_w(px(0.))
                         .gap(px(SP_1))
                         .children((0..3).map(|axis| {
-                            numeric_field(
+                            numeric_field_showing(
                                 t,
                                 s,
                                 SharedString::from(format!("base-color-{axis}")),
                                 Field::Color(axis),
                                 FieldMark::Text(["R", "G", "B"][axis]),
                                 ["Red · sRGB", "Green · sRGB", "Blue · sRGB"][axis],
+                                shown.next(),
                                 cx,
                             )
                             .flex_1()
                             .flex_basis(px(0.))
-                        })),
-                ),
+                        }))
+                }),
         )
         .child(numeric_row(
             t,
@@ -1062,7 +1067,15 @@ fn geometry(
         .children(super::feature_inspector::combine_row(t, s, cx))
 }
 
-fn object_page(t: Colors, s: &Studio, stacked: bool, cx: &mut Context<Studio>) -> Div {
+/// The selection's properties. While a tool runs (`dimmed`), everything but
+/// the part history dims: the history shows where the new feature lands.
+fn object_page(
+    t: Colors,
+    s: &Studio,
+    stacked: bool,
+    dimmed: bool,
+    cx: &mut Context<Studio>,
+) -> Div {
     if let Some(page) = s.sketch_inspector(t, cx) {
         return page;
     }
@@ -1089,8 +1102,9 @@ fn object_page(t: Colors, s: &Studio, stacked: bool, cx: &mut Context<Studio>) -
         section(t, s, PanelSection::Part, "Part", detail, contents, cx)
     });
     let is_part = part.is_some();
-    col()
-        .children(part)
+    let rest = col()
+        .flex_shrink_0()
+        .when(dimmed, |d| d.opacity(0.4))
         .child(section(
             t,
             s,
@@ -1140,7 +1154,8 @@ fn object_page(t: Colors, s: &Studio, stacked: bool, cx: &mut Context<Studio>) -
                 geometry(t, s, &object, cx),
                 cx,
             ))
-        })
+        });
+    col().children(part).child(rest)
 }
 
 pub(crate) fn preview_light_name(s: &Studio) -> String {
@@ -1259,45 +1274,54 @@ fn denoise(t: Colors, s: &Studio, cx: &mut Context<Studio>) -> Div {
         )
 }
 
+/// The Render page's one primary action: save the viewport as an image. In
+/// Rendered mode that is a full path-traced render at the sample target;
+/// other modes save what the viewport shows. Shading itself is chosen in the
+/// viewport toolbar, so the page does not repeat it.
+fn render_action(t: Colors, s: &Studio, cx: &mut Context<Studio>) -> Div {
+    let mode = s.settings.mode;
+    let (label, detail) = if mode == RenderMode::Rendered {
+        (
+            "Render image…",
+            format!(
+                "Path-traced PNG at {} samples · keeps rendering while you edit",
+                s.settings.max_samples
+            ),
+        )
+    } else {
+        (
+            "Export image…",
+            format!(
+                "PNG of the {} viewport · switch to Rendered for a path-traced image",
+                mode.label().to_lowercase()
+            ),
+        )
+    };
+    col()
+        .px(px(SP_3))
+        .pt(px(SP_3))
+        .pb(px(SP_3))
+        .border_b_1()
+        .border_color(rgb(t.hairline))
+        .child(on_command(
+            button(
+                t,
+                "render-image",
+                label,
+                Some(Icon::ExportImage),
+                Tone::Primary,
+            )
+            .h(px(H_MD))
+            .w_full()
+            .tooltip(tip_detail(t, label, detail, None)),
+            Command::ExportImage,
+            cx,
+        ))
+}
+
 fn render_page(t: Colors, s: &Studio, cx: &mut Context<Studio>) -> Div {
     let mode = s.settings.mode;
-    let shading = segmented(t).flex_1().children(
-        [
-            RenderMode::Wireframe,
-            RenderMode::Solid,
-            RenderMode::MaterialPreview,
-            RenderMode::Rendered,
-        ]
-        .into_iter()
-        .map(|candidate| {
-            let active = mode == candidate;
-            on_command(
-                segment(
-                    t,
-                    SharedString::from(format!("inspector-mode-{}", candidate as usize)),
-                    active,
-                    22.,
-                )
-                .flex_1()
-                .child(icon(
-                    shading_icon(candidate),
-                    ICON_SM,
-                    if active { t.accent_text } else { t.text_muted },
-                ))
-                .tooltip(command_tip(t, Command::SetMode(candidate))),
-                Command::SetMode(candidate),
-                cx,
-            )
-        }),
-    );
-    let mut page = col().child(
-        col()
-            .px(px(SP_3))
-            .py(px(SP_2))
-            .border_b_1()
-            .border_color(rgb(t.hairline))
-            .child(property_row(t, "Shading", shading)),
-    );
+    let mut page = col().child(render_action(t, s, cx));
     match mode {
         RenderMode::Rendered => {
             let progress = (s.samples as f32 / s.settings.max_samples.max(1) as f32).clamp(0., 1.);
@@ -1513,17 +1537,10 @@ pub(super) fn inspector(t: Colors, s: &Studio, width: f32, cx: &mut Context<Stud
         return panel;
     }
     let stacked = width < STACK_BELOW;
-    // An empty scene has nothing to inspect: one quiet line, no tabs.
+    // An empty scene has nothing to inspect: no header or tabs, just the two
+    // ways to start, placed where the eye lands in the panel.
     if s.selected.is_none() && s.scene.objects.is_empty() {
-        return col().flex_1().min_h(px(0.)).child(
-            div()
-                .px(px(SP_3))
-                .py(px(SP_4))
-                .text_size(px(TEXT_SM))
-                .line_height(px(16.))
-                .text_color(rgb(t.text_faint))
-                .child("Properties of the selected object appear here."),
-        );
+        return empty_scene(t, s, cx);
     }
     let object_tab = s.panels.tab == InspectorTab::Object;
     // A running tool leads, pinned above the page, and the page beneath it
@@ -1536,7 +1553,7 @@ pub(super) fn inspector(t: Colors, s: &Studio, width: f32, cx: &mut Context<Stud
     let page = match s.panels.tab {
         // With nothing selected, the running tool is all there is to show.
         InspectorTab::Object if dimmed && s.selected.is_none() => col(),
-        InspectorTab::Object => object_page(t, s, stacked, cx),
+        InspectorTab::Object => object_page(t, s, stacked, dimmed, cx),
         InspectorTab::Render => render_page(t, s, cx),
     };
     col()
@@ -1545,18 +1562,204 @@ pub(super) fn inspector(t: Colors, s: &Studio, width: f32, cx: &mut Context<Stud
         .child(header(t, s, cx))
         .children(live)
         .child(
-            col()
-                .id("properties-scroll")
+            div()
+                .relative()
+                .flex()
+                .flex_col()
                 .flex_1()
                 .min_h(px(0.))
-                .overflow_y_scroll()
-                .track_scroll(&s.panels.inspector_scroll)
                 .child(
                     col()
-                        .flex_shrink_0()
-                        .pb(px(SP_4))
-                        .children(context)
-                        .child(page.flex_shrink_0().when(dimmed, |d| d.opacity(0.4))),
-                ),
+                        .id("properties-scroll")
+                        .flex_1()
+                        .min_h(px(0.))
+                        .overflow_y_scroll()
+                        .track_scroll(&s.panels.inspector_scroll)
+                        .child(
+                            col()
+                                .flex_shrink_0()
+                                // Room below the last row, so the end of the
+                                // page reads as an end and never as a crop.
+                                .pb(px(SP_6))
+                                .children(context)
+                                .child(page.flex_shrink_0()),
+                        ),
+                )
+                .child(scroll_fades(
+                    t,
+                    &s.panels.inspector_scroll,
+                    // A field revealed by Tab may sit at the bottom edge;
+                    // it must never be washed out while it is edited.
+                    s.active_field
+                        .as_ref()
+                        .is_some_and(|(field, _)| super::PanelState::is_inspector_field(*field)),
+                )),
+        )
+}
+
+/// Soft fades over a scrolled panel's edges while content continues past
+/// them: a short one under the header once scrolled, a taller one at the
+/// bottom while more sits below. They are painted, not laid out, after the
+/// scroll area has measured itself, so they match this frame's content even
+/// when a section opens or closes, and they never take input. `editing`
+/// drops the bottom fade so a field being edited at the edge stays clear.
+pub(super) fn scroll_fades(t: Colors, scroll: &ScrollHandle, editing: bool) -> impl IntoElement {
+    const TOP: f32 = 14.;
+    const BOTTOM: f32 = 32.;
+    let scroll = scroll.clone();
+    let mut solid = hex(t.surface);
+    solid.a = 1.;
+    let mut clear = solid;
+    clear.a = 0.;
+    canvas(
+        |_, _, _| (),
+        move |bounds, _, window, _| {
+            let offset = -f32::from(scroll.offset().y);
+            let maximum = f32::from(scroll.max_offset().height);
+            let band = |top: Pixels, height: f32| {
+                Bounds::new(
+                    point(bounds.left(), top),
+                    size(bounds.size.width, px(height)),
+                )
+            };
+            if offset > 0.5 {
+                window.paint_quad(fill(
+                    band(bounds.top(), TOP),
+                    linear_gradient(
+                        0.,
+                        linear_color_stop(clear, 0.),
+                        linear_color_stop(solid, 1.),
+                    ),
+                ));
+            }
+            if !editing && maximum - offset > 0.5 {
+                window.paint_quad(fill(
+                    band(bounds.bottom() - px(BOTTOM), BOTTOM),
+                    linear_gradient(
+                        180.,
+                        linear_color_stop(clear, 0.),
+                        linear_color_stop(solid, 1.),
+                    ),
+                ));
+            }
+        },
+    )
+    .absolute()
+    .inset_0()
+    .size_full()
+}
+
+/// Open the Add menu below `anchor`, or close it if this button opened it.
+/// It drops below its trigger like the view menu, whose slot it borrows:
+/// that trigger only lights up for its own menu.
+fn open_add_menu(s: &mut Studio, anchor: Bounds<Pixels>, cx: &mut Context<Studio>) {
+    if add_menu_open(s) {
+        s.panels.menu = None;
+    } else {
+        s.active_field = None;
+        s.palette_open = false;
+        s.preview_open = false;
+        s.panels.menu = Some(OpenMenu {
+            kind: MenuKind::Add,
+            from: Anchor::ViewHud,
+            anchor,
+            index: super::overlays::menu::first_item(MenuKind::Add),
+        });
+    }
+    cx.notify();
+}
+
+fn add_menu_open(s: &Studio) -> bool {
+    s.panels
+        .menu
+        .as_ref()
+        .is_some_and(|menu| menu.kind == MenuKind::Add && menu.from == Anchor::ViewHud)
+}
+
+/// The inspector of an empty scene: what goes here, and the two ways to
+/// begin. The viewport's start card offers every kind; this stays quiet.
+fn empty_scene(t: Colors, s: &Studio, cx: &mut Context<Studio>) -> Div {
+    // The Add button records where it was drawn, so its menu opens beneath it.
+    let bounds = std::rc::Rc::new(std::cell::Cell::new(Bounds::<Pixels>::default()));
+    let recorder = bounds.clone();
+    let tone = if add_menu_open(s) {
+        Tone::Selected
+    } else {
+        Tone::Secondary
+    };
+    let add = button(t, "inspector-empty-add", "Add", Some(Icon::Plus), tone)
+        .h(px(H_MD))
+        .flex_1()
+        .relative()
+        .child(
+            canvas(move |b, _, _| recorder.set(b), |_, _, _, _| {})
+                .absolute()
+                .inset_0()
+                .size_full(),
+        )
+        .tooltip(tip_detail(
+            t,
+            "Add",
+            "Meshes, parts, sketches and imports",
+            None,
+        ))
+        .on_click(cx.listener(move |s, _, _, cx| {
+            cx.stop_propagation();
+            open_add_menu(s, bounds.get(), cx);
+        }));
+    let sketch = command_button(
+        t,
+        "inspector-empty-sketch",
+        "Sketch",
+        Some(Icon::DrawMode),
+        Command::Draw(crate::sketch::DrawCommand::NewGroundSketch),
+        Tone::Secondary,
+        cx,
+    )
+    .h(px(H_MD))
+    .flex_1();
+    col()
+        .flex_1()
+        .min_h(px(0.))
+        .px(px(SP_5))
+        .pt(px(SP_6 + SP_4))
+        .items_center()
+        .gap(px(SP_2))
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .justify_center()
+                .size(px(36.))
+                .rounded(px(R_LG))
+                .bg(rgb(t.control))
+                .border_1()
+                .border_color(rgb(t.hairline))
+                .child(icon(Icon::Scene, ICON_LG, t.text_muted)),
+        )
+        .child(
+            div()
+                .mt(px(SP_1))
+                .text_size(px(TEXT_LG))
+                .font_weight(WEIGHT_MEDIUM)
+                .text_color(rgb(t.text))
+                .child("Empty scene"),
+        )
+        .child(
+            div()
+                .max_w(px(232.))
+                .text_center()
+                .line_height(px(17.))
+                .text_color(rgb(t.text_muted))
+                .child("Add a mesh or part, or sketch a profile to extrude. Its properties appear here."),
+        )
+        .child(
+            row()
+                .w_full()
+                .max_w(px(232.))
+                .mt(px(SP_2))
+                .gap(px(SP_1_5))
+                .child(add)
+                .child(sketch),
         )
 }

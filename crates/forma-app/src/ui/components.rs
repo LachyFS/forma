@@ -710,6 +710,84 @@ pub(crate) fn compact_number(text: String, max: usize) -> String {
     }
 }
 
+/// Typeset a number for display: a hyphen before a digit becomes a true
+/// minus sign (U+2212). Hyphens inside words ("X-ray") are kept.
+pub(crate) fn typeset_minus(text: &str) -> String {
+    let mut out = String::with_capacity(text.len() + 2);
+    let mut previous: Option<char> = None;
+    let mut chars = text.chars().peekable();
+    while let Some(c) = chars.next() {
+        let numeric_next = chars
+            .peek()
+            .is_some_and(|next| next.is_ascii_digit() || *next == '.');
+        let word_before = previous.is_some_and(|p| p.is_alphanumeric() || p == '.');
+        if c == '-' && numeric_next && !word_before {
+            out.push('\u{2212}');
+        } else {
+            out.push(c);
+        }
+        previous = Some(c);
+    }
+    out
+}
+
+/// Display text for a row of related values (X/Y/Z, R/G/B): one shared
+/// number of decimals, about three significant digits for the row's largest
+/// value, at most `max` characters for its widest, and trailing zeros
+/// trimmed only where every value can lose them. "1.33, 1.3, 1.329" becomes
+/// "1.33, 1.30, 1.33". Text that is not a plain number is kept as it is.
+pub(crate) fn row_numbers(texts: &[String], max: usize) -> Vec<String> {
+    let values: Vec<Option<f64>> = texts
+        .iter()
+        .map(|text| text.parse::<f64>().ok().filter(|v| v.is_finite()))
+        .collect();
+    let numbers: Vec<f64> = values.iter().flatten().copied().collect();
+    let largest = numbers.iter().fold(0f64, |m, v| m.max(v.abs()));
+    if numbers.is_empty() || (largest > 0. && largest < 1.0e-3) {
+        return texts
+            .iter()
+            .map(|text| compact_number(text.clone(), max))
+            .collect();
+    }
+    let integer_len = |v: f64| format!("{:.0}", v.trunc()).len();
+    // Decimals the widest value can show within `max` characters.
+    let room = numbers
+        .iter()
+        .map(|&v| max.saturating_sub(integer_len(v) + 1))
+        .min()
+        .unwrap_or(0);
+    let significant = if largest < 1.0e-12 {
+        0
+    } else {
+        (3 - (largest.log10().floor() as i32 + 1)).clamp(0, 4) as usize
+    };
+    let format = |v: f64, decimals: usize| {
+        let text = format!("{v:.decimals$}");
+        // "-0.00" is zero, not a negative number.
+        if text
+            .trim_start_matches('-')
+            .chars()
+            .all(|c| c == '0' || c == '.')
+        {
+            text.trim_start_matches('-').to_owned()
+        } else {
+            text
+        }
+    };
+    let mut decimals = significant.min(room);
+    while decimals > 0 && numbers.iter().all(|&v| format(v, decimals).ends_with('0')) {
+        decimals -= 1;
+    }
+    texts
+        .iter()
+        .zip(&values)
+        .map(|(text, value)| match value {
+            Some(v) => format(*v, decimals),
+            None => text.clone(),
+        })
+        .collect()
+}
+
 /// Editable value well. Drag horizontally to scrub (Shift for fine steps);
 /// click to type an exact expression. Values use tabular numerals.
 pub(crate) fn numeric_field(
@@ -721,14 +799,34 @@ pub(crate) fn numeric_field(
     tooltip: &'static str,
     cx: &mut Context<Studio>,
 ) -> Stateful<Div> {
+    numeric_field_showing(t, s, id, f, mark, tooltip, None, cx)
+}
+
+/// [`numeric_field`] showing `display` at rest instead of its own value text,
+/// so a row of fields can share one precision. Editing shows the exact value.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn numeric_field_showing(
+    t: Colors,
+    s: &Studio,
+    id: impl Into<ElementId>,
+    f: Field,
+    mark: FieldMark,
+    tooltip: &'static str,
+    display: Option<String>,
+    cx: &mut Context<Studio>,
+) -> Stateful<Div> {
     let active = s.field_is_active(f);
     let selected = s.field_selection_active(f);
     let scrubbing = s.panels.scrubbing_field() == Some(f);
     let name = f.is_text();
-    let value = match mark {
+    let value = match (display, mark) {
+        (_, _) if active || name => s.field_value(f),
+        (Some(display), _) => typeset_minus(&display),
         // Dense axis fields round their display; the exact value is edited.
-        FieldMark::Axis(_) if !active => compact_number(s.field_value(f), AXIS_FIELD_CHARS),
-        _ => s.field_value(f),
+        (None, FieldMark::Axis(_)) => {
+            typeset_minus(&compact_number(s.field_value(f), AXIS_FIELD_CHARS))
+        }
+        (None, _) => typeset_minus(&s.field_value(f)),
     };
     let mut field = row()
         .id(id.into())
@@ -860,18 +958,23 @@ pub(crate) fn vector_row(
     stacked: bool,
     cx: &mut Context<Studio>,
 ) -> Div {
+    // The three values share one precision, so a row never mixes
+    // "1.33", "1.3" and "1.329".
+    let texts: Vec<String> = (0..3).map(|axis| s.field_value(field_of(axis))).collect();
+    let mut shown = row_numbers(&texts, AXIS_FIELD_CHARS).into_iter();
     let fields = row()
         .flex_1()
         .min_w(px(0.))
         .gap(px(SP_1))
         .children((0..3).map(|axis| {
-            numeric_field(
+            numeric_field_showing(
                 t,
                 s,
                 SharedString::from(format!("{id}-{axis}")),
                 field_of(axis),
                 FieldMark::Axis(axis),
                 tooltips[axis],
+                shown.next(),
                 cx,
             )
             .flex_1()
@@ -1259,6 +1362,35 @@ mod tests {
         assert_eq!(compact("1234567"), "1234567");
         assert_eq!(compact("2.0000001"), "2");
         assert_eq!(compact("—"), "—");
+    }
+
+    #[test]
+    fn rows_share_one_precision_and_trim_together() {
+        use super::row_numbers;
+        let row = |texts: &[&str]| {
+            row_numbers(&texts.iter().map(|t| t.to_string()).collect::<Vec<_>>(), 5)
+        };
+        assert_eq!(row(&["1.33", "1.3", "1.329"]), ["1.33", "1.30", "1.33"]);
+        assert_eq!(row(&["-0.25", "0", "1"]), ["-0.25", "0.00", "1.00"]);
+        assert_eq!(row(&["0", "45", "0"]), ["0", "45", "0"]);
+        assert_eq!(row(&["1", "1", "1"]), ["1", "1", "1"]);
+        assert_eq!(row(&["2.2", "0.75", "1.5"]), ["2.20", "0.75", "1.50"]);
+        assert_eq!(row(&["-12.5", "0.333", "1"]), ["-12.5", "0.3", "1.0"]);
+        assert_eq!(row(&["0.25", "0.5", "0.75"]), ["0.25", "0.50", "0.75"]);
+        assert_eq!(row(&["-0.0001", "2", "1"]), ["0", "2", "1"]);
+        assert_eq!(row(&["1234.6", "1", "1"]), ["1235", "1", "1"]);
+        assert_eq!(row(&["—", "1.5", "2"]), ["—", "1.5", "2.0"]);
+    }
+
+    #[test]
+    fn negative_numbers_use_a_true_minus_sign() {
+        use super::typeset_minus;
+        assert_eq!(typeset_minus("-0.25"), "\u{2212}0.25");
+        assert_eq!(typeset_minus("r -0.3 × 2"), "r \u{2212}0.3 × 2");
+        assert_eq!(typeset_minus("-.5 m"), "\u{2212}.5 m");
+        assert_eq!(typeset_minus("X-ray 1-2"), "X-ray 1-2");
+        assert_eq!(typeset_minus("Re-open"), "Re-open");
+        assert_eq!(typeset_minus("1e-5"), "1e-5");
     }
 
     #[test]

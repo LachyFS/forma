@@ -334,12 +334,12 @@ fn parameters(
                 .child(
                     caption(
                         t,
-                        format!(
+                        typeset_minus(&format!(
                             "Face at {}, {}, {} · positive pulls out",
                             short(push.face.point.x),
                             short(push.face.point.y),
                             short(push.face.point.z)
-                        ),
+                        )),
                     )
                     .pt(px(SP_1)),
                 );
@@ -739,12 +739,14 @@ pub(super) fn regeneration_timing(s: &Studio, id: u64) -> Option<(String, String
     Some((total, detail))
 }
 
-/// One feature row in the summary's history list.
+/// One feature row in the summary's history list. `number` is its place in
+/// the list, which a pending feature before it shifts by one.
 fn history_row(
     t: Colors,
     s: &Studio,
     part: &PartData,
     index: usize,
+    number: usize,
     feature: &Feature,
     cx: &mut Context<Studio>,
 ) -> Stateful<Div> {
@@ -767,7 +769,7 @@ fn history_row(
                 .tabular()
                 .text_size(px(TEXT_SM))
                 .text_color(rgb(t.text_faint))
-                .child((index + 1).to_string()),
+                .child(number.to_string()),
         )
         .child(icon(
             feature_icon(feature),
@@ -792,7 +794,7 @@ fn history_row(
                 .child(feature.name.clone()),
         )
         .child(
-            caption(t, chip_hint(feature))
+            caption(t, typeset_minus(&chip_hint(feature)))
                 .tabular()
                 .text_color(rgb(t.text_faint)),
         )
@@ -809,6 +811,48 @@ fn history_row(
                 s.execute(Command::Timeline(TimelineCommand::Edit), w, cx);
             }
         }))
+}
+
+/// The feature a running tool adds on Done, where it will land in the
+/// history: accent ink, the live value, and no actions until it exists.
+fn pending_row(t: Colors, number: usize, glyph: Icon, name: String, hint: String) -> Stateful<Div> {
+    row()
+        .id("part-history-pending")
+        .h(px(H_SM + 2.))
+        .px(px(SP_1_5))
+        .gap(px(SP_2))
+        .rounded(px(R_SM))
+        .bg(rgb(t.accent_soft))
+        .child(
+            div()
+                .w(px(14.))
+                .flex_shrink_0()
+                .tabular()
+                .text_size(px(TEXT_SM))
+                .text_color(rgb(t.accent_text))
+                .child(number.to_string()),
+        )
+        .child(icon(glyph, ICON_SM, t.accent_text))
+        .child(
+            div()
+                .flex_1()
+                .min_w(px(0.))
+                .truncate()
+                .font_weight(WEIGHT_MEDIUM)
+                .text_color(rgb(t.text))
+                .child(name),
+        )
+        .child(
+            caption(t, typeset_minus(&hint))
+                .tabular()
+                .text_color(rgb(t.accent_text)),
+        )
+        .tooltip(tip_detail(
+            t,
+            "New feature",
+            "Added to the history here when you press Done",
+            None,
+        ))
 }
 
 /// Summary of a part with no feature selected: health, size, history and
@@ -926,14 +970,41 @@ fn part_summary(
                 .text_color(rgb(t.text_muted))
                 .child("History"),
         )
-        .children(
-            part.features
+        .children({
+            // A running tool's feature lands at the rollback marker, where
+            // Done inserts it; the rows after it renumber.
+            let pending = s.pending_feature(object);
+            let shift = pending.as_ref().map_or(0, |_| 1);
+            let mut rows: Vec<AnyElement> = part
+                .features
                 .iter()
                 .enumerate()
-                .map(|(index, feature)| history_row(t, s, part, index, feature, cx)),
+                .map(|(index, feature)| {
+                    let number = index + 1 + if index >= marker { shift } else { 0 };
+                    history_row(t, s, part, index, number, feature, cx).into_any_element()
+                })
+                .collect();
+            if let Some(pending) = pending {
+                let name = if pending.count > 1 {
+                    format!("{} × {}", pending.count, pending.name)
+                } else {
+                    pending.name.to_owned()
+                };
+                rows.insert(
+                    marker.min(rows.len()),
+                    pending_row(t, marker + 1, pending.icon, name, pending.hint).into_any_element(),
+                );
+            }
+            rows
+        })
+        // While a tool runs, only the history (where its feature lands)
+        // stays at full strength.
+        .child(
+            col()
+                .when(s.cad_tool_active(), |d| d.opacity(0.4))
+                .children(combine_row(t, s, cx))
+                .child(part_actions(t, cx)),
         )
-        .children(combine_row(t, s, cx))
-        .child(part_actions(t, cx))
 }
 
 fn part_actions(t: Colors, cx: &mut Context<Studio>) -> Div {
