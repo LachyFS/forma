@@ -1054,6 +1054,106 @@ pub(crate) async fn check_cad_tools_regressions(
         Ok(())
     })??;
 
+    // The selected feature's arrow: it lights under the pointer, a drag
+    // edits the value live as one undo step, and a right-click mid-drag
+    // puts the value back.
+    fresh(window, cx).await?;
+    let part = add_box_part(window, cx).await?;
+    let height = |s: &Studio| -> Option<f32> {
+        let part = s.scene.object_part(part)?;
+        crate::timeline::params::value(&part.features[0], crate::timeline::FeatureField::Size(1))
+    };
+    let (start_height, base, tip) =
+        window.update(cx, |s, w, cx| -> Result<(f32, Vec2, Vec2)> {
+            let feature = s.scene.object_part(part).context("no part")?.features[0].id;
+            s.execute(
+                Command::Timeline(crate::timeline::TimelineCommand::Select(feature)),
+                w,
+                cx,
+            );
+            let overlay = s.cad_tool_overlay().context("no feature overlay")?;
+            ensure!(
+                overlay.prisms.len() == 1 && overlay.arrows.len() == 1,
+                "the selected box shows {} ghosts and {} arrows",
+                overlay.prisms.len(),
+                overlay.arrows.len()
+            );
+            let (base, tip) = s.feature_arrow_screen().context("no feature arrow")?;
+            Ok((height(s).context("no height")?, base, tip))
+        })??;
+    let grip = base.lerp(tip, 0.5);
+    let along = (tip - base).normalize_or_zero();
+    pointer(window, Pointer::Move, grip, cx).await?;
+    window.update(cx, |s, _, _| -> Result<()> {
+        ensure!(
+            s.cad_tool.feature.hot,
+            "the feature arrow did not light under the pointer"
+        );
+        Ok(())
+    })??;
+    let undo_before = window.update(cx, |s, _, _| s.history_version())?;
+    pointer(window, Pointer::Down, grip, cx).await?;
+    for step in 1..=4 {
+        pointer(
+            window,
+            Pointer::Drag,
+            grip + along * (12.0 * step as f32),
+            cx,
+        )
+        .await?;
+    }
+    pointer(window, Pointer::Up, grip + along * 48.0, cx).await?;
+    wait_for(window, cx, idle).await?;
+    let dragged = window.update(cx, |s, _, _| -> Result<f32> {
+        let value = height(s).context("no height")?;
+        ensure!(
+            value > start_height + 1.0e-3 && s.history_version() != undo_before,
+            "dragging the arrow: height {start_height} -> {value}, undo version {} -> {}",
+            undo_before,
+            s.history_version()
+        );
+        Ok(value)
+    })??;
+    keys(window, &[ctrl("z")], cx).await?;
+    wait_for(window, cx, idle).await?;
+    window.update(cx, |s, _, _| -> Result<()> {
+        let value = height(s).context("no height")?;
+        ensure!(
+            (value - start_height).abs() < 1.0e-5,
+            "one Undo after the drag left the height at {value} (from {dragged}, started {start_height})"
+        );
+        Ok(())
+    })??;
+    // Right-click mid-drag cancels.
+    let (base, tip) =
+        window.update(cx, |s, _, _| s.feature_arrow_screen().context("no arrow"))??;
+    let grip = base.lerp(tip, 0.5);
+    pointer(window, Pointer::Move, grip, cx).await?;
+    pointer(window, Pointer::Down, grip, cx).await?;
+    pointer(window, Pointer::Drag, grip + along * 30.0, cx).await?;
+    window.update(cx, |s, w, cx| {
+        s.mouse_down(
+            &MouseDownEvent {
+                button: MouseButton::Right,
+                position: point(px(grip.x), px(grip.y)),
+                click_count: 1,
+                ..Default::default()
+            },
+            w,
+            cx,
+        );
+    })?;
+    pointer(window, Pointer::Up, grip, cx).await?;
+    wait_for(window, cx, idle).await?;
+    window.update(cx, |s, _, _| -> Result<()> {
+        let value = height(s).context("no height")?;
+        ensure!(
+            (value - start_height).abs() < 1.0e-5 && s.cad_tool.feature.drag.is_none(),
+            "right-click mid-drag left the height at {value} (started {start_height})"
+        );
+        Ok(())
+    })??;
+
     window.update(cx, |s, w, cx| {
         let (scene, history, selected, objects, settings, dirty, path, name) = saved;
         s.execute(Command::SetEditMode(EditMode::Object), w, cx);
@@ -1070,7 +1170,7 @@ pub(crate) async fn check_cad_tools_regressions(
     wait_for(window, cx, idle).await?;
     settle(window, cx).await?;
     println!(
-        "cad_tools_regressions=preview_isolation,sketch_on_face_ends_tool,push_pull_inches,adjust_tab,adjust_hides_after_edit,adjust_flip_reinfers,timeline_esc_first,multi_face_ghosts,chamfer_stale_hover,open_ends_tool PASS ({:.1} s)",
+        "cad_tools_regressions=preview_isolation,sketch_on_face_ends_tool,push_pull_inches,adjust_tab,adjust_hides_after_edit,adjust_flip_reinfers,timeline_esc_first,multi_face_ghosts,chamfer_stale_hover,open_ends_tool,feature_handle_drag PASS ({:.1} s)",
         started.elapsed().as_secs_f32()
     );
     Ok(())

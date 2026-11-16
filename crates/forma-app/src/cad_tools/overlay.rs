@@ -217,7 +217,10 @@ impl Studio {
             None => {
                 if let Some(id) = self.part_editing() {
                     self.part_edit_overlay(id, &mut overlay);
-                } else if let Some(hover) = self
+                    return (!overlay.is_empty()).then_some(overlay);
+                }
+                self.feature_context_overlay(&mut overlay);
+                if let Some(hover) = self
                     .cad_tool
                     .region_hover
                     .filter(|hover| hover.revision == self.scene_revision)
@@ -1323,10 +1326,10 @@ fn paint_lathe(
 fn paint_arrow(arrow: &ArrowPaint, c: Colors, window: &mut Window) {
     let direction = (arrow.tip - arrow.base).normalize_or(Vec2::NEG_Y);
     let side = Vec2::new(-direction.y, direction.x);
-    let (head, half) = if arrow.hot { (14.0, 7.5) } else { (12.0, 6.5) };
+    let (head, half) = if arrow.hot { (15.0, 8.0) } else { (12.0, 6.5) };
     let neck = arrow.tip - direction * head;
     let shaft = [to_point(arrow.base), to_point(neck)];
-    let width = if arrow.hot { 3.0 } else { 2.4 };
+    let width = if arrow.hot { 3.2 } else { 2.4 };
     stroke_runs(window, &[shaft.to_vec()], width + 3.0, ink(c.canvas, 0.45));
     stroke_runs(window, &[shaft.to_vec()], width, ink(arrow.color, 1.0));
     let triangle = vec![

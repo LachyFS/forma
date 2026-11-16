@@ -149,6 +149,22 @@ impl Prism {
         prism
     }
 
+    /// A prism over one convex world polygon (a primitive's cross-section),
+    /// swept along `normal`.
+    pub(crate) fn from_convex(points: Vec<Vec3>, normal: Vec3) -> Self {
+        let count = points.len() as u32;
+        let mut prism = Prism {
+            triangles: (1..count.saturating_sub(1))
+                .map(|i| [0, i, i + 1])
+                .collect(),
+            loops: vec![(0..count).collect()],
+            points,
+            normal: normal.normalize_or_zero(),
+        };
+        prism.orient();
+        prism
+    }
+
     /// Makes caps wind counter-clockwise about `normal` (mirrored transforms
     /// flip them), so face culling at paint time is reliable.
     fn orient(&mut self) {
