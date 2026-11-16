@@ -338,7 +338,9 @@ pub(super) fn panel(t: Colors, s: &Studio, cx: &mut Context<Studio>) -> Option<D
                 .child(name),
         )
         .child(badge(t, "Draw mode", BadgeTone::Accent));
-    // One quiet line of counts; open ends keep the warning ink.
+    // One quiet line of counts; open ends, when there are any, add a count
+    // in the warning ink. The chain being drawn is not counted, so a zero
+    // would contradict the loose line on the canvas.
     let stats = row()
         .id("draw-panel-stats")
         .h(px(20.))
@@ -349,14 +351,16 @@ pub(super) fn panel(t: Colors, s: &Studio, cx: &mut Context<Studio>) -> Option<D
         .child(plural(counts.curves, "curve", "curves"))
         .child(div().text_color(rgb(t.text_faint)).child("\u{b7}"))
         .child(plural(counts.profiles, "profile", "profiles"))
-        .child(div().text_color(rgb(t.text_faint)).child("\u{b7}"))
-        .child(
-            div()
-                .when(counts.open_ends > 0, |d| {
-                    d.text_color(rgb(t.warning)).font_weight(WEIGHT_MEDIUM)
-                })
-                .child(plural(counts.open_ends, "open end", "open ends")),
-        )
+        .when(counts.open_ends > 0, |stats| {
+            stats
+                .child(div().text_color(rgb(t.text_faint)).child("\u{b7}"))
+                .child(
+                    div()
+                        .text_color(rgb(t.warning))
+                        .font_weight(WEIGHT_MEDIUM)
+                        .child(plural(counts.open_ends, "open end", "open ends")),
+                )
+        })
         .tooltip(tip(
             t,
             "Profiles are closed regions Extrude and Revolve can use · Open ends are curve ends no other curve meets",

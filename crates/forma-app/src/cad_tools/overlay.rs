@@ -712,7 +712,13 @@ impl Studio {
             Some(EditHover::Face(group)) if !selected_faces.iter().any(|(g, _)| *g == group) => {
                 // A light tint and a thinner, softer outline: plainly a
                 // pre-highlight, not a selection.
-                paint_face(group, FACE_HOVER_TINT, FACE_HOVER_OUTLINE, 0.75, overlay);
+                paint_face(
+                    group,
+                    FACE_HOVER_TINT,
+                    FACE_HOVER_OUTLINE,
+                    FACE_HOVER_ALPHA,
+                    overlay,
+                );
             }
             Some(EditHover::Edge(index)) => {
                 if let Some(points) = edge_points(index) {
@@ -961,9 +967,11 @@ const FACE_TINT_HOVERED: f32 = 0.3;
 /// The outline of a selected face's outer loop.
 const FACE_OUTLINE: f32 = 2.0;
 /// Pre-highlight of an unselected face under the pointer: plainly lighter
-/// than a selection, with a thinner, softer outline.
-const FACE_HOVER_TINT: f32 = 0.1;
-const FACE_HOVER_OUTLINE: f32 = 1.5;
+/// than a selection, with a hairline outline at half strength, so a hovered
+/// wall beside a selection never reads as a second selected face.
+const FACE_HOVER_TINT: f32 = 0.07;
+const FACE_HOVER_OUTLINE: f32 = 1.0;
+const FACE_HOVER_ALPHA: f32 = 0.5;
 
 /// Accent tint over a previewed chamfer face's lit grey: enough to mark
 /// the new face, light enough that its shading still reads.
