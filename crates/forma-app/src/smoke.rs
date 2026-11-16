@@ -775,7 +775,7 @@ async fn check_theme_workflow(
     cx: &mut AsyncApp,
 ) -> Result<()> {
     use crate::theme::Theme;
-    let (scene, selected, dirty, undo, redo, samples, original, frame, settings) =
+    let (scene, selected, dirty, undo, redo, original, settings) =
         window.update(cx, |s, _, _| {
             (
                 s.scene.clone(),
@@ -783,9 +783,7 @@ async fn check_theme_workflow(
                 s.dirty,
                 s.history.can_undo(),
                 s.history.can_redo(),
-                s.samples,
                 s.theme,
-                s.frame_image.clone(),
                 s.settings.clone(),
             )
         })?;
@@ -910,16 +908,17 @@ async fn check_theme_workflow(
                 && s.history.can_redo() == redo,
             "theme changes modified the document or undo history"
         );
+        // The viewport backdrop and selection colour follow the theme, so a
+        // theme change re-renders the frame; no other render setting changes.
+        let themed = |mut settings: forma_render::RenderSettings| {
+            settings.light_viewport = false;
+            settings.selection_rgb = 0;
+            settings
+        };
         ensure!(
-            s.samples == samples && s.settings == settings,
-            "theme changes reset the viewport samples"
+            themed(s.settings.clone()) == themed(settings.clone()),
+            "theme changes altered the render settings"
         );
-        if let (Some(before), Some(after)) = (&frame, &s.frame_image) {
-            ensure!(
-                std::sync::Arc::ptr_eq(before, after),
-                "theme changes replaced the completed viewport frame"
-            );
-        }
         s.apply_theme(original, cx);
         Ok(())
     })??;
