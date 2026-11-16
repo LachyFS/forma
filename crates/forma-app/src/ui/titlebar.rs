@@ -66,6 +66,9 @@ fn mode_switcher(t: Colors, s: &Studio, cx: &mut Context<Studio>) -> impl IntoEl
     }))
 }
 
+/// Opens the command palette. While the palette is open the field rests: the
+/// palette's own input has the caret, and two focused inputs read as two
+/// places to type.
 fn search_field(t: Colors, compact: bool, s: &Studio, cx: &mut Context<Studio>) -> AnyElement {
     let open = s.palette_open && !s.palette_exports_only;
     if compact {
@@ -88,9 +91,9 @@ fn search_field(t: Colors, compact: bool, s: &Studio, cx: &mut Context<Studio>) 
             .px(px(SP_2 + 2.))
             .gap(px(SP_2))
             .rounded(px(R_MD))
-            .bg(rgb(if open { t.field_hover } else { t.field }))
+            .bg(rgb(t.field))
             .border_1()
-            .border_color(rgb(if open { t.focus } else { t.hairline }))
+            .border_color(rgb(t.hairline))
             .cursor_pointer()
             .hover(move |d| d.bg(rgb(t.field_hover)).border_color(rgb(t.border)))
             .child(icon(Icon::Search, ICON_SM, t.text_faint))
@@ -112,6 +115,8 @@ fn search_field(t: Colors, compact: bool, s: &Studio, cx: &mut Context<Studio>) 
 }
 
 /// One-click image export, plus a chevron that lists every export format.
+/// With nothing in the scene there is nothing to export, so the pair steps
+/// back from the primary accent to a neutral button.
 fn export_controls(
     t: Colors,
     compact: bool,
@@ -119,28 +124,36 @@ fn export_controls(
     cx: &mut Context<Studio>,
 ) -> impl IntoElement {
     let formats_open = s.palette_open && s.palette_exports_only;
+    let primary = !s.scene.objects.is_empty();
+    let (tone, ink, divider, open_fill) = if primary {
+        (Tone::Primary, t.on_accent, t.accent_hover, t.accent_hover)
+    } else {
+        (Tone::Secondary, t.text_muted, t.border, t.control_active)
+    };
     row()
         .flex_shrink_0()
         .rounded(px(R_MD))
         .overflow_hidden()
         .child(on_command(
-            button_base(t, "export-image", Tone::Primary, H_MD)
+            button_base(t, "export-image", tone, H_MD)
                 .px(px(SP_2 + 2.))
                 .rounded_r(px(0.))
+                .when(!primary, |d| d.border_r_0().text_color(rgb(ink)))
                 .font_weight(WEIGHT_MEDIUM)
-                .child(icon(Icon::ExportImage, ICON_SM, t.on_accent))
+                .child(icon(Icon::ExportImage, ICON_SM, ink))
                 .when(!compact, |d| d.child("Export"))
                 .tooltip(command_tip(t, Command::ExportImage)),
             Command::ExportImage,
             cx,
         ))
-        .child(div().w(px(1.)).h(px(H_MD)).bg(rgb(t.accent_hover)))
+        .child(div().w(px(1.)).h(px(H_MD)).bg(rgb(divider)))
         .child(
-            button_base(t, "export-formats", Tone::Primary, H_MD)
+            button_base(t, "export-formats", tone, H_MD)
                 .w(px(24.))
                 .rounded_l(px(0.))
-                .when(formats_open, |d| d.bg(rgb(t.accent_hover)))
-                .child(icon(Icon::ChevronDown, ICON_SM, t.on_accent))
+                .when(!primary, |d| d.border_l_0())
+                .when(formats_open, |d| d.bg(rgb(open_fill)))
+                .child(icon(Icon::ChevronDown, ICON_SM, ink))
                 .tooltip(tip_detail(
                     t,
                     "Export formats",

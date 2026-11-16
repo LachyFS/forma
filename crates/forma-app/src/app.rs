@@ -3128,70 +3128,62 @@ pub(crate) fn palette_commands(query: &str) -> Vec<(&'static str, &'static str, 
             Command::SaveAs,
         ),
         ("Import Wavefront OBJ…", "", Command::ImportObj),
-        ("Import STL with units…", "", Command::ImportStl),
+        ("Import STL…", "", Command::ImportStl),
         ("Export image (PNG)…", "", Command::ExportImage),
         ("Export Wavefront OBJ…", "", Command::ExportObj),
-        ("Export STL with units and scope…", "", Command::ExportStl),
-        (
-            "Import STEP as a part…",
-            "",
-            Command::Cad(CadCommand::ImportStep),
-        ),
-        (
-            "Export parts as STEP…",
-            "",
-            Command::Cad(CadCommand::ExportStep),
-        ),
+        ("Export STL…", "", Command::ExportStl),
+        ("Import STEP…", "", Command::Cad(CadCommand::ImportStep)),
+        ("Export STEP…", "", Command::Cad(CadCommand::ExportStep)),
         // Add
-        ("Add cube", "", Command::Add(Primitive::Cube)),
-        ("Add sphere", "", Command::Add(Primitive::Sphere)),
-        ("Add cylinder", "", Command::Add(Primitive::Cylinder)),
-        ("Add torus", "", Command::Add(Primitive::Torus)),
-        ("Add plane", "", Command::Add(Primitive::Plane)),
+        ("Add cube mesh", "", Command::Add(Primitive::Cube)),
+        ("Add sphere mesh", "", Command::Add(Primitive::Sphere)),
+        ("Add cylinder mesh", "", Command::Add(Primitive::Cylinder)),
+        ("Add torus mesh", "", Command::Add(Primitive::Torus)),
+        ("Add plane mesh", "", Command::Add(Primitive::Plane)),
         // Draw
         (
-            "Draw: New sketch",
+            "New sketch",
             "D",
             Command::Draw(crate::sketch::DrawCommand::NewSketch),
         ),
         (
-            "Draw: Edit sketch",
+            "Edit sketch",
             "Return",
             Command::Draw(crate::sketch::DrawCommand::EditSketch),
         ),
         (
-            "Draw: Finish sketch",
+            "Finish sketch",
             "Return",
             Command::Draw(crate::sketch::DrawCommand::Finish),
         ),
         // Part
         (
-            "Part: Box",
+            "Add box part",
             "",
             Command::Cad(CadCommand::AddPart(PartShape::Box)),
         ),
         (
-            "Part: Cylinder",
+            "Add cylinder part",
             "",
             Command::Cad(CadCommand::AddPart(PartShape::Cylinder)),
         ),
         (
-            "Part: Sphere",
+            "Add sphere part",
             "",
             Command::Cad(CadCommand::AddPart(PartShape::Sphere)),
         ),
         (
-            "Combine: Join",
+            "Boolean join",
             "",
             Command::Cad(CadCommand::Combine(FeatureOperation::Join)),
         ),
         (
-            "Combine: Cut",
+            "Boolean cut",
             "",
             Command::Cad(CadCommand::Combine(FeatureOperation::Cut)),
         ),
         (
-            "Combine: Intersect",
+            "Boolean intersect",
             "",
             Command::Cad(CadCommand::Combine(FeatureOperation::Intersect)),
         ),
@@ -3206,83 +3198,83 @@ pub(crate) fn palette_commands(query: &str) -> Vec<(&'static str, &'static str, 
             Command::Cad(CadCommand::ConvertToMesh),
         ),
         (
-            "Extrude sketch",
+            "Extrude sketch as a new part",
             "",
             Command::Cad(CadCommand::ExtrudeSketch),
         ),
         (
-            "Part: Extrude sketch regions",
+            "Extrude sketch regions",
             "E",
             Command::CadTool(crate::cad_tools::ToolCommand::Extrude),
         ),
         (
-            "Part: Revolve sketch regions",
+            "Revolve sketch regions",
             "⇧ R",
             Command::CadTool(crate::cad_tools::ToolCommand::Revolve),
         ),
         (
-            "Part: Push/Pull faces",
+            "Push/Pull faces",
             "P",
             Command::CadTool(crate::cad_tools::ToolCommand::PushPull),
         ),
         (
-            "Part: Chamfer edges",
-            platform_shortcut("⌘ B in part edit", "Ctrl+B in part edit"),
+            "Chamfer edges",
+            platform_shortcut("⌘ B", "Ctrl+B"),
             Command::CadTool(crate::cad_tools::ToolCommand::Chamfer),
         ),
         (
-            "Part: Sketch on face",
+            "Sketch on face",
             "D",
             Command::CadTool(crate::cad_tools::ToolCommand::SketchOnFace),
         ),
         // Timeline (the selected part's history)
         (
-            "Timeline: Edit feature sketch",
+            "Edit feature sketch",
             "Return",
             Command::Timeline(TimelineCommand::EditSketch),
         ),
         (
-            "Timeline: Rename feature",
+            "Rename feature",
             "F2",
             Command::Timeline(TimelineCommand::Rename),
         ),
         (
-            "Timeline: Suppress or unsuppress feature",
+            "Suppress or unsuppress feature",
             "",
             Command::Timeline(TimelineCommand::ToggleSuppress),
         ),
         (
-            "Timeline: Delete feature",
+            "Delete feature",
             "Delete",
             Command::Timeline(TimelineCommand::Delete),
         ),
         (
-            "Timeline: Roll back to selected feature",
+            "Roll back to selected feature",
             "",
             Command::Timeline(TimelineCommand::RollBackHere),
         ),
         (
-            "Timeline: Roll back one feature",
+            "Roll back one feature",
             "⇧ ←",
             Command::Timeline(TimelineCommand::StepMarker(-1)),
         ),
         (
-            "Timeline: Roll forward one feature",
+            "Roll forward one feature",
             "⇧ →",
             Command::Timeline(TimelineCommand::StepMarker(1)),
         ),
         (
-            "Timeline: Roll to end",
+            "Roll to end",
             "",
             Command::Timeline(TimelineCommand::RollToEnd),
         ),
         (
-            "Timeline: Previous feature",
+            "Previous feature",
             "←",
             Command::Timeline(TimelineCommand::Previous),
         ),
         (
-            "Timeline: Next feature",
+            "Next feature",
             "→",
             Command::Timeline(TimelineCommand::Next),
         ),
@@ -3425,7 +3417,7 @@ pub(crate) fn palette_commands(query: &str) -> Vec<(&'static str, &'static str, 
         // Workspace
         ("Keyboard shortcuts", "?", Command::ToggleHelp),
         (
-            "Preferences: Color theme",
+            "Color theme…",
             platform_shortcut("⇧ ⌘ T", "Ctrl+Shift+T"),
             Command::ToggleTheme,
         ),
@@ -3443,48 +3435,19 @@ pub(crate) fn palette_commands(query: &str) -> Vec<(&'static str, &'static str, 
 
 impl Studio {
     /// Use one filtered list for drawing and keyboard dispatch so scoped menus
-    /// cannot execute an item from the unrestricted command palette. With no
-    /// query, recently run commands come first.
+    /// cannot execute an item from the unrestricted command palette. See
+    /// `ui::overlays::palette` for the order: commands for the selection,
+    /// recent commands, then every group; or ranked search results.
     pub(crate) fn palette_items(&self) -> Vec<(&'static str, &'static str, Command)> {
-        let mut items: Vec<_> = palette_commands(&self.palette_query)
+        self.palette_entries()
             .into_iter()
-            .filter(|(_, _, command)| {
-                !self.palette_exports_only
-                    || matches!(
-                        command,
-                        Command::ExportObj
-                            | Command::ExportStl
-                            | Command::ExportImage
-                            | Command::Cad(crate::cad::CadCommand::ExportStep)
-                    )
-            })
-            .collect();
-        let recent = self.palette_recent_count();
-        if recent > 0 {
-            let recents = self.panels.recent_commands();
-            let mut front: Vec<_> = recents
-                .iter()
-                .filter_map(|command| items.iter().find(|(_, _, c)| c == command).copied())
-                .collect();
-            items.retain(|(_, _, command)| !recents.contains(command));
-            front.extend(items);
-            items = front;
-        }
-        items
+            .map(|entry| (entry.label, entry.shortcut, entry.command))
+            .collect()
     }
 
     /// Why a palette command cannot run now (shown on its row), if so.
     pub(crate) fn command_unavailable(&self, command: Command) -> Option<&'static str> {
         crate::exchange::export_unavailable(&self.scene, command)
-    }
-
-    /// How many leading palette items are recent commands.
-    pub(crate) fn palette_recent_count(&self) -> usize {
-        if self.palette_query.is_empty() && !self.palette_exports_only {
-            self.panels.recent_commands().len()
-        } else {
-            0
-        }
     }
 
     fn selected_material_id(&self) -> Option<u64> {

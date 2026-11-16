@@ -100,6 +100,21 @@ fn restore_scene(s: &mut Studio, cx: &mut gpui::Context<Studio>) {
     }
 }
 
+/// Remove every object, as on first launch with an empty project.
+fn empty_scene(s: &mut Studio, cx: &mut gpui::Context<Studio>) {
+    stash_scene(s);
+    let ids: Vec<u64> = s.scene.objects.iter().map(|object| object.id).collect();
+    s.select_objects(Default::default(), None);
+    for id in ids {
+        s.scene.remove(id);
+    }
+    s.invalidate(true, cx);
+}
+fn leave_empty_scene(s: &mut Studio, cx: &mut gpui::Context<Studio>) {
+    restore_scene(s, cx);
+    select_hero(s, cx);
+}
+
 /// The CAD showcase scene, with `select` selected, in `mode`.
 pub(crate) fn parts(
     s: &mut Studio,
@@ -229,6 +244,55 @@ pub(crate) fn scenarios() -> Vec<Scenario> {
             leave: |s, w, cx| s.execute(Command::TogglePalette, w, cx),
         },
         Scenario {
+            // A mesh selected, with a few commands run before: the palette
+            // opens on commands for meshes, then recent commands.
+            name: "commands-mesh",
+            enter: |s, w, cx| {
+                select_named(s, "Torus");
+                for command in [Command::FrameSelected, Command::ToggleGrid] {
+                    s.panels.remember_command(command);
+                }
+                s.invalidate(false, cx);
+                s.execute(Command::TogglePalette, w, cx);
+            },
+            leave: |s, w, cx| {
+                s.execute(Command::TogglePalette, w, cx);
+                s.panels.forget_recent_commands();
+                select_hero(s, cx);
+            },
+        },
+        Scenario {
+            // A partial query ranks word starts first and highlights matches.
+            name: "commands-search-part",
+            enter: |s, w, cx| {
+                s.execute(Command::TogglePalette, w, cx);
+                s.palette_query = "ex st".into();
+                s.palette_index = 1;
+            },
+            leave: |s, w, cx| s.execute(Command::TogglePalette, w, cx),
+        },
+        Scenario {
+            // The list scrolls to keep a keyboard selection below the fold
+            // in view, heading included.
+            name: "commands-scrolled",
+            enter: |s, w, cx| {
+                s.execute(Command::TogglePalette, w, cx);
+                s.palette_index = 16;
+            },
+            leave: |s, w, cx| s.execute(Command::TogglePalette, w, cx),
+        },
+        Scenario {
+            name: "commands-narrow",
+            enter: |s, w, cx| {
+                resize(w, 1000., 650.);
+                s.execute(Command::TogglePalette, w, cx);
+            },
+            leave: |s, w, cx| {
+                s.execute(Command::TogglePalette, w, cx);
+                restore_size(s, w, cx);
+            },
+        },
+        Scenario {
             name: "export-formats",
             enter: |s, w, cx| {
                 s.execute(Command::TogglePalette, w, cx);
@@ -277,6 +341,22 @@ pub(crate) fn scenarios() -> Vec<Scenario> {
             name: "add-menu",
             enter: |s, _, cx| s.open_menu(MenuKind::Add, Anchor::ToolRail, cx),
             leave: |s, _, _| s.panels.close_menu(),
+        },
+        Scenario {
+            name: "add-menu-outliner",
+            enter: |s, _, cx| s.open_menu(MenuKind::Add, Anchor::Outliner, cx),
+            leave: |s, _, _| s.panels.close_menu(),
+        },
+        Scenario {
+            name: "add-menu-paper",
+            enter: |s, _, cx| {
+                theme(s, Theme::Paper, cx);
+                s.open_menu(MenuKind::Add, Anchor::ToolRail, cx);
+            },
+            leave: |s, _, cx| {
+                s.panels.close_menu();
+                theme(s, Theme::Forma, cx);
+            },
         },
         Scenario {
             name: "view-menu",
@@ -396,18 +476,41 @@ pub(crate) fn scenarios() -> Vec<Scenario> {
         },
         Scenario {
             name: "empty-scene",
+            enter: |s, _, cx| empty_scene(s, cx),
+            leave: |s, _, cx| leave_empty_scene(s, cx),
+        },
+        Scenario {
+            name: "empty-scene-paper",
             enter: |s, _, cx| {
-                stash_scene(s);
-                let ids: Vec<u64> = s.scene.objects.iter().map(|object| object.id).collect();
-                s.select_objects(Default::default(), None);
-                for id in ids {
-                    s.scene.remove(id);
-                }
-                s.invalidate(true, cx);
+                theme(s, Theme::Paper, cx);
+                empty_scene(s, cx);
             },
             leave: |s, _, cx| {
-                restore_scene(s, cx);
-                select_hero(s, cx);
+                leave_empty_scene(s, cx);
+                theme(s, Theme::Forma, cx);
+            },
+        },
+        Scenario {
+            name: "empty-scene-narrow",
+            enter: |s, w, cx| {
+                resize(w, 1000., 650.);
+                empty_scene(s, cx);
+            },
+            leave: |s, w, cx| {
+                leave_empty_scene(s, cx);
+                restore_size(s, w, cx);
+            },
+        },
+        Scenario {
+            // With nothing in the scene the palette suggests ways to start.
+            name: "commands-empty",
+            enter: |s, w, cx| {
+                empty_scene(s, cx);
+                s.execute(Command::TogglePalette, w, cx);
+            },
+            leave: |s, w, cx| {
+                s.execute(Command::TogglePalette, w, cx);
+                leave_empty_scene(s, cx);
             },
         },
         Scenario {

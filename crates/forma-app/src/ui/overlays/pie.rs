@@ -3,6 +3,7 @@ use super::super::assets::icon;
 use super::super::commands::shading_icon;
 use super::super::components::*;
 use super::super::tokens::*;
+use super::{float_border, float_shadow};
 use crate::app::{Command, Studio};
 use crate::shading_pie::{CARD_HALF_SIZE, CHOICES};
 use crate::theme::Colors;
@@ -114,8 +115,8 @@ pub(super) fn overlay(t: Colors, s: &Studio, cx: &mut Context<Studio>) -> AnyEle
                 .rounded_full()
                 .bg(rgb(t.overlay))
                 .border_1()
-                .border_color(rgb(t.border))
-                .shadow(elevation(t, 1))
+                .border_color(float_border(t))
+                .shadow(float_shadow(t))
                 .items_center()
                 .justify_center()
                 .gap(px(2. * scale))
@@ -128,8 +129,8 @@ pub(super) fn overlay(t: Colors, s: &Studio, cx: &mut Context<Studio>) -> AnyEle
                 )
                 .child(
                     div()
-                        .text_size(px(9. * scale))
-                        .text_color(rgb(t.text_faint))
+                        .text_size(px(TEXT_XS * scale))
+                        .text_color(rgb(t.text_muted))
                         .child("Shading"),
                 ),
         )
@@ -149,19 +150,19 @@ pub(super) fn overlay(t: Colors, s: &Studio, cx: &mut Context<Studio>) -> AnyEle
                 .gap(px(8. * scale))
                 .rounded(px(R_LG * scale))
                 .border_1()
-                .border_color(rgb(if highlighted {
-                    t.focus
+                .border_color(if highlighted {
+                    hex(t.focus)
                 } else if active {
-                    t.accent_border
+                    hex(t.accent_border)
                 } else {
-                    t.border
-                }))
+                    float_border(t)
+                })
                 .bg(rgb(if highlighted {
                     t.accent_soft
                 } else {
                     t.overlay
                 }))
-                .shadow(elevation(t, 2))
+                .shadow(float_shadow(t))
                 .cursor_pointer()
                 .child(icon(
                     shading_icon(mode),
@@ -175,7 +176,7 @@ pub(super) fn overlay(t: Colors, s: &Studio, cx: &mut Context<Studio>) -> AnyEle
                 .child(
                     div()
                         .flex_1()
-                        .text_size(px(TEXT_MD * scale))
+                        .text_size(px(TEXT_LG * scale))
                         .font_weight(WEIGHT_MEDIUM)
                         .text_color(rgb(t.text))
                         .child(label(mode)),

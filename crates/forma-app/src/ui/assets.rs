@@ -58,6 +58,9 @@ icons! {
     Plane => "forma-plane",
     Mesh => "forma-mesh",
     Part => "cuboid",
+    PartBox => "forma-part-box",
+    PartCylinder => "forma-part-cylinder",
+    PartSphere => "forma-part-sphere",
     Sketch => "spline",
     Cone => "forma-cone",
     // CAD features.

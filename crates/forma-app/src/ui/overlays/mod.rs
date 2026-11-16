@@ -2,7 +2,7 @@
 //! palette, dialogs and popovers. Each overlay has a backdrop that consumes
 //! pointer input, so a dismissing click never selects in the viewport.
 pub(crate) mod menu;
-mod palette;
+pub(crate) mod palette;
 mod pie;
 mod preview;
 mod reference;
@@ -32,7 +32,7 @@ pub(super) fn backdrop(
         .absolute()
         .inset_0()
         .occlude()
-        .when(scrim, |d| d.bg(rgba(t.scrim)))
+        .when(scrim, |d| d.bg(scrim_color(t)))
         .on_mouse_down(
             MouseButton::Left,
             cx.listener(move |s, _, w, cx| {
@@ -52,6 +52,79 @@ pub(super) fn backdrop(
         .on_mouse_up(MouseButton::Right, |_, _, cx| cx.stop_propagation())
         .on_mouse_up(MouseButton::Middle, |_, _, cx| cx.stop_propagation())
         .on_scroll_wheel(|_, _, cx| cx.stop_propagation())
+}
+
+/// Modal backdrop tint. Dark themes cap it at 40% so the scene stays
+/// readable behind a dialog; separation comes from the card's shadow and
+/// border instead.
+fn scrim_color(t: Colors) -> Hsla {
+    let mut scrim = hex_alpha(t.scrim);
+    scrim.a = scrim.a.min(0.4);
+    scrim
+}
+
+/// Outline of floating cards: a faint light edge on dark themes, where a
+/// dark shadow alone disappears against the scene.
+pub(super) fn float_border(t: Colors) -> Hsla {
+    if t.dark {
+        tint(0xffffff, 0.08)
+    } else {
+        hex(t.border)
+    }
+}
+
+/// Soft shadow under the palette, menus and dialogs.
+pub(super) fn float_shadow(t: Colors) -> Vec<BoxShadow> {
+    let deep = hex_alpha(t.shadow);
+    let mut near = deep;
+    near.a *= 0.5;
+    vec![
+        BoxShadow {
+            color: deep,
+            offset: point(px(0.), px(12.)),
+            blur_radius: px(24.),
+            spread_radius: px(-2.),
+        },
+        BoxShadow {
+            color: near,
+            offset: point(px(0.), px(1.)),
+            blur_radius: px(3.),
+            spread_radius: px(0.),
+        },
+    ]
+}
+
+/// Fill of the keyboard-selected row in lists: a neutral tint, so the accent
+/// is left for the 2px bar beside it and for matched text.
+pub(super) fn selected_fill(t: Colors) -> Hsla {
+    tint(t.text, if t.dark { 0.075 } else { 0.06 })
+}
+
+/// Fill of a row under the pointer that is not selected.
+pub(super) fn hover_fill(t: Colors) -> Hsla {
+    tint(t.text, if t.dark { 0.04 } else { 0.035 })
+}
+
+/// The 2px accent bar at the left edge of a selected row.
+pub(super) fn selection_bar(color: u32, inset: f32) -> Div {
+    div()
+        .absolute()
+        .left_0()
+        .top(px(inset))
+        .bottom(px(inset))
+        .w(px(2.))
+        .rounded_full()
+        .bg(rgb(color))
+}
+
+/// Section heading inside menus and the palette.
+/// Stronger than the panels' quiet group label: in a floating list the
+/// headings are what the eye scans first.
+pub(super) fn heading(t: Colors, text: impl Into<SharedString>) -> Div {
+    super::components::group_label(t, text)
+        .flex_shrink_0()
+        .font_weight(WEIGHT_SEMIBOLD)
+        .text_color(rgb(t.text_muted))
 }
 
 /// Content inside a backdrop: presses stay inside instead of dismissing.
@@ -90,6 +163,9 @@ pub(super) fn overlays(
     cx: &mut Context<Studio>,
 ) -> Vec<AnyElement> {
     let mut layers = Vec::new();
+    if !s.palette_open {
+        palette::rest();
+    }
     if s.preview_open {
         layers.push(preview::overlay(t, s, cx));
     }

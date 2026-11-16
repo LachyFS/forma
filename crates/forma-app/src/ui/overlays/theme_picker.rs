@@ -3,7 +3,10 @@
 use super::super::assets::{Icon, icon};
 use super::super::components::*;
 use super::super::tokens::*;
-use super::{animate_in, backdrop, contain};
+use super::{
+    animate_in, backdrop, contain, float_border, float_shadow, hover_fill, selected_fill,
+    selection_bar,
+};
 use crate::app::Studio;
 use crate::theme::{Colors, Theme};
 use gpui::{prelude::*, *};
@@ -107,12 +110,15 @@ pub(super) fn overlay(t: Colors, s: &Studio, cx: &mut Context<Studio>) -> AnyEle
             let active = index == selected;
             row()
                 .id(SharedString::from(format!("theme-{}", theme.id())))
+                .relative()
                 .h(px(68.))
                 .flex_shrink_0()
                 .px(px(SP_2 + 2.))
                 .gap(px(SP_3 + 2.))
                 .rounded(px(R_MD + 1.))
-                .bg(if active { hex(t.accent_soft) } else { clear() })
+                .bg(if active { selected_fill(t) } else { clear() })
+                .when(!active, |d| d.hover(move |d| d.bg(hover_fill(t))))
+                .when(active, |d| d.child(selection_bar(t.accent, 18.)))
                 .cursor_pointer()
                 .child(swatch(theme))
                 .child(
@@ -155,6 +161,8 @@ pub(super) fn overlay(t: Colors, s: &Studio, cx: &mut Context<Studio>) -> AnyEle
                     .id("theme-picker")
                     .w(px(520.))
                     .max_w(relative(0.92))
+                    .border_color(float_border(t))
+                    .shadow(float_shadow(t))
                     .max_h(relative(0.86))
                     .child(dialog_header(t, Some(Icon::Theme), "Color theme", None))
                     .child(

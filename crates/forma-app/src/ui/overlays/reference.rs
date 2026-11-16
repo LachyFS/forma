@@ -2,7 +2,7 @@
 use super::super::assets::Icon;
 use super::super::components::*;
 use super::super::tokens::*;
-use super::{animate_in, backdrop, contain};
+use super::{animate_in, backdrop, contain, float_border, float_shadow};
 use crate::app::{Command, Studio};
 use crate::platform_shortcut;
 use crate::theme::Colors;
@@ -147,7 +147,7 @@ pub(super) fn overlay(t: Colors, cx: &mut Context<Studio>) -> AnyElement {
                                     .flex_1()
                                     .min_w(px(0.))
                                     .truncate()
-                                    .text_color(rgb(t.text_muted))
+                                    .text_color(rgb(t.text))
                                     .child(label),
                             )
                             .child(keycaps(t, shortcut))
@@ -170,6 +170,8 @@ pub(super) fn overlay(t: Colors, cx: &mut Context<Studio>) -> AnyElement {
                 .id("help-panel")
                 .w(px(860.))
                 .max_w(relative(0.94))
+                .border_color(float_border(t))
+                .shadow(float_shadow(t))
                 .max_h(relative(0.9))
                 .child(dialog_header(
                     t,

@@ -356,7 +356,7 @@ pub(super) fn outliner(t: Colors, s: &Studio, cx: &mut Context<Studio>) -> Div {
         .panels
         .menu
         .as_ref()
-        .is_some_and(|menu| menu.kind == MenuKind::Add);
+        .is_some_and(|menu| menu.kind == MenuKind::Add && menu.from == Anchor::Outliner);
     col()
         .min_h(px(0.))
         .child(
@@ -377,7 +377,12 @@ pub(super) fn outliner(t: Colors, s: &Studio, cx: &mut Context<Studio>) -> Div {
                     icon_button(t, "outliner-add", Icon::Plus, menu_open, H_SM)
                         .relative()
                         .child(s.panels.anchor_cell(Anchor::Outliner).element())
-                        .tooltip(tip_detail(t, "Add", "Primitives and imported meshes", None))
+                        .tooltip(tip_detail(
+                            t,
+                            "Add",
+                            "Meshes, parts, sketches and imports",
+                            None,
+                        ))
                         .on_click(cx.listener(|s, _, _, cx| {
                             cx.stop_propagation();
                             s.open_menu(MenuKind::Add, Anchor::Outliner, cx);
