@@ -61,7 +61,7 @@ impl Uniforms {
                         RenderMode::Solid | RenderMode::MaterialPreview
                     )
                 {
-                    0.78
+                    0.9
                 } else {
                     0.0
                 },

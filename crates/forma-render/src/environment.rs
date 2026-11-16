@@ -175,6 +175,22 @@ fn panel(direction: Vec3, center: Vec3, half_width: f32, half_height: f32) -> f3
         * (1.0 - smooth(half_height * 0.88, half_height, y))
 }
 
+/// A softbox: like `panel`, with a wide falloff so its reflection blooms
+/// into a surface instead of cutting a hard-edged stripe.
+fn soft_panel(direction: Vec3, center: Vec3, half_width: f32, half_height: f32) -> f32 {
+    let center = center.normalize();
+    let right = center.cross(Vec3::Y).normalize();
+    let up = right.cross(center);
+    let forward = direction.dot(center);
+    if forward <= 0.0 {
+        return 0.0;
+    }
+    let x = (direction.dot(right) / forward).abs();
+    let y = (direction.dot(up) / forward).abs();
+    (1.0 - smooth(half_width * 0.45, half_width, x))
+        * (1.0 - smooth(half_height * 0.45, half_height, y))
+}
+
 fn builtin(studio: StudioLight) -> Vec<[f32; 4]> {
     let mut pixels = Vec::with_capacity((ENV_WIDTH * ENV_HEIGHT) as usize);
     for y in 0..ENV_HEIGHT {
@@ -189,13 +205,21 @@ fn builtin(studio: StudioLight) -> Vec<[f32; 4]> {
             let d = direction;
             let color = match studio {
                 StudioLight::Studio => {
-                    let ambient = Vec3::new(0.055, 0.065, 0.08)
-                        .lerp(Vec3::new(0.24, 0.27, 0.31), smooth(-0.4, 0.85, d.y));
+                    // A neutral cyclorama: a soft horizon band lifts vertical
+                    // faces from every side, so a top-lit key never leaves
+                    // walls near black, and soft-edged neutral panels keep
+                    // reflections free of hard coloured stripes.
+                    let ambient = Vec3::new(0.08, 0.085, 0.095)
+                        .lerp(Vec3::new(0.27, 0.28, 0.3), smooth(-0.5, 0.9, d.y));
+                    let horizon = Vec3::new(0.34, 0.34, 0.35) * (1.0 - smooth(0.0, 0.5, d.y.abs()));
                     ambient
-                        + Vec3::new(8.0, 7.7, 7.2) * panel(d, Vec3::new(-0.6, 0.9, 0.55), 0.5, 0.38)
-                        + Vec3::new(2.2, 2.8, 3.6)
-                            * panel(d, Vec3::new(0.85, 0.3, -0.45), 0.28, 0.7)
-                        + Vec3::new(4.5, 3.8, 3.0) * panel(d, Vec3::new(-0.3, 0.2, -0.9), 0.16, 0.8)
+                        + horizon
+                        + Vec3::new(6.4, 6.2, 5.9)
+                            * soft_panel(d, Vec3::new(-0.6, 0.9, 0.55), 0.55, 0.42)
+                        + Vec3::new(2.5, 2.6, 2.75)
+                            * soft_panel(d, Vec3::new(0.85, 0.3, -0.45), 0.32, 0.7)
+                        + Vec3::new(3.6, 3.3, 3.0)
+                            * soft_panel(d, Vec3::new(-0.3, 0.2, -0.9), 0.18, 0.8)
                 }
                 StudioLight::Courtyard => {
                     let sky = Vec3::new(0.32, 0.48, 0.78)

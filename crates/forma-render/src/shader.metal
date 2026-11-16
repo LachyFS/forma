@@ -483,6 +483,7 @@ float feature_coverage(Ray ray, Hit hit, device const Triangle &tri, constant Un
     if ((mask & 4u) != 0u) distance = min(distance, projected_edge_distance(position, tri.v0.xyz, tri.v1.xyz, u));
     return 1.0f - smoothstep(thickness * 0.3f, thickness * 1.1f, distance);
 }
+bool is_selected(Hit hit, device const Triangle *triangles, constant Uniforms &u);
 // Object-mode CAD feature lines. Kernels average this over their spatial
 // samples so lines stay antialiased along silhouettes, then ink once in
 // display space at the opacity in cam_right.w (0 = off).
@@ -496,6 +497,9 @@ float feature_ink(Ray ray, Hit hit, device const Triangle *triangles, constant U
 float outline_ink(Hit center, Hit hit, device const Triangle *triangles, constant Uniforms &u) {
     if (u.cam_origin.w >= 0.5f || u.cam_right.w <= 0.0f) return 0.0f;
     if (center.triangle == NO_HIT && hit.triangle == NO_HIT) return 0.0f;
+    // The selection outline already marks the selected object's boundary;
+    // inking it too leaves a dashed dark band beside the outline.
+    if (is_selected(center, triangles, u) != is_selected(hit, triangles, u)) return 0.0f;
     if (center.triangle == NO_HIT || hit.triangle == NO_HIT) return 1.0f;
     if (triangles[hit.triangle].params.z != triangles[center.triangle].params.z) return 1.0f;
     // Soft ramp: grazing views of one smooth surface stay unmarked, while real
@@ -506,9 +510,10 @@ float outline_ink(Hit center, Hit hit, device const Triangle *triangles, constan
 // keep the surface's hue and never lift a black pixel.
 float3 composite_features(float3 display, float coverage, constant Uniforms &u) {
     float strength = light_viewport(u) ? 0.8f : 0.9f;
-    return display * (1.0f - clamp(coverage, 0.0f, 1.0f) * u.cam_right.w * strength);
+    // Spatial coverage of a 1px line rarely reaches 1 with four samples; the
+    // gain keeps lines crisp while their antialiased falloff survives.
+    return display * (1.0f - clamp(coverage * 1.6f, 0.0f, 1.0f) * u.cam_right.w * strength);
 }
-bool is_selected(Hit hit, device const Triangle *triangles, constant Uniforms &u);
 float3 composite_edit(float3 color, Ray ray, Hit hit, float2 pixel, device const Triangle *triangles, constant Uniforms &u) {
     if (hit.triangle == NO_HIT) return color;
     device const Triangle &tri = triangles[hit.triangle];
@@ -516,7 +521,7 @@ float3 composite_edit(float3 color, Ray ray, Hit hit, float2 pixel, device const
     // The mesh being edited carries the wire; other meshes keep a faint
     // cage for context, and only the edited mesh shows vertex markers.
     bool editing = is_selected(hit, triangles, u);
-    float3 result = mix(color, float3(0.10f, 0.13f, 0.16f), edge_coverage(ray, hit, tri, u, 1.0f) * (editing ? 0.85f : 0.2f));
+    float3 result = mix(color, float3(0.10f, 0.13f, 0.16f), edge_coverage(ray, hit, tri, u, 1.0f) * (editing ? 0.85f : 0.0f));
     if (u.cam_origin.w > 1.5f && editing) {
         float2 marker_pixel(pixel.x - float(u.image.x) * 0.5f, float(u.image.y) * 0.5f - pixel.y);
         float distance = min(length(marker_pixel - project_to_pixels(tri.v0.xyz, u)), min(length(marker_pixel - project_to_pixels(tri.v1.xyz, u)), length(marker_pixel - project_to_pixels(tri.v2.xyz, u))));

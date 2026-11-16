@@ -566,6 +566,9 @@ fn feature_ink(ray: Ray, hit: Hit) -> f32 {
 fn outline_ink(center: Hit, hit: Hit) -> f32 {
     if u.cam_origin.w >= 0.5 || u.cam_right.w <= 0.0 { return 0.0; }
     if center.triangle == NO_HIT && hit.triangle == NO_HIT { return 0.0; }
+    // The selection outline already marks the selected object's boundary;
+    // inking it too leaves a dashed dark band beside the outline.
+    if is_selected(center) != is_selected(hit) { return 0.0; }
     if center.triangle == NO_HIT || hit.triangle == NO_HIT { return 1.0; }
     if triangles[hit.triangle].params.z != triangles[center.triangle].params.z { return 1.0; }
     // Soft ramp: grazing views of one smooth surface stay unmarked, while real
@@ -576,7 +579,9 @@ fn outline_ink(center: Hit, hit: Hit) -> f32 {
 // keep the surface's hue and never lift a black pixel.
 fn composite_features(display: vec3<f32>, coverage: f32) -> vec3<f32> {
     let strength = select(0.9, 0.8, light_viewport());
-    return display * (1.0 - clamp(coverage, 0.0, 1.0) * u.cam_right.w * strength);
+    // Spatial coverage of a 1px line rarely reaches 1 with four samples; the
+    // gain keeps lines crisp while their antialiased falloff survives.
+    return display * (1.0 - clamp(coverage * 1.6, 0.0, 1.0) * u.cam_right.w * strength);
 }
 fn composite_edit(color: vec3<f32>, ray: Ray, hit: Hit, pixel: vec2<f32>) -> vec3<f32> {
     if hit.triangle == NO_HIT { return color; }
@@ -585,7 +590,7 @@ fn composite_edit(color: vec3<f32>, ray: Ray, hit: Hit, pixel: vec2<f32>) -> vec
     // The mesh being edited carries the wire; other meshes keep a faint
     // cage for context, and only the edited mesh shows vertex markers.
     let editing = is_selected(hit);
-    var result = mix(color, vec3(0.10, 0.13, 0.16), edge_coverage(ray, hit, tri, 1.0) * select(0.2, 0.85, editing));
+    var result = mix(color, vec3(0.10, 0.13, 0.16), edge_coverage(ray, hit, tri, 1.0) * select(0.0, 0.85, editing));
     if u.cam_origin.w > 1.5 && editing {
         let marker_pixel = vec2(pixel.x - f32(u.image.x) * 0.5, f32(u.image.y) * 0.5 - pixel.y);
         let distance = min(length(marker_pixel - project_to_pixels(tri.v0.xyz)), min(length(marker_pixel - project_to_pixels(tri.v1.xyz)), length(marker_pixel - project_to_pixels(tri.v2.xyz))));

@@ -855,9 +855,24 @@ pub(crate) fn capture_x11(window: &gpui::Window, path: &Path) -> Result<()> {
     }
     let (id, width, height) =
         best.ok_or_else(|| anyhow::anyhow!("no X11 window belongs to this process"))?;
-    let reply = conn
+    let reply = match conn
         .get_image(ImageFormat::Z_PIXMAP, id, 0, 0, width, height, !0)?
-        .reply()?;
+        .reply()
+    {
+        Ok(reply) => reply,
+        Err(_) => {
+            // X11 refuses to read a window that is partly off-screen (BadMatch).
+            // Other windows opening at the same moment can make the window
+            // manager cascade ours past the screen edge, so ask it to move the
+            // window to the origin and read again.
+            use x11rb::protocol::xproto::ConfigureWindowAux;
+            conn.configure_window(id, &ConfigureWindowAux::new().x(0).y(0))?;
+            conn.flush()?;
+            std::thread::sleep(std::time::Duration::from_millis(400));
+            conn.get_image(ImageFormat::Z_PIXMAP, id, 0, 0, width, height, !0)?
+                .reply()?
+        }
+    };
     ensure!(
         reply.depth >= 24,
         "unsupported X11 visual depth {}",
