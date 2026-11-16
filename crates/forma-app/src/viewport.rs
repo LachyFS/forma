@@ -756,7 +756,7 @@ impl Studio {
             }
         }
         self.set_components(elements);
-        self.status = format!("{} components selected", self.component_elements().len());
+        self.status = self.component_summary();
         cx.notify();
     }
 
@@ -1331,10 +1331,7 @@ impl Studio {
                 }
                 self.selected = Some(id);
                 self.set_components(elements);
-                self.status = format!(
-                    "{} components selected · G / R / S transform",
-                    self.component_elements().len()
-                );
+                self.status = self.component_summary();
             } else {
                 let mut ids = if event.modifiers.shift {
                     self.selected_ids()
