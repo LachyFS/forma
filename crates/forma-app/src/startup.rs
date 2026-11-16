@@ -284,7 +284,7 @@ pub(crate) fn studio_scene() -> Scene {
 
     let cube = scene.add(Primitive::Cube);
     if let Some(mesh) = scene.object_mesh_mut(cube) {
-        *mesh = rounded_box(0.32, 6, 6);
+        *mesh = rounded_box(0.32, 10, 6);
     }
     if let Some(object) = scene.object_mut(cube) {
         object.name = "Rounded cube".into();

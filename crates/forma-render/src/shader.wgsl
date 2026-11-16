@@ -578,6 +578,18 @@ fn outline_ink(center: Hit, hit: Hit) -> f32 {
 }
 // Lines darken what is under them rather than paint a fixed grey, so they
 // keep the surface's hue and never lift a black pixel.
+// Outline coverage from the pixel's four corners. Any silhouette crossing
+// the pixel separates the centre from at least one corner, so lines stay
+// continuous where centre-clustered samples would leave gaps and beads.
+fn outline_probe(pixel: vec2<f32>, center: Hit) -> f32 {
+    if u.cam_origin.w >= 0.5 || u.cam_right.w <= 0.0 { return 0.0; }
+    let corners = array<vec2<f32>, 4>(vec2(-0.5, -0.5), vec2(0.5, -0.5), vec2(-0.5, 0.5), vec2(0.5, 0.5));
+    var ink = 0.0;
+    for (var i = 0u; i < 4u; i += 1u) {
+        ink += outline_ink(center, trace(camera_ray(pixel + corners[i]), FAR, false)) * 0.25;
+    }
+    return ink;
+}
 fn composite_features(display: vec3<f32>, coverage: f32) -> vec3<f32> {
     let strength = select(0.9, 0.8, light_viewport());
     // Spatial coverage of a 1px line rarely reaches 1 with four samples; the
@@ -726,8 +738,9 @@ fn solid_supersampled(pixel: vec2<f32>, center: Hit) -> vec4<f32> {
         let p = pixel + offsets[i]; let r = camera_ray(p); let h = trace(r, FAR, false);
         let same = center.triangle != NO_HIT && h.triangle != NO_HIT
             && triangles[h.triangle].params.z == triangles[center.triangle].params.z;
-        result += vec4(solid_sample(p, r, h, select(1.0, ao, same)), max(feature_ink(r, h), outline_ink(center, h))) * 0.25;
+        result += vec4(solid_sample(p, r, h, select(1.0, ao, same)), feature_ink(r, h)) * 0.25;
     }
+    result.w = max(result.w, outline_probe(pixel, center));
     return result;
 }
 fn display_transform(linear: vec3<f32>, exposure: f32) -> vec3<f32> {
@@ -821,12 +834,14 @@ fn render_main(@builtin(global_invocation_id) global_id: vec3<u32>) {
     if progressive && (u.settings.z > 0.0 || u.cam_origin.w > 0.0) {
         overlay_hit = trace(camera_ray(overlay_pixel), FAR, false);
     }
-    var coverage = selection_coverage(overlay_pixel, overlay_hit);
-    if u.image.w == 1u { coverage = smooth_selection(coverage, overlay_pixel); }
+    // Line work yields to the whole band; the outline itself is antialiased.
+    let band = selection_coverage(overlay_pixel, overlay_hit);
+    var coverage = band;
+    if u.image.w == 1u { coverage = smooth_selection(band, overlay_pixel); }
     // Denoising replaces every displayed pixel, so the overlay travels to it in
     // the guide weight both guides share.
     if progressive { denoise_guides[index].normal.w = coverage; }
-    let display = composite_edit(composite_features(display_transform(color, select(0.0, u.settings.x, progressive)), ink * (1.0 - coverage)), camera_ray(overlay_pixel), overlay_hit, overlay_pixel);
+    let display = composite_edit(composite_features(display_transform(color, select(0.0, u.settings.x, progressive)), ink * (1.0 - band)), camera_ray(overlay_pixel), overlay_hit, overlay_pixel);
     textureStore(output, vec2<i32>(gid), vec4(composite_selection(display, coverage), 1.0));
 }
 

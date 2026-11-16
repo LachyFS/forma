@@ -103,7 +103,7 @@ fn preview_main(@builtin(global_invocation_id) global_id: vec3<u32>) {
     var color = vec3(0.0); var ink = 0.0;
     for (var i = 0u; i < 4u; i += 1u) {
         let p = pixel + offsets[i]; let ray = camera_ray(p); let hit = trace(ray, FAR, false);
-        ink += max(feature_ink(ray, hit), outline_ink(center_hit, hit)) * 0.25;
+        ink += feature_ink(ray, hit) * 0.25;
         var sample_color: vec3<f32>;
         if hit.triangle == NO_HIT {
             sample_color = viewport_background(ray);
@@ -121,9 +121,11 @@ fn preview_main(@builtin(global_invocation_id) global_id: vec3<u32>) {
         }
         color += add_grid(sample_color, ray, hit, p) * 0.25;
     }
+    ink = max(ink, outline_probe(pixel, center_hit));
     accumulation[gid.y * u.image.x + gid.x] = vec4(color, 1.0);
     // The outline replaces the line work under it rather than mixing with it.
-    let coverage = smooth_selection(selection_coverage(pixel, center_hit), pixel);
-    let display = composite_edit(composite_features(display_transform(color, u.settings.x), ink * (1.0 - coverage)), center_ray, center_hit, pixel);
+    let band = selection_coverage(pixel, center_hit);
+    let coverage = smooth_selection(band, pixel);
+    let display = composite_edit(composite_features(display_transform(color, u.settings.x), ink * (1.0 - band)), center_ray, center_hit, pixel);
     textureStore(output, vec2<i32>(gid), vec4(composite_selection(display, coverage), 1.0));
 }

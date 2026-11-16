@@ -509,6 +509,21 @@ float outline_ink(Hit center, Hit hit, device const Triangle *triangles, constan
 }
 // Lines darken what is under them rather than paint a fixed grey, so they
 // keep the surface's hue and never lift a black pixel.
+// Outline coverage from the pixel's four corners. Any silhouette crossing
+// the pixel separates the centre from at least one corner, so lines stay
+// continuous where centre-clustered samples would leave gaps and beads.
+constant float2 PIXEL_CORNERS[4] = {
+    float2(-0.5f, -0.5f), float2(0.5f, -0.5f), float2(-0.5f, 0.5f), float2(0.5f, 0.5f),
+};
+float outline_probe(float2 pixel, Hit center, device const Triangle *triangles,
+                    device const BvhNode *nodes, constant Uniforms &u) {
+    if (u.cam_origin.w >= 0.5f || u.cam_right.w <= 0.0f) return 0.0f;
+    float ink = 0.0f;
+    for (uint i = 0u; i < 4u; ++i) {
+        ink += outline_ink(center, trace(camera_ray(pixel + PIXEL_CORNERS[i], u), INFINITY, triangles, nodes, u), triangles, u) * 0.25f;
+    }
+    return ink;
+}
 float3 composite_features(float3 display, float coverage, constant Uniforms &u) {
     float strength = light_viewport(u) ? 0.8f : 0.9f;
     // Spatial coverage of a 1px line rarely reaches 1 with four samples; the
@@ -773,8 +788,9 @@ kernel void render_main(device const Triangle *triangles [[buffer(0)]],
                 Ray r = camera_ray(p, u);
                 Hit h = trace(r, INFINITY, triangles, nodes, u);
                 color += solid_sample(p, r, h, same_object(primary, h, triangles) ? ao : 1.0f, triangles, u) * 0.25f;
-                ink += max(feature_ink(r, h, triangles, u), outline_ink(primary, h, triangles, u)) * 0.25f;
+                ink += feature_ink(r, h, triangles, u) * 0.25f;
             }
+            ink = max(ink, outline_probe(pixel, primary, triangles, nodes, u));
         } else if (primary.triangle != NO_HIT) {
             Surface s = surface_at(ray, primary, triangles);
             color = solid_shading(s, ray, u);
@@ -787,11 +803,12 @@ kernel void render_main(device const Triangle *triangles [[buffer(0)]],
     if (progressive && (u.settings.z > 0.0f || u.cam_origin.w > 0.0f)) {
         overlay_hit = trace(camera_ray(overlay_pixel, u), INFINITY, triangles, nodes, u);
     }
-    float coverage = selection_coverage(overlay_pixel, overlay_hit, triangles, nodes, u);
-    if (u.image.w == 1u) coverage = smooth_selection(coverage, overlay_pixel, triangles, nodes, u);
+    // Line work yields to the whole band; the outline itself is antialiased.
+    float band = selection_coverage(overlay_pixel, overlay_hit, triangles, nodes, u);
+    float coverage = u.image.w == 1u ? smooth_selection(band, overlay_pixel, triangles, nodes, u) : band;
     // Denoising replaces every displayed pixel, so the overlay travels to it in
     // the guide weight both guides share.
     if (progressive) normal_accumulation[index].w = coverage;
-    float3 display = composite_edit(composite_features(display_transform(color, progressive ? u.settings.x : 0.0f), ink * (1.0f - coverage), u), camera_ray(overlay_pixel, u), overlay_hit, overlay_pixel, triangles, u);
+    float3 display = composite_edit(composite_features(display_transform(color, progressive ? u.settings.x : 0.0f), ink * (1.0f - band), u), camera_ray(overlay_pixel, u), overlay_hit, overlay_pixel, triangles, u);
     output.write(float4(composite_selection(display, coverage, u), 1.0f), gid);
 }

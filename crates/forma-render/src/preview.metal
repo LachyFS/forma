@@ -99,6 +99,17 @@ float preview_solid_ao(Surface s, device const Triangle *triangles,
     }
     return solid_occlusion(occlusion);
 }
+// outline_probe through the preview acceleration structure.
+float preview_outline_probe(float2 pixel, Hit center, device const Triangle *triangles,
+                            device const BvhNode *nodes, constant Uniforms &u PREVIEW_ACCEL_PARAM) {
+    if (u.cam_origin.w >= 0.5f || u.cam_right.w <= 0.0f) return 0.0f;
+    float ink = 0.0f;
+    for (uint i = 0u; i < 4u; ++i) {
+        Hit corner = preview_trace(camera_ray(pixel + PIXEL_CORNERS[i], u), INFINITY, triangles, nodes, u PREVIEW_ACCEL_ARG);
+        ink += outline_ink(center, corner, triangles, u) * 0.25f;
+    }
+    return ink;
+}
 // Solid has no material evaluation or path-tracing state. Keep it in a small
 // kernel so primary visibility and selection can share preview acceleration.
 kernel void solid_main(device const Triangle *triangles [[buffer(0)]],
@@ -126,18 +137,19 @@ kernel void solid_main(device const Triangle *triangles [[buffer(0)]],
         Ray r = camera_ray(p, u);
         Hit h = preview_trace(r, INFINITY, triangles, nodes, u PREVIEW_ACCEL_ARG);
         color += solid_sample(p, r, h, same_object(hit, h, triangles) ? ao : 1.0f, triangles, u) * 0.25f;
-        ink += max(feature_ink(r, h, triangles, u), outline_ink(hit, h, triangles, u)) * 0.25f;
+        ink += feature_ink(r, h, triangles, u) * 0.25f;
     }
+    ink = max(ink, preview_outline_probe(pixel, hit, triangles, nodes, u PREVIEW_ACCEL_ARG));
     accumulation[gid.y * u.image.x + gid.x] = float4(color, 1.0f);
 #if FORMA_PREVIEW_SELECTION_ACCELERATED
-    float coverage = preview_selection_coverage(pixel, hit, triangles, u, selected_acceleration);
-    coverage = preview_smooth_selection(coverage, pixel, u, selected_acceleration);
+    float band = preview_selection_coverage(pixel, hit, triangles, u, selected_acceleration);
+    float coverage = preview_smooth_selection(band, pixel, u, selected_acceleration);
 #else
-    float coverage = selection_coverage(pixel, hit, triangles, nodes, u);
-    coverage = smooth_selection(coverage, pixel, triangles, nodes, u);
+    float band = selection_coverage(pixel, hit, triangles, nodes, u);
+    float coverage = smooth_selection(band, pixel, triangles, nodes, u);
 #endif
     // The outline replaces the line work under it rather than mixing with it.
-    float3 display = composite_edit(composite_features(display_transform(color, 0.0f), ink * (1.0f - coverage), u), ray, hit, pixel, triangles, u);
+    float3 display = composite_edit(composite_features(display_transform(color, 0.0f), ink * (1.0f - band), u), ray, hit, pixel, triangles, u);
     output.write(float4(composite_selection(display, coverage, u), 1.0f), gid);
 }
 
@@ -293,7 +305,7 @@ kernel void preview_main(device const Triangle *triangles [[buffer(0)]],
         float2 p = pixel + offsets[i];
         Ray ray = camera_ray(p, u);
         Hit hit = preview_trace(ray, INFINITY, triangles, nodes, u PREVIEW_ACCEL_ARG);
-        ink += max(feature_ink(ray, hit, triangles, u), outline_ink(center_hit, hit, triangles, u)) * 0.25f;
+        ink += feature_ink(ray, hit, triangles, u) * 0.25f;
         float3 sample;
         if (hit.triangle == NO_HIT) {
             sample = viewport_background(ray, u);
@@ -313,15 +325,16 @@ kernel void preview_main(device const Triangle *triangles [[buffer(0)]],
         }
         color += add_grid(sample, ray, hit, p, u) * 0.25f;
     }
+    ink = max(ink, preview_outline_probe(pixel, center_hit, triangles, nodes, u PREVIEW_ACCEL_ARG));
     accumulation[gid.y * u.image.x + gid.x] = float4(color, 1.0f);
 #if FORMA_PREVIEW_SELECTION_ACCELERATED
-    float coverage = preview_selection_coverage(pixel, center_hit, triangles, u, selected_acceleration);
-    coverage = preview_smooth_selection(coverage, pixel, u, selected_acceleration);
+    float band = preview_selection_coverage(pixel, center_hit, triangles, u, selected_acceleration);
+    float coverage = preview_smooth_selection(band, pixel, u, selected_acceleration);
 #else
-    float coverage = selection_coverage(pixel, center_hit, triangles, nodes, u);
-    coverage = smooth_selection(coverage, pixel, triangles, nodes, u);
+    float band = selection_coverage(pixel, center_hit, triangles, nodes, u);
+    float coverage = smooth_selection(band, pixel, triangles, nodes, u);
 #endif
     // The outline replaces the line work under it rather than mixing with it.
-    float3 display = composite_edit(composite_features(display_transform(color, u.settings.x), ink * (1.0f - coverage), u), center_ray, center_hit, pixel, triangles, u);
+    float3 display = composite_edit(composite_features(display_transform(color, u.settings.x), ink * (1.0f - band), u), center_ray, center_hit, pixel, triangles, u);
     output.write(float4(composite_selection(display, coverage, u), 1.0f), gid);
 }
