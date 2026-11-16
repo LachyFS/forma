@@ -59,7 +59,7 @@ bool preview_selected_hit(Ray r, raytracing::primitive_acceleration_structure se
 float preview_selection_coverage(float2 pixel, Hit hit, device const Triangle *triangles,
                                  constant Uniforms &u,
                                  raytracing::primitive_acceleration_structure selected) {
-    if (u.settings.z <= 0.0f || hit.triangle == NO_HIT) return 0.0f;
+    if (u.settings.z <= 0.0f || hit.triangle == NO_HIT || u.cam_origin.w >= 0.5f) return 0.0f;
     if (!is_selected(hit, triangles, u) && !preview_selected_hit(camera_ray(pixel, u), selected)) return 0.0f;
     // The selected-only structure preserves holes and silhouettes through
     // occluders, without bringing a software BVH stack into this kernel.

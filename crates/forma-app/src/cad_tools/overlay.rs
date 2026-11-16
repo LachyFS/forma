@@ -529,19 +529,12 @@ impl Studio {
                         dashed: false,
                     });
                 }
-                for segment in &face.hidden {
-                    overlay.lines.push(LinePaint {
-                        points: segment.clone(),
-                        color: t.accent,
-                        alpha: alpha * 0.45,
-                        width: 1.0,
-                        dashed: true,
-                    });
-                }
+                // Occluded boundaries stay hidden: dashes through solid walls
+                // read as x-ray noise once the face tint carries the selection.
             };
         let selected_faces = self.selected_edit_faces(id);
         for (group, _) in &selected_faces {
-            paint_face(*group, 0.36, 2.2, 1.0, overlay);
+            paint_face(*group, 0.24, 2.0, 1.0, overlay);
         }
         let topology = self.part_topology(id);
         let edge_points = |index: usize| -> Option<Vec<Vec3>> {

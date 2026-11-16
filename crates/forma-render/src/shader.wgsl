@@ -612,7 +612,8 @@ fn selection_silhouette(pixel: vec2<f32>) -> f32 {
     return 0.0;
 }
 fn selection_coverage(pixel: vec2<f32>, hit: Hit) -> f32 {
-    if u.settings.z <= 0.0 || hit.triangle == NO_HIT { return 0.0; }
+    // Component editing marks the object with its wire, not an outline.
+    if u.settings.z <= 0.0 || hit.triangle == NO_HIT || u.cam_origin.w >= 0.5 { return 0.0; }
     if !is_selected(hit) {
         let selected = trace_scene(camera_ray(pixel), FAR, true, true);
         if selected.triangle == NO_HIT { return 0.0; }
@@ -668,7 +669,7 @@ fn add_grid(initial_color: vec3<f32>, ray: Ray, hit: Hit, pixel: vec2<f32>) -> v
     // minor/major pair, including their contrast at shared grid intersections.
     let opacity = mix(0.11 * minor + 0.13 * major, 0.11 * major + 0.13 * coarse, blend) * fade;
     let light = light_viewport();
-    color = mix(color, select(vec3(0.13, 0.15, 0.18), vec3(0.22, 0.235, 0.26), light), opacity * select(1.0, 1.6, light));
+    color = mix(color, select(vec3(0.13, 0.15, 0.18), vec3(0.22, 0.235, 0.26), light), opacity * select(1.0, 2.4, light));
     let x_axis = 1.0 - smoothstep(wz * 0.5, wz * 1.6, abs(p.z));
     let z_axis = 1.0 - smoothstep(wx * 0.5, wx * 1.6, abs(p.x));
     color = mix(color, select(vec3(0.23, 0.055, 0.06), vec3(0.62, 0.09, 0.1), light), x_axis * fade * 0.55);

@@ -547,7 +547,8 @@ float selection_silhouette(float2 pixel, device const Triangle *triangles,
 }
 float selection_coverage(float2 pixel, Hit hit, device const Triangle *triangles,
                          device const BvhNode *nodes, constant Uniforms &u) {
-    if (u.settings.z <= 0.0f || hit.triangle == NO_HIT) return 0.0f;
+    // Component editing marks the object with its wire, not an outline.
+    if (u.settings.z <= 0.0f || hit.triangle == NO_HIT || u.cam_origin.w >= 0.5f) return 0.0f;
     if (!is_selected(hit, triangles, u)) {
         Hit selected = trace_scene(camera_ray(pixel, u), INFINITY, triangles, nodes, u, true, true);
         if (selected.triangle == NO_HIT) return 0.0f;
@@ -606,7 +607,7 @@ float3 add_grid(float3 color, Ray ray, Hit hit, float2 pixel, constant Uniforms 
     // minor/major pair, including their contrast at shared grid intersections.
     float opacity = mix(0.11f * minor + 0.13f * major, 0.11f * major + 0.13f * coarse, blend) * fade;
     bool light = light_viewport(u);
-    color = mix(color, light ? float3(0.22f, 0.235f, 0.26f) : float3(0.13f, 0.15f, 0.18f), opacity * (light ? 1.6f : 1.0f));
+    color = mix(color, light ? float3(0.22f, 0.235f, 0.26f) : float3(0.13f, 0.15f, 0.18f), opacity * (light ? 2.4f : 1.0f));
     float x_axis = 1.0f - smoothstep(wz * 0.5f, wz * 1.6f, abs(p.z));
     float z_axis = 1.0f - smoothstep(wx * 0.5f, wx * 1.6f, abs(p.x));
     color = mix(color, light ? float3(0.62f, 0.09f, 0.1f) : float3(0.23f, 0.055f, 0.06f), x_axis * fade * 0.55f);
