@@ -119,7 +119,7 @@ impl Theme {
     pub fn description(self) -> &'static str {
         match self {
             Self::Forma => "Dark · Classic charcoal and mint",
-            Self::Paper => "Light · Soft ivory and ink blue",
+            Self::Paper => "Light · Cool grey and jade",
             Self::Midnight => "Dark · Deep navy and icy blue",
             Self::Synthwave => "Dark · Electric pink after hours",
             Self::Matcha => "Light · A little green tea for your workspace",
@@ -164,36 +164,37 @@ impl Theme {
                 axis: [0xf0606b, 0x8bd168, 0x5f9ff5],
                 axis_text: [0xf38a91, 0x9fd884, 0x86b5f7],
             },
+            // Cool neutral greys under Forma's jade, deepened to read on white.
             Self::Paper => Colors {
                 dark: false,
-                canvas: 0xe7e4dd,
-                surface: 0xf7f6f2,
-                raised: 0xefede7,
+                canvas: 0xe4e6ea,
+                surface: 0xfafbfc,
+                raised: 0xf2f4f6,
                 overlay: 0xffffff,
-                sunken: 0xdedbd3,
-                hud: 0xfbfaf7e6,
-                hud_border: 0x0000001a,
-                scrim: 0x2a26203d,
-                shadow: 0x3c32222e,
-                control: 0xebe9e3,
-                control_hover: 0xe6e3dc,
-                control_active: 0xdcd8d0,
-                field: 0xedeae4,
-                field_hover: 0xe6e3dc,
-                hairline: 0xe6e2da,
-                border: 0xd8d3c9,
-                border_strong: 0xbdb7ab,
-                text: 0x22252b,
-                text_muted: 0x4f525c,
-                text_faint: 0x646870,
-                accent: 0x2f63d0,
-                accent_hover: 0x2856b8,
+                sunken: 0xdfe2e6,
+                hud: 0xfbfcfdeb,
+                hud_border: 0x1b222c38,
+                scrim: 0x1a1f2a40,
+                shadow: 0x1a20302e,
+                control: 0xeef0f3,
+                control_hover: 0xe7eaee,
+                control_active: 0xdde1e6,
+                field: 0xf0f2f5,
+                field_hover: 0xe8ebef,
+                hairline: 0xe7e9ed,
+                border: 0xd8dce2,
+                border_strong: 0xb9bfc8,
+                text: 0x1c2026,
+                text_muted: 0x484e58,
+                text_faint: 0x5f6670,
+                accent: 0x1a7f61,
+                accent_hover: 0x166f55,
                 on_accent: 0xffffff,
-                accent_text: 0x2553b4,
-                accent_soft: 0xdfe8fa,
-                accent_soft_hover: 0xd2e0f8,
-                accent_border: 0x9fb8e8,
-                focus: 0x2f63d0,
+                accent_text: 0x136a51,
+                accent_soft: 0xdcf1e9,
+                accent_soft_hover: 0xcdeadf,
+                accent_border: 0x86c8b4,
+                focus: 0x1a7f61,
                 danger: 0xc23b3b,
                 warning: 0xa4620c,
                 success: 0x2d8653,
@@ -462,6 +463,7 @@ mod tests {
                 ("faint/raised", t.text_faint, t.raised),
                 ("faint/field", t.text_faint, t.field),
                 ("faint/control", t.text_faint, t.control),
+                ("faint/overlay", t.text_faint, t.overlay),
                 ("accent/surface", t.accent_text, t.surface),
                 ("accent/selection", t.accent_text, t.accent_soft),
                 ("accent/selection hover", t.accent_text, t.accent_soft_hover),
@@ -504,6 +506,54 @@ mod tests {
                     theme.name()
                 );
             }
+        }
+    }
+
+    /// Hue in degrees of an opaque `0xRRGGBB` color.
+    fn hue(color: u32) -> f32 {
+        let [r, g, b] = [16, 8, 0].map(|shift| ((color >> shift) & 255) as f32 / 255.);
+        let (max, min) = (r.max(g).max(b), r.min(g).min(b));
+        let delta = max - min;
+        let sector = if max == r {
+            ((g - b) / delta).rem_euclid(6.)
+        } else if max == g {
+            (b - r) / delta + 2.
+        } else {
+            (r - g) / delta + 4.
+        };
+        sector * 60.
+    }
+
+    #[test]
+    fn paper_is_forma_in_light_and_unlike_matcha() {
+        let (forma, paper, matcha) = (
+            Theme::Forma.colors(),
+            Theme::Paper.colors(),
+            Theme::Matcha.colors(),
+        );
+        // The same jade, deepened for white surfaces: one product in both
+        // appearances.
+        for (role, dark, light) in [
+            ("accent", forma.accent, paper.accent),
+            ("accent text", forma.accent_text, paper.accent_text),
+            ("focus", forma.focus, paper.focus),
+        ] {
+            let shift = (hue(dark) - hue(light)).abs();
+            assert!(
+                shift < 6.,
+                "Paper {role} hue is {shift:.1} degrees off Forma"
+            );
+        }
+        // Matcha's green tea sits well away from jade.
+        assert!((hue(paper.accent) - hue(matcha.accent)).abs() > 30.);
+        // Paper's greys are neutral to slightly cool, never warm.
+        for (role, grey) in [
+            ("canvas", paper.canvas),
+            ("surface", paper.surface),
+            ("sunken", paper.sunken),
+        ] {
+            let [r, _, b] = [16, 8, 0].map(|shift| (grey >> shift) & 255);
+            assert!(b >= r, "Paper {role} #{grey:06x} leans warm");
         }
     }
 

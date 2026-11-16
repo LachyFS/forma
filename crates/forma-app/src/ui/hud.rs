@@ -11,9 +11,9 @@ use super::{Anchor, MenuKind, VIEWPORT_MIN_WIDTH, slots};
 use crate::app::{Command, EditMode, Studio, Tool};
 use crate::cad::{CadCommand, PartShape};
 use crate::platform_shortcut;
-use crate::sketch::DrawCommand;
+use crate::sketch::{DrawCommand, DrawTarget};
 use crate::theme::Colors;
-use forma_core::Primitive;
+use forma_core::{Primitive, SketchPlane};
 use forma_render::RenderMode;
 use gpui::{prelude::*, *};
 
@@ -200,18 +200,13 @@ fn component_filter(t: Colors, s: &Studio, density: Density, cx: &mut Context<St
         )
 }
 
-/// Short name of the current view for the views menu button.
+/// Short name of the current view for the views menu button and the views
+/// menu's check mark: "Front" for the front orthographic view.
 pub(crate) fn view_name(camera: forma_core::Camera) -> &'static str {
     match crate::viewport::camera_view_label(camera) {
         "User perspective" => "Perspective",
         "User orthographic" => "Orthographic",
-        "Front orthographic" => "Front",
-        "Back orthographic" => "Back",
-        "Right orthographic" => "Right",
-        "Left orthographic" => "Left",
-        "Top orthographic" => "Top",
-        "Bottom orthographic" => "Bottom",
-        other => other,
+        named => named.strip_suffix(" · Ortho").unwrap_or(named),
     }
 }
 
@@ -520,14 +515,26 @@ fn measurements_card(t: Colors, s: &Studio) -> Option<Div> {
     Some(card)
 }
 
+/// What a start-card row does.
+#[derive(Clone, Copy)]
+enum StartAction {
+    Run(Command),
+    /// Open Draw facing a world plane through the origin.
+    DrawOn {
+        plane: fn() -> SketchPlane,
+        name: &'static str,
+        detail: &'static str,
+    },
+}
+
 /// One way of making geometry on the start card: what it is, then the
-/// commands that create it.
+/// things it can start from.
 struct StartKind {
     id: &'static str,
     glyph: Icon,
     title: &'static str,
     detail: &'static str,
-    actions: &'static [(&'static str, Command)],
+    actions: &'static [(&'static str, Option<Icon>, StartAction)],
 }
 
 const START_KINDS: [StartKind; 3] = [
@@ -537,9 +544,21 @@ const START_KINDS: [StartKind; 3] = [
         title: "Mesh",
         detail: MESH_DETAIL,
         actions: &[
-            ("Cube", Command::Add(Primitive::Cube)),
-            ("Sphere", Command::Add(Primitive::Sphere)),
-            ("Cylinder", Command::Add(Primitive::Cylinder)),
+            (
+                "Cube",
+                None,
+                StartAction::Run(Command::Add(Primitive::Cube)),
+            ),
+            (
+                "Sphere",
+                None,
+                StartAction::Run(Command::Add(Primitive::Sphere)),
+            ),
+            (
+                "Cylinder",
+                None,
+                StartAction::Run(Command::Add(Primitive::Cylinder)),
+            ),
         ],
     },
     StartKind {
@@ -548,14 +567,20 @@ const START_KINDS: [StartKind; 3] = [
         title: "Part",
         detail: PART_DETAIL,
         actions: &[
-            ("Box", Command::Cad(CadCommand::AddPart(PartShape::Box))),
+            (
+                "Box",
+                None,
+                StartAction::Run(Command::Cad(CadCommand::AddPart(PartShape::Box))),
+            ),
             (
                 "Cylinder",
-                Command::Cad(CadCommand::AddPart(PartShape::Cylinder)),
+                None,
+                StartAction::Run(Command::Cad(CadCommand::AddPart(PartShape::Cylinder))),
             ),
             (
                 "Sphere",
-                Command::Cad(CadCommand::AddPart(PartShape::Sphere)),
+                None,
+                StartAction::Run(Command::Cad(CadCommand::AddPart(PartShape::Sphere))),
             ),
         ],
     },
@@ -564,37 +589,91 @@ const START_KINDS: [StartKind; 3] = [
         glyph: Icon::DrawMode,
         title: "Sketch",
         detail: SKETCH_DETAIL,
-        actions: &[(
-            "Draw on the ground",
-            Command::Draw(DrawCommand::NewGroundSketch),
-        )],
+        actions: &[
+            (
+                "Ground plane",
+                Some(Icon::PlaneGround),
+                StartAction::Run(Command::Draw(DrawCommand::NewGroundSketch)),
+            ),
+            (
+                "Front plane",
+                Some(Icon::PlaneFront),
+                StartAction::DrawOn {
+                    plane: SketchPlane::front,
+                    name: "Front plane",
+                    detail: "Draw a profile facing you, through the origin",
+                },
+            ),
+            (
+                "Right plane",
+                Some(Icon::PlaneRight),
+                StartAction::DrawOn {
+                    plane: SketchPlane::right,
+                    name: "Right plane",
+                    detail: "Draw a side profile, through the origin",
+                },
+            ),
+        ],
     },
 ];
 
-/// A start tile: the kind's glyph, name and one-line description over its
-/// creation commands, in equal columns so the three read as one choice.
+/// Open Draw on a world plane, as the start card's plane rows do.
+fn draw_on_plane(
+    s: &mut Studio,
+    plane: SketchPlane,
+    name: &str,
+    window: &mut Window,
+    cx: &mut Context<Studio>,
+) {
+    window.focus(&s.focus);
+    s.enter_draw(DrawTarget::Plane(plane, name.to_owned()), cx);
+    cx.notify();
+}
+
+/// A start tile: the kind's glyph, name and one-line description over the
+/// rows that start it, in equal columns so the three read as one choice.
 fn start_tile(t: Colors, kind: &StartKind, stacked: bool, cx: &mut Context<Studio>) -> Div {
-    let actions = kind.actions.iter().map(|(label, command)| {
-        on_command(
-            button_base(
-                t,
-                SharedString::from(format!("empty-{}-{label}", kind.id)),
-                Tone::Ghost,
-                H_SM + 2.,
-            )
-            .w_full()
-            .justify_start()
-            .px(px(SP_1_5))
-            .gap(px(SP_2))
-            .text_color(rgb(t.text))
-            .when_some(command_glyph(*command), |d, glyph| {
-                d.child(icon(glyph, ICON_SM, t.text_muted))
-            })
-            .child(*label)
-            .tooltip(command_tip(t, *command)),
-            *command,
-            cx,
+    let actions = kind.actions.iter().map(|(label, glyph, action)| {
+        let glyph = glyph.or(match action {
+            StartAction::Run(command) => command_glyph(*command),
+            StartAction::DrawOn { .. } => None,
+        });
+        let button = button_base(
+            t,
+            SharedString::from(format!("empty-{}-{label}", kind.id)),
+            Tone::Ghost,
+            H_MD,
         )
+        .w_full()
+        .justify_start()
+        .px(px(SP_2))
+        .gap(px(SP_2 + 2.))
+        .text_size(px(TEXT_LG))
+        .text_color(rgb(t.text))
+        .when_some(glyph, |d, glyph| {
+            d.child(icon(glyph, ICON_MD, t.text_muted))
+        })
+        .child(*label);
+        match *action {
+            StartAction::Run(command) => {
+                on_command(button.tooltip(command_tip(t, command)), command, cx)
+            }
+            StartAction::DrawOn {
+                plane,
+                name,
+                detail,
+            } => button
+                .tooltip(tip_detail(
+                    t,
+                    format!("Draw on the {}", name.to_lowercase()),
+                    detail,
+                    None,
+                ))
+                .on_click(cx.listener(move |s, _, window, cx| {
+                    cx.stop_propagation();
+                    draw_on_plane(s, plane(), name, window, cx);
+                })),
+        }
     });
     col()
         .when(!stacked, |d| d.flex_1().flex_basis(px(0.)))
@@ -602,21 +681,22 @@ fn start_tile(t: Colors, kind: &StartKind, stacked: bool, cx: &mut Context<Studi
         .p(px(SP_2))
         .gap(px(SP_2))
         .rounded(px(R_LG))
-        .bg(tint(t.text, if t.dark { 0.035 } else { 0.03 }))
+        .bg(tint(t.text, if t.dark { 0.035 } else { 0.025 }))
         .border_1()
         .border_color(rgba(t.hud_border))
         .child(
             col()
-                .px(px(SP_1_5))
-                .pt(px(SP_1_5))
-                .gap(px(SP_1))
+                .px(px(SP_2))
+                .pt(px(SP_2))
+                .pb(px(SP_1))
+                .gap(px(3.))
                 .child(
                     row()
                         .gap(px(SP_2))
-                        .child(icon(kind.glyph, ICON_MD, t.accent_text))
+                        .child(icon(kind.glyph, ICON_LG, t.accent_text))
                         .child(
                             div()
-                                .text_size(px(TEXT_LG))
+                                .text_size(px(TEXT_XL))
                                 .font_weight(WEIGHT_SEMIBOLD)
                                 .text_color(rgb(t.text))
                                 .child(kind.title),
@@ -624,8 +704,8 @@ fn start_tile(t: Colors, kind: &StartKind, stacked: bool, cx: &mut Context<Studi
                 )
                 .child(
                     div()
-                        .text_size(px(TEXT_SM))
-                        .line_height(px(15.))
+                        .text_size(px(TEXT_MD))
+                        .line_height(px(16.))
                         .text_color(rgb(t.text_muted))
                         .child(kind.detail),
                 ),
@@ -635,15 +715,17 @@ fn start_tile(t: Colors, kind: &StartKind, stacked: bool, cx: &mut Context<Studi
 }
 
 /// Quick starts when the scene has no objects: a tile for each way of making
-/// geometry (mesh, part, sketch), then a quiet row of import links.
+/// geometry (mesh, part, sketch), then a row of import buttons.
 fn empty_scene(t: Colors, s: &Studio, width: f32, cx: &mut Context<Studio>) -> Option<Div> {
-    if !s.scene.objects.is_empty() || s.frame.is_none() {
+    // Drawing on an empty scene needs the whole view: the sketch only joins
+    // the scene with its first curve.
+    if !s.scene.objects.is_empty() || s.frame.is_none() || s.is_drawing() {
         return None;
     }
-    // Clear of the tool rail on both sides; below about 480 px the tiles
+    // Clear of the tool rail on both sides; below about 520 px the tiles
     // stack instead of squeezing their descriptions.
-    let card = 588f32.min(width - 2. * (HUD_INSET + TOOL + SP_5));
-    let stacked = card < 480.;
+    let card = 680f32.min(width - 2. * (HUD_INSET + TOOL + SP_5));
+    let stacked = card < 520.;
     let tiles: Vec<Div> = START_KINDS
         .iter()
         .map(|kind| start_tile(t, kind, stacked, cx))
@@ -655,16 +737,19 @@ fn empty_scene(t: Colors, s: &Studio, width: f32, cx: &mut Context<Studio>) -> O
     ]
     .map(|(label, command)| {
         on_command(
-            div()
-                .id(SharedString::from(format!("empty-import-{label}")))
-                .px(px(SP_1_5))
-                .py(px(2.))
-                .rounded(px(R_SM))
-                .text_color(rgb(t.text_muted))
-                .cursor_pointer()
-                .hover(move |d| d.text_color(rgb(t.text)).bg(rgb(t.control_hover)))
-                .child(label)
-                .tooltip(command_tip(t, command)),
+            button_base(
+                t,
+                SharedString::from(format!("empty-import-{label}")),
+                Tone::Ghost,
+                H_MD,
+            )
+            .px(px(SP_2 + 2.))
+            .border_1()
+            .border_color(rgba(t.hud_border))
+            .text_size(px(TEXT_LG))
+            .text_color(rgb(t.text))
+            .child(label)
+            .tooltip(command_tip(t, command)),
             command,
             cx,
         )
@@ -674,21 +759,24 @@ fn empty_scene(t: Colors, s: &Studio, width: f32, cx: &mut Context<Studio>) -> O
             .flex_col()
             .items_stretch()
             .w(px(card))
-            .p(px(SP_4))
-            .gap(px(SP_3))
+            .p(px(SP_5))
+            .gap(px(SP_4))
+            .rounded(px(R_XL + 2.))
+            .shadow(elevation(t, 2))
             .child(
                 col()
                     .px(px(SP_1))
-                    .gap(px(2.))
+                    .gap(px(SP_1))
                     .child(
                         div()
-                            .text_size(px(TEXT_XL))
+                            .text_size(px(18.))
                             .font_weight(WEIGHT_SEMIBOLD)
                             .text_color(rgb(t.text))
                             .child("Start a model"),
                     )
                     .child(
                         div()
+                            .text_size(px(TEXT_LG))
                             .text_color(rgb(t.text_muted))
                             .child("Pick a kind of geometry, or bring in a file."),
                     ),
@@ -696,19 +784,21 @@ fn empty_scene(t: Colors, s: &Studio, width: f32, cx: &mut Context<Studio>) -> O
             .child(
                 row()
                     .items_stretch()
-                    .gap(px(SP_2))
+                    .gap(px(SP_3))
                     .when(stacked, |d| d.flex_col())
                     .children(tiles),
             )
             .child(
                 row()
                     .px(px(SP_1))
-                    .gap(px(SP_1))
-                    .text_size(px(TEXT_MD))
+                    .gap(px(SP_1_5))
                     .child(
-                        div()
-                            .mr(px(SP_1))
-                            .text_color(rgb(t.text_faint))
+                        row()
+                            .mr(px(SP_1_5))
+                            .gap(px(SP_1_5))
+                            .text_size(px(TEXT_LG))
+                            .text_color(rgb(t.text_muted))
+                            .child(icon(Icon::Import, ICON_MD, t.text_muted))
                             .child("Import"),
                     )
                     .children(imports)

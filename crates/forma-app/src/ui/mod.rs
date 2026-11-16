@@ -156,6 +156,8 @@ pub(crate) struct OpenMenu {
     pub from: Anchor,
     pub anchor: Bounds<Pixels>,
     pub index: usize,
+    /// Type-to-filter text (Add menu only).
+    pub query: String,
 }
 
 /// Workspace layout and disclosure state never enter the document or undo history.
@@ -864,6 +866,7 @@ impl Studio {
                 from: anchor,
                 anchor: self.panels.anchors[anchor as usize].get(),
                 index: overlays::menu::first_item(kind),
+                query: String::new(),
             });
         }
         cx.notify();
@@ -877,24 +880,7 @@ impl Studio {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> bool {
-        let Some(menu) = self.panels.menu.as_mut() else {
-            return false;
-        };
-        let items = overlays::menu::items(menu.kind, self.scene.camera);
-        match event.keystroke.key.as_str() {
-            "escape" => self.panels.menu = None,
-            "up" => menu.index = overlays::menu::step(&items, menu.index, -1),
-            "down" => menu.index = overlays::menu::step(&items, menu.index, 1),
-            "enter" => {
-                if let Some(command) = items.get(menu.index).and_then(|item| item.command()) {
-                    self.panels.menu = None;
-                    self.execute(command, window, cx);
-                }
-            }
-            _ => {}
-        }
-        cx.notify();
-        true
+        overlays::menu::handle_key(self, event, window, cx)
     }
 }
 
