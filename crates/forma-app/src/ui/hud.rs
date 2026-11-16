@@ -35,6 +35,16 @@ fn tool_palette(t: Colors, s: &Studio, cx: &mut Context<Studio>) -> Div {
             .h(px(1.))
             .bg(rgba(t.hud_border))
     };
+    // While a sketch is open the Draw toolbar holds the tools that matter;
+    // the Object tools stay usable but step back.
+    let drawing = s.is_drawing();
+    let step_back = |icon: Stateful<Div>, idle: bool| {
+        if drawing {
+            icon.opacity(0.35)
+        } else {
+            icon.when(idle, |icon| icon.opacity(0.4))
+        }
+    };
     let mut palette = hud(t).flex_col().items_stretch().children(
         [
             (Tool::Select, Icon::Select),
@@ -46,16 +56,16 @@ fn tool_palette(t: Colors, s: &Studio, cx: &mut Context<Studio>) -> Div {
         .map(|(tool, glyph)| {
             // Transform tools have nothing to act on in an empty scene.
             let idle = tool != Tool::Select && s.scene.objects.is_empty();
-            command_icon(
+            let icon = command_icon(
                 t,
                 SharedString::from(format!("tool-{tool:?}")),
                 glyph,
                 Command::SetTool(tool),
-                s.tool == tool,
+                s.tool == tool && !drawing,
                 TOOL,
                 cx,
-            )
-            .when(idle, |icon| icon.opacity(0.4))
+            );
+            step_back(icon, idle)
         }),
     );
     palette = palette.child(separator());
@@ -64,49 +74,7 @@ fn tool_palette(t: Colors, s: &Studio, cx: &mut Context<Studio>) -> Div {
     palette = if s.part_editing().is_some() {
         // B-rep component editing: faces push and pull, edges chamfer.
         palette
-            .child(command_icon(
-                t,
-                "rail-push-pull",
-                Icon::PushPull,
-                push_pull,
-                pushing,
-                TOOL,
-                cx,
-            ))
-            .child(command_icon(
-                t,
-                "rail-chamfer",
-                Icon::Bevel,
-                Command::CadTool(crate::cad_tools::ToolCommand::Chamfer),
-                matches!(s.cad_tool.tool, Some(crate::cad_tools::Tool::Chamfer(_))),
-                TOOL,
-                cx,
-            ))
-    } else if s.edit_mode.is_component() {
-        palette
-            .child(command_icon(
-                t,
-                "rail-extrude",
-                Icon::Extrude,
-                Command::Extrude,
-                false,
-                TOOL,
-                cx,
-            ))
-            .child(command_icon(
-                t,
-                "rail-inset",
-                Icon::Inset,
-                Command::Inset,
-                false,
-                TOOL,
-                cx,
-            ))
-    } else {
-        // Like the transform tools, these need something to act on.
-        let empty = s.scene.objects.is_empty();
-        palette
-            .child(
+            .child(step_back(
                 command_icon(
                     t,
                     "rail-push-pull",
@@ -115,10 +83,64 @@ fn tool_palette(t: Colors, s: &Studio, cx: &mut Context<Studio>) -> Div {
                     pushing,
                     TOOL,
                     cx,
-                )
-                .when(empty, |icon| icon.opacity(0.4)),
-            )
-            .child(
+                ),
+                false,
+            ))
+            .child(step_back(
+                command_icon(
+                    t,
+                    "rail-chamfer",
+                    Icon::Bevel,
+                    Command::CadTool(crate::cad_tools::ToolCommand::Chamfer),
+                    matches!(s.cad_tool.tool, Some(crate::cad_tools::Tool::Chamfer(_))),
+                    TOOL,
+                    cx,
+                ),
+                false,
+            ))
+    } else if s.edit_mode.is_component() {
+        palette
+            .child(step_back(
+                command_icon(
+                    t,
+                    "rail-extrude",
+                    Icon::Extrude,
+                    Command::Extrude,
+                    false,
+                    TOOL,
+                    cx,
+                ),
+                false,
+            ))
+            .child(step_back(
+                command_icon(
+                    t,
+                    "rail-inset",
+                    Icon::Inset,
+                    Command::Inset,
+                    false,
+                    TOOL,
+                    cx,
+                ),
+                false,
+            ))
+    } else {
+        // Like the transform tools, these need something to act on.
+        let empty = s.scene.objects.is_empty();
+        palette
+            .child(step_back(
+                command_icon(
+                    t,
+                    "rail-push-pull",
+                    Icon::PushPull,
+                    push_pull,
+                    pushing,
+                    TOOL,
+                    cx,
+                ),
+                empty,
+            ))
+            .child(step_back(
                 command_icon(
                     t,
                     "rail-bevel",
@@ -127,9 +149,9 @@ fn tool_palette(t: Colors, s: &Studio, cx: &mut Context<Studio>) -> Div {
                     false,
                     TOOL,
                     cx,
-                )
-                .when(empty, |icon| icon.opacity(0.4)),
-            )
+                ),
+                empty,
+            ))
     };
     palette.child(separator()).child(
         icon_button(t, "tool-add", Icon::Plus, menu_open, TOOL)

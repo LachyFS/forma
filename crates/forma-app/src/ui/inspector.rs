@@ -859,6 +859,8 @@ fn textures(
                     .gap(px(SP_1_5))
                     .rounded(px(R_SM))
                     .bg(rgb(t.field))
+                    .border_1()
+                    .border_color(field_edge(t))
                     .cursor_pointer()
                     .hover(move |d| d.bg(rgb(t.field_hover)))
                     .child(icon(
@@ -1659,7 +1661,7 @@ pub(super) fn inspector(t: Colors, s: &Studio, width: f32, cx: &mut Context<Stud
     // The floating tool bar holds the filled Done; the panel's copy is the
     // quieter outline, so the screen never shows two primaries.
     let live = object_tab
-        .then(|| with_quiet_primary(|| s.cad_tool_panel(t, stacked, cx)))
+        .then(|| in_tool_panel(|| s.cad_tool_panel(t, stacked, cx)))
         .flatten();
     let context = object_tab.then(|| context(t, s, cx)).flatten();
     let dimmed = live.is_some();

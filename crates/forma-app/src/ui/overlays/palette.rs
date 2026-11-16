@@ -3,7 +3,7 @@
 //! matches across all groups and highlights the matched characters.
 use super::super::assets::{Icon, icon};
 use super::super::commands::{
-    adds_part, command_group, command_icon, command_info, command_keywords, group_rank,
+    command_group, command_icon, command_info, command_keywords, group_rank,
 };
 use super::super::components::*;
 use super::super::tokens::*;
@@ -449,7 +449,7 @@ fn command_row(
     let enabled = unavailable.is_none();
     let glyph_ink = if !enabled {
         t.text_faint
-    } else if active || adds_part(command) {
+    } else if active {
         t.accent_text
     } else {
         t.text_muted
@@ -501,13 +501,16 @@ fn command_row(
             },
         )
         .child(spacer())
-        // The reason a command cannot run takes the shortcut's place.
+        // The reason a command cannot run takes the shortcut's place. A bare
+        // Return badge would read as the footer's "Return Run", so commands
+        // bound to Return show none here.
         .child(
             row()
                 .flex_shrink_0()
-                .when(enabled && !entry.shortcut.is_empty(), |d| {
-                    d.child(keycaps(t, entry.shortcut))
-                })
+                .when(
+                    enabled && !entry.shortcut.is_empty() && entry.shortcut != "Return",
+                    |d| d.child(keycaps(t, entry.shortcut)),
+                )
                 .when_some(unavailable, |d, reason| {
                     d.text_size(px(TEXT_MD))
                         .text_color(rgb(t.text_muted))

@@ -22,6 +22,13 @@ pub(crate) fn clear() -> Hsla {
     gpui::transparent_black()
 }
 
+/// Resting edge of an input. Light themes put fields barely darker than
+/// their panel, so a 1 px border keeps values reading as fields; dark themes
+/// separate them by fill alone.
+pub(crate) fn field_edge(t: Colors) -> Hsla {
+    if t.dark { clear() } else { hex(t.border) }
+}
+
 /// Thin vertical rule between groups in a toolbar.
 pub(crate) fn vrule(t: Colors, height: f32) -> Div {
     div()
@@ -274,23 +281,27 @@ pub(crate) enum Tone {
 }
 
 thread_local! {
-    static QUIET_PRIMARY: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    static TOOL_PANEL: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
-/// Build a region whose primary buttons draw as `Tone::Outline`. A running
-/// tool's panel repeats the commit buttons of the floating tool bar, which
-/// keeps the one filled Done on screen; the panel's copy stays as a quieter
-/// outline beside Cancel.
-pub(crate) fn with_quiet_primary<R>(build: impl FnOnce() -> R) -> R {
-    let before = QUIET_PRIMARY.with(|quiet| quiet.replace(true));
+/// Build a running tool's inspector panel. The floating tool bar is the one
+/// place a tool commits, so the panel keeps its parameters but drops its own
+/// Cancel and Done (Return and Esc still work), and any other primary button
+/// in it draws as a quieter `Tone::Outline`.
+pub(crate) fn in_tool_panel<R>(build: impl FnOnce() -> R) -> R {
+    let before = TOOL_PANEL.with(|panel| panel.replace(true));
     let built = build();
-    QUIET_PRIMARY.with(|quiet| quiet.set(before));
+    TOOL_PANEL.with(|panel| panel.set(before));
     built
+}
+
+fn in_tool_panel_region() -> bool {
+    TOOL_PANEL.with(|panel| panel.get())
 }
 
 /// `tone` as this region draws it.
 fn resolved(tone: Tone) -> Tone {
-    if tone == Tone::Primary && QUIET_PRIMARY.with(|quiet| quiet.get()) {
+    if tone == Tone::Primary && in_tool_panel_region() {
         Tone::Outline
     } else {
         tone
@@ -408,11 +419,17 @@ pub(crate) fn command_button(
     tone: Tone,
     cx: &mut Context<Studio>,
 ) -> Stateful<Div> {
+    use crate::cad_tools::ToolCommand;
+    let commit = matches!(
+        command,
+        Command::CadTool(ToolCommand::Done | ToolCommand::Cancel)
+    );
     on_command(
         button(t, id, label, glyph, tone).tooltip(command_tip(t, command)),
         command,
         cx,
     )
+    .when(commit && in_tool_panel_region(), |button| button.hidden())
 }
 
 /// Square icon-only button. `active` shows it as the current choice.
@@ -472,10 +489,12 @@ pub(crate) fn segmented(t: Colors) -> Div {
         .rounded(px(R_SM + 2.))
         .bg(rgb(t.sunken))
         .border_1()
-        .border_color(rgb(t.hairline))
+        .border_color(rgb(if t.dark { t.hairline } else { t.border }))
 }
 
-/// One segment. The selected segment is raised like a physical key.
+/// One segment. The selected segment takes a soft accent fill and accent
+/// ink, so the choice reads at a glance in every theme rather than as one
+/// more field-coloured key.
 pub(crate) fn segment(
     t: Colors,
     id: impl Into<ElementId>,
@@ -493,9 +512,7 @@ pub(crate) fn segment(
         .font_weight(WEIGHT_MEDIUM)
         .cursor_pointer()
         .when(active, |d| {
-            d.bg(rgb(t.overlay))
-                .text_color(rgb(t.text))
-                .shadow(elevation(t, 0))
+            d.bg(tint(t.accent, 0.16)).text_color(rgb(t.accent_text))
         })
         .when(!active, |d| {
             d.text_color(rgb(t.text_muted))
@@ -907,7 +924,7 @@ pub(crate) fn numeric_field_showing(
         } else if scrubbing {
             hex(t.accent_border)
         } else {
-            clear()
+            field_edge(t)
         })
         .tabular()
         .when(!active, |d| d.hover(move |d| d.bg(rgb(t.field_hover))))
