@@ -775,7 +775,7 @@ async fn check_theme_workflow(
     cx: &mut AsyncApp,
 ) -> Result<()> {
     use crate::theme::Theme;
-    let (scene, selected, dirty, undo, redo, samples, original, frame, settings) =
+    let (scene, selected, dirty, undo, redo, original, settings) =
         window.update(cx, |s, _, _| {
             (
                 s.scene.clone(),
@@ -783,9 +783,7 @@ async fn check_theme_workflow(
                 s.dirty,
                 s.history.can_undo(),
                 s.history.can_redo(),
-                s.samples,
                 s.theme,
-                s.frame_image.clone(),
                 s.settings.clone(),
             )
         })?;
@@ -910,17 +908,25 @@ async fn check_theme_workflow(
                 && s.history.can_redo() == redo,
             "theme changes modified the document or undo history"
         );
+        // The viewport backdrop and selection outline follow the theme, so
+        // a theme change may re-render the frame; no other render setting
+        // may change.
+        let mut expected = settings.clone();
+        expected.light_viewport = s.settings.light_viewport;
+        expected.selection_rgb = s.settings.selection_rgb;
         ensure!(
-            s.samples == samples && s.settings == settings,
-            "theme changes reset the viewport samples"
+            s.settings == expected,
+            "theme changes altered render settings beyond the backdrop and selection color"
         );
-        if let (Some(before), Some(after)) = (&frame, &s.frame_image) {
-            ensure!(
-                std::sync::Arc::ptr_eq(before, after),
-                "theme changes replaced the completed viewport frame"
-            );
-        }
         s.apply_theme(original, cx);
+        Ok(())
+    })??;
+    prepare_capture(window, cx).await?;
+    window.update(cx, |s, _, _| -> Result<()> {
+        ensure!(
+            s.settings == settings,
+            "restoring the theme did not restore the viewport backdrop and selection color"
+        );
         Ok(())
     })??;
     let original_size = window.update(cx, |s, w, cx| {
