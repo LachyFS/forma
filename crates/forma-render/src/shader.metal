@@ -450,9 +450,9 @@ float2 project_to_pixels(float3 point, constant Uniforms &u) {
         * float2(float(u.image.x) / u.camera.y, float(u.image.y)) / (2.0f * half_height);
 }
 // Pixel distance to a vertex, or infinity when it is behind a perspective camera.
-float projected_point_distance(float3 position, float3 vertex, constant Uniforms &u) {
-    if (u.camera.w < 0.5f && dot(vertex - u.cam_origin.xyz, u.cam_forward.xyz) < 1e-4f) return INFINITY;
-    return length(project_to_pixels(position, u) - project_to_pixels(vertex, u));
+float projected_point_distance(float3 position, float3 vertex_pos, constant Uniforms &u) {
+    if (u.camera.w < 0.5f && dot(vertex_pos - u.cam_origin.xyz, u.cam_forward.xyz) < 1e-4f) return INFINITY;
+    return length(project_to_pixels(position, u) - project_to_pixels(vertex_pos, u));
 }
 float projected_edge_distance(float3 position, float3 a, float3 b, constant Uniforms &u) {
     if (u.camera.w < 0.5f) {
