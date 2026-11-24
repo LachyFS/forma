@@ -199,18 +199,9 @@ pub(super) fn titlebar(
                     d.child(
                         drag_region("titlebar-traffic-lights")
                             .flex_none()
-                            .w(px(TRAFFIC_LIGHT_RESERVE - SP_2)),
+                            .flex_basis(px(TRAFFIC_LIGHT_RESERVE - SP_2)),
                     )
                 })
-                .child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .size(px(H_MD))
-                        .flex_shrink_0()
-                        .child(icon(Icon::Logo, ICON_LG, t.accent)),
-                )
                 .child(
                     row()
                         .id("document-title")
